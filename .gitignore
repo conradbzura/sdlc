@@ -1,0 +1,6 @@
+.*
+!.gitignore
+
+# Generated guide symlinks (created by make install)
+agents/skills/*/test-guides
+agents/skills/*/style-guides
