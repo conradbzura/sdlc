@@ -44,7 +44,7 @@ This skill MAY be executed in an isolated subagent to preserve parent context. W
 - MUST spawn a general-purpose subagent using the Agent tool with this brief:
   > You are executing the **`commit`** skill from the SDLC pipeline (`issue` → `implement` → `test` → `commit` → `pr` → `review`).
   > 1. Read the project instructions in `AGENTS.md`
-  > 2. Read and execute the complete workflow defined in this skill's SKILL.md
+  > 2. Read and execute the complete workflow defined in this skill's markdown
   > 3. Follow every step faithfully, especially the Invariants section
   > 4. Return a structured summary: accomplishments, key artifacts (commit SHAs, commit messages, branch names), and the next pipeline step prompt from the skill
 
@@ -118,7 +118,7 @@ MUST check whether a knowledge graph exists:
 test -f .understand-anything/knowledge-graph.json && echo "exists" || echo "missing"
 ```
 
-If the graph exists, MUST read and follow `agents/skills/understand-chat.md` with a query listing the changed file paths from the diff to gather architectural context — component summaries, relationships, and layer assignments — that reveals component boundaries for logical commit grouping. If the graph does not exist, skip this step and continue.
+If the graph exists, MUST invoke the `sdlc_understand_chat` MCP tool with a query listing the changed file paths from the diff to gather architectural context — component summaries, relationships, and layer assignments — that reveals component boundaries for logical commit grouping. If the graph does not exist, skip this step and continue.
 
 ### 5. Plan the commits
 

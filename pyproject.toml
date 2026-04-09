@@ -14,17 +14,13 @@ dependencies = [
 ]
 
 [project.scripts]
-sdlc-mcp = "sdlc_mcp:main"
+sdlc-mcp = "sdlc:main"
 
 [dependency-groups]
 test = ["pytest", "pytest-asyncio"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/sdlc_mcp"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"agents" = "sdlc_mcp/agents"
-"AGENTS.md" = "sdlc_mcp/AGENTS.md"
+packages = ["src/sdlc"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
