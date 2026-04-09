@@ -1,6 +1,13 @@
 .*
 !.gitignore
 
-# Generated guide symlinks (created by make install)
+# Python
+__pycache__/
+*.egg-info/
+dist/
+build/
+.venv/
+
+# Legacy guide symlinks (from old make install)
 agents/skills/*/test-guides
 agents/skills/*/style-guides
