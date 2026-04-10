@@ -45,7 +45,7 @@ This skill MAY be executed in an isolated subagent to preserve parent context. W
 - MUST spawn a general-purpose subagent using the Agent tool with this brief:
   > You are executing the **`review`** skill from the SDLC pipeline (`issue` → `implement` → `test` → `commit` → `pr` → `review`).
   > 1. Read the project instructions in `AGENTS.md`
-  > 2. Read and execute the complete workflow defined in this skill's SKILL.md
+  > 2. Read and execute the complete workflow defined in this skill's markdown
   > 3. Follow every step faithfully, especially the Invariants section
   > 4. Return a structured summary: accomplishments, key artifacts (review event posted, findings count, PR number), and the next pipeline step prompt from the skill
 

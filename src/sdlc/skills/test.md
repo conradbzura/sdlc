@@ -46,7 +46,7 @@ This skill is part of the development workflow pipeline: `issue` → `implement`
 - MUST enter planning phase and receive user approval before writing any test files.
 - MUST read existing test files and account for current coverage before planning new tests.
 - MUST NOT write test specifications to disk -- the test plan is an internal planning artifact only.
-- MUST use the knowledge graph (`agents/skills/understand-chat.md`) for context gathering when `.understand-anything/knowledge-graph.json` exists.
+- MUST use the `sdlc_understand_chat` MCP tool for context gathering when `.understand-anything/knowledge-graph.json` exists.
 
 ## Arguments
 
@@ -68,7 +68,7 @@ This skill MAY be executed in an isolated subagent to preserve parent context. W
 - MUST spawn a general-purpose subagent using the Agent tool with this brief:
   > You are executing the **`test`** skill from the SDLC pipeline (`issue` → `implement` → `test` → `commit` → `pr` → `review`).
   > 1. Read the project instructions in `AGENTS.md`
-  > 2. Read and execute the complete workflow defined in this skill's SKILL.md
+  > 2. Read and execute the complete workflow defined in this skill's markdown
   > 3. Follow every step faithfully, especially the Invariants section
   > 4. Return a structured summary: accomplishments, key artifacts (test files created or modified, test results), and the next pipeline step prompt from the skill
 

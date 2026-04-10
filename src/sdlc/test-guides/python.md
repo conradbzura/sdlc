@@ -275,7 +275,7 @@ Test routines — functions exercised by integration tests — MUST live in a no
 
 ### Dimensions and Enums
 
-Each orthogonal axis identified by the test skill (see `agents/skills/test.md` section 6) becomes a separate `Enum`:
+Each orthogonal axis identified by the test skill (see the `sdlc_test` tool, section 6) becomes a separate `Enum`:
 
 ```python
 class InputFormat(Enum):

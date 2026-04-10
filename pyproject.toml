@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sdlc-mcp"
+version = "2026.4.10.0"
+description = "SDLC pipeline for LLM agents, served as an MCP server"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+]
+
+[project.scripts]
+sdlc-mcp = "sdlc:main"
+
+[dependency-groups]
+test = ["pytest", "pytest-asyncio"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sdlc"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
