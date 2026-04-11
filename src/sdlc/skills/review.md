@@ -95,8 +95,8 @@ If the PR does not exist, inform the user and stop. Parse the PR title, body, br
 MUST read the following files to establish the review baseline:
 
 - `AGENTS.md` — project-level instructions, architecture context, docstring conventions.
-- `../test-guides/python.md` — Python testing conventions (if the PR touches test files).
-- Every file in `../style-guides/` — active authoring conventions.
+- Read the MCP resource `sdlc://guides/test/python` — Python testing conventions (if the PR touches test files).
+- Read every MCP resource matching `sdlc://guides/style/*` — active authoring conventions.
 
 Only the guides relevant to the changed files need to be read. For example, the test guide is only needed if the PR modifies or adds test files.
 
