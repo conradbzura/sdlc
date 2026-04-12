@@ -56,7 +56,7 @@ An issue number MUST be provided as the sole argument (e.g., `test` with issue #
 >
 > | Language | Guide |
 > |----------|-------|
-> | Python (`.py`) | `test-guides/python.md` |
+> | Python (`.py`) | MCP resource `sdlc://guides/test/python` |
 >
 > If no guide exists for the detected language, inform the user and stop.
 
