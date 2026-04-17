@@ -29,6 +29,7 @@ This skill is part of the development workflow pipeline: `issue` → `implement`
 - MUST always create the PR as a draft -- never mark it ready for review automatically.
 - MUST NOT create the PR until the user explicitly approves the description.
 - MUST match the PR title exactly to the issue title with ` — Closes #<number>` appended.
+- MUST describe the net `<base>..HEAD` diff in the PR body, where `<base>` is the PR's base branch (discoverable via `gh pr view <number> --json baseRefName`), not the sequence of changes across the PR's commits. If a file, block, or behavior was added and later removed within the same PR (e.g., via fixup rebase or interactive history rewriting), it MUST NOT appear in the description — from the base branch's perspective it never existed.
 - MUST use a heredoc for the `gh pr create` body to avoid shell escaping issues.
 - MUST structure the PR description according to the project's PR template if one exists, otherwise the built-in format defined in this document.
 - MUST assign the PR to the current user upon creation via `gh pr edit <number> --add-assignee @me`.
