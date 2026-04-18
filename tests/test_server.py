@@ -320,6 +320,24 @@ async def test_sdlc_guides_for_should_union_matches_across_paths():
 
 
 @pytest.mark.asyncio
+async def test_sdlc_guides_for_should_return_empty_when_paths_empty():
+    """Test sdlc_guides_for returns an empty list when no paths are supplied.
+
+    Given:
+        An empty list of paths.
+    When:
+        sdlc_guides_for(paths=[], kind="test") is called.
+    Then:
+        It should return [].
+    """
+    # Act
+    result = await sdlc_guides_for(paths=[], kind="test")
+
+    # Assert
+    assert result == []
+
+
+@pytest.mark.asyncio
 async def test_agents_md_should_return_file_content():
     """Test agents_md returns the AGENTS.md content.
 

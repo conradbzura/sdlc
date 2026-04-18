@@ -192,6 +192,31 @@ def test_load_user_config_should_hint_kebab_case_when_key_is_camel_case(tmp_path
         load_user_config(tmp_path)
 
 
+def test_load_user_config_should_hint_kebab_case_when_mixed_unknown_keys(tmp_path, monkeypatch):
+    """Test a camelCase hint is surfaced even when accompanied by other unknown keys.
+
+    Given:
+        A .sdlc/config.json with both 'guidesDir' (camelCase) and an unrelated
+        unknown key 'foobar'.
+    When:
+        load_user_config(cwd) is called.
+    Then:
+        It should raise ValueError suggesting 'guides-dir', regardless of set
+        iteration order over the unknown keys.
+    """
+    # Arrange
+    monkeypatch.delenv("SDLC_CONFIG", raising=False)
+    sdlc_dir = tmp_path / ".sdlc"
+    sdlc_dir.mkdir()
+    (sdlc_dir / "config.json").write_text(
+        '{"guidesDir": "guides", "foobar": 1}'
+    )
+
+    # Act & assert
+    with pytest.raises(ValueError, match="guides-dir"):
+        load_user_config(tmp_path)
+
+
 def test_load_user_config_should_raise_when_guides_dir_not_string(tmp_path, monkeypatch):
     """Test guides-dir must be a string.
 
@@ -233,6 +258,27 @@ def test_load_user_config_should_raise_when_guide_map_kind_unknown(tmp_path, mon
 
     # Act & assert
     with pytest.raises(ValueError, match="docs"):
+        load_user_config(tmp_path)
+
+
+def test_load_user_config_should_raise_when_top_level_not_object(tmp_path, monkeypatch):
+    """Test valid JSON whose top-level value is not an object is rejected.
+
+    Given:
+        A .sdlc/config.json containing a JSON array (valid JSON, wrong shape).
+    When:
+        load_user_config(cwd) is called.
+    Then:
+        It should raise ValueError mentioning 'top-level'.
+    """
+    # Arrange
+    monkeypatch.delenv("SDLC_CONFIG", raising=False)
+    sdlc_dir = tmp_path / ".sdlc"
+    sdlc_dir.mkdir()
+    (sdlc_dir / "config.json").write_text('["guides-dir", "guides"]')
+
+    # Act & assert
+    with pytest.raises(ValueError, match="top-level"):
         load_user_config(tmp_path)
 
 
@@ -883,3 +929,33 @@ def test_load_state_should_discover_bundled_guides(tmp_path, monkeypatch):
     # Assert
     assert ("test", "python") in state.discovered
     assert ("style", "markdown") in state.discovered
+
+
+def test_load_state_should_honor_custom_package_dir(tmp_path, monkeypatch):
+    """Test load_state uses the provided package_dir for defaults and bundled guides.
+
+    Given:
+        A custom package directory with its own config.json and bundled guide.
+    When:
+        load_state is called with package_dir pointing to the custom directory.
+    Then:
+        The returned state reflects the custom package's config and discovered
+        guides rather than the installed package's.
+    """
+    # Arrange
+    monkeypatch.delenv("SDLC_CONFIG", raising=False)
+    custom_pkg = tmp_path / "custom_pkg"
+    custom_pkg.mkdir()
+    (custom_pkg / "config.json").write_text(
+        json.dumps({"guide-map": {"test": {"**/*.rs": ["rust"]}}})
+    )
+    (custom_pkg / "test-guides").mkdir()
+    (custom_pkg / "test-guides" / "rust.md").write_text("# Rust guide")
+
+    # Act
+    state = load_state(cwd=tmp_path, package_dir=custom_pkg)
+
+    # Assert
+    assert state.guide_map == {"test": {"**/*.rs": ["rust"]}}
+    assert ("test", "rust") in state.discovered
+    assert ("test", "python") not in state.discovered
