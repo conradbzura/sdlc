@@ -1,14 +1,17 @@
 """SDLC MCP server — exposes pipeline skills as MCP tools and guides as resources."""
 
 from pathlib import Path
+from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 
+from sdlc import guides
+
 PACKAGE_DIR = Path(__file__).resolve().parent
 SKILLS_DIR = PACKAGE_DIR / "skills"
-TEST_GUIDES_DIR = PACKAGE_DIR / "test-guides"
-STYLE_GUIDES_DIR = PACKAGE_DIR / "style-guides"
 AGENTS_MD_PATH = PACKAGE_DIR / "AGENTS.md"
+
+_state = guides.load_state(cwd=Path.cwd(), package_dir=PACKAGE_DIR)
 
 mcp = FastMCP(
     "sdlc",
@@ -141,16 +144,40 @@ async def sdlc_understand_chat(query: str) -> str:
     return f"{skill}\n---\n\nQuery: {query}"
 
 
-@mcp.resource("sdlc://guides/test/python")
-async def test_guide_python() -> str:
-    """Python testing conventions guide (pytest, pytest-mock, Hypothesis)."""
-    return _read_file(TEST_GUIDES_DIR / "python.md")
+@mcp.tool()
+async def sdlc_guides_for(
+    paths: list[str], kind: Literal["test", "style"]
+) -> list[str]:
+    """Resolve which guides apply to a set of file paths.
+
+    Returns a deduplicated list of `sdlc://guides/{kind}/{stem}` URIs whose
+    glob patterns match any of the given paths. Read each returned URI to
+    obtain the guide content.
+
+    Args:
+        paths: File paths (relative to project root) to resolve guides for.
+        kind: Guide namespace — "test" or "style".
+    """
+    stems = guides.resolve_guides(paths, kind, _state.guide_map, _state.discovered)
+    return [f"sdlc://guides/{kind}/{stem}" for stem in stems]
 
 
-@mcp.resource("sdlc://guides/style/markdown")
-async def style_guide_markdown() -> str:
-    """Markdown authoring style guide."""
-    return _read_file(STYLE_GUIDES_DIR / "markdown.md")
+@mcp.resource("sdlc://guides/test/{stem}")
+async def get_test_guide(stem: str) -> str:
+    """Return the test guide identified by `stem` (e.g. "python")."""
+    return guides.read_guide("test", stem, _state.discovered)
+
+
+@mcp.resource("sdlc://guides/style/{stem}")
+async def get_style_guide(stem: str) -> str:
+    """Return the style guide identified by `stem` (e.g. "markdown")."""
+    return guides.read_guide("style", stem, _state.discovered)
+
+
+@mcp.resource("sdlc://config/default")
+async def get_default_config() -> str:
+    """Return the package-default config.json content."""
+    return _read_file(guides.DEFAULT_CONFIG_PATH)
 
 
 @mcp.resource("sdlc://agents-md")

@@ -1,19 +1,23 @@
 """Tests for sdlc.server — MCP tools and resources."""
 
+import json
+
 import pytest
 
 from sdlc.server import (
     agents_md,
+    get_default_config,
+    get_style_guide,
+    get_test_guide,
     knowledge_graph,
     sdlc_commit,
+    sdlc_guides_for,
     sdlc_implement,
     sdlc_issue,
     sdlc_pr,
     sdlc_review,
     sdlc_test,
     sdlc_understand_chat,
-    style_guide_markdown,
-    test_guide_python,
 )
 
 
@@ -170,38 +174,149 @@ async def test_sdlc_understand_chat_with_query():
 
 @pytest.mark.asyncio
 async def test_test_guide_python_returns_content():
-    """Test test_guide_python returns the Python testing guide.
+    """Test the test/python URI serves the bundled Python testing guide.
 
     Given:
         The package bundles src/sdlc/test-guides/python.md.
     When:
-        test_guide_python() is called.
+        test_guide(stem="python") is called.
     Then:
         It should return the Python test guide content.
     """
     # Act
-    result = await test_guide_python()
+    result = await get_test_guide(stem="python")
 
     # Assert
     assert "# Python Test Guide" in result
 
 
 @pytest.mark.asyncio
+async def test_test_guide_unknown_stem_returns_error():
+    """Test an unknown test guide stem returns an error message.
+
+    Given:
+        A stem with no corresponding guide file.
+    When:
+        test_guide(stem="nonexistent") is called.
+    Then:
+        It should return a "not found" message.
+    """
+    # Act
+    result = await get_test_guide(stem="nonexistent")
+
+    # Assert
+    assert "not found" in result.lower()
+
+
+@pytest.mark.asyncio
 async def test_style_guide_markdown_returns_content():
-    """Test style_guide_markdown returns the Markdown style guide.
+    """Test the style/markdown URI serves the bundled Markdown style guide.
 
     Given:
         The package bundles src/sdlc/style-guides/markdown.md.
     When:
-        style_guide_markdown() is called.
+        style_guide(stem="markdown") is called.
     Then:
         It should return the Markdown style guide content.
     """
     # Act
-    result = await style_guide_markdown()
+    result = await get_style_guide(stem="markdown")
 
     # Assert
     assert "# Markdown style guide" in result
+
+
+@pytest.mark.asyncio
+async def test_default_config_returns_shipped_config():
+    """Test default_config returns the package config.json content.
+
+    Given:
+        The package ships src/sdlc/config.json.
+    When:
+        default_config() is called.
+    Then:
+        It should return parseable JSON containing the kebab-case guide-map.
+    """
+    # Act
+    result = await get_default_config()
+
+    # Assert
+    parsed = json.loads(result)
+    assert "guide-map" in parsed
+    assert "test" in parsed["guide-map"]
+    assert "style" in parsed["guide-map"]
+
+
+@pytest.mark.asyncio
+async def test_sdlc_guides_for_returns_python_guide_for_py_path():
+    """Test sdlc_guides_for resolves a Python source path to the python guide URI.
+
+    Given:
+        Default guide-map maps '**/*.py' to ['python'].
+    When:
+        sdlc_guides_for(['src/foo.py'], 'test') is called.
+    Then:
+        It should return ['sdlc://guides/test/python'].
+    """
+    # Act
+    result = await sdlc_guides_for(paths=["src/foo.py"], kind="test")
+
+    # Assert
+    assert result == ["sdlc://guides/test/python"]
+
+
+@pytest.mark.asyncio
+async def test_sdlc_guides_for_returns_markdown_guide_for_md_path():
+    """Test sdlc_guides_for resolves a Markdown path to the markdown style guide.
+
+    Given:
+        Default guide-map maps '**/*.md' to ['markdown'] under 'style'.
+    When:
+        sdlc_guides_for(['README.md'], 'style') is called.
+    Then:
+        It should return ['sdlc://guides/style/markdown'].
+    """
+    # Act
+    result = await sdlc_guides_for(paths=["README.md"], kind="style")
+
+    # Assert
+    assert result == ["sdlc://guides/style/markdown"]
+
+
+@pytest.mark.asyncio
+async def test_sdlc_guides_for_returns_empty_for_unmatched_path():
+    """Test sdlc_guides_for returns an empty list when no pattern matches.
+
+    Given:
+        Default guide-map has no entry for files of arbitrary extension '.xyz'.
+    When:
+        sdlc_guides_for(['foo.xyz'], 'test') is called.
+    Then:
+        It should return [].
+    """
+    # Act
+    result = await sdlc_guides_for(paths=["foo.xyz"], kind="test")
+
+    # Assert
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_sdlc_guides_for_unions_across_paths():
+    """Test sdlc_guides_for unions matches across multiple input paths.
+
+    Given:
+        Multiple paths with different extensions.
+    When:
+        sdlc_guides_for is called with a Python and a Markdown path under 'style'.
+    Then:
+        Only the markdown guide is returned (default style map only knows .md).
+    """
+    # Act
+    result = await sdlc_guides_for(paths=["foo.py", "README.md"], kind="style")
+
+    # Assert
+    assert result == ["sdlc://guides/style/markdown"]
 
 
 @pytest.mark.asyncio
