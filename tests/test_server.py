@@ -22,7 +22,7 @@ from sdlc.server import (
 
 
 @pytest.mark.asyncio
-async def test_sdlc_issue_without_context():
+async def test_sdlc_issue_should_return_skill_when_no_context():
     """Test sdlc_issue returns skill content when called with no arguments.
 
     Given:
@@ -41,7 +41,7 @@ async def test_sdlc_issue_without_context():
 
 
 @pytest.mark.asyncio
-async def test_sdlc_issue_with_context():
+async def test_sdlc_issue_should_append_context_when_provided():
     """Test sdlc_issue appends user context when provided.
 
     Given:
@@ -60,7 +60,7 @@ async def test_sdlc_issue_with_context():
 
 
 @pytest.mark.asyncio
-async def test_sdlc_implement_with_issue_number():
+async def test_sdlc_implement_should_interpolate_issue_number():
     """Test sdlc_implement returns skill content with interpolated issue number.
 
     Given:
@@ -79,7 +79,7 @@ async def test_sdlc_implement_with_issue_number():
 
 
 @pytest.mark.asyncio
-async def test_sdlc_test_with_issue_number():
+async def test_sdlc_test_should_interpolate_issue_number():
     """Test sdlc_test returns skill content with interpolated issue number.
 
     Given:
@@ -98,7 +98,7 @@ async def test_sdlc_test_with_issue_number():
 
 
 @pytest.mark.asyncio
-async def test_sdlc_commit_returns_skill_content():
+async def test_sdlc_commit_should_return_skill_content():
     """Test sdlc_commit returns the commit skill content.
 
     Given:
@@ -116,7 +116,7 @@ async def test_sdlc_commit_returns_skill_content():
 
 
 @pytest.mark.asyncio
-async def test_sdlc_pr_with_issue_number():
+async def test_sdlc_pr_should_interpolate_issue_number():
     """Test sdlc_pr returns skill content with interpolated issue number.
 
     Given:
@@ -135,7 +135,7 @@ async def test_sdlc_pr_with_issue_number():
 
 
 @pytest.mark.asyncio
-async def test_sdlc_review_with_pr_number():
+async def test_sdlc_review_should_interpolate_pr_number():
     """Test sdlc_review returns skill content with interpolated PR number.
 
     Given:
@@ -154,7 +154,7 @@ async def test_sdlc_review_with_pr_number():
 
 
 @pytest.mark.asyncio
-async def test_sdlc_understand_chat_with_query():
+async def test_sdlc_understand_chat_should_interpolate_query():
     """Test sdlc_understand_chat returns skill content with interpolated query.
 
     Given:
@@ -173,7 +173,7 @@ async def test_sdlc_understand_chat_with_query():
 
 
 @pytest.mark.asyncio
-async def test_test_guide_python_returns_content():
+async def test_get_test_guide_should_return_bundled_python_guide():
     """Test the test/python URI serves the bundled Python testing guide.
 
     Given:
@@ -191,7 +191,7 @@ async def test_test_guide_python_returns_content():
 
 
 @pytest.mark.asyncio
-async def test_test_guide_unknown_stem_returns_error():
+async def test_get_test_guide_should_return_error_when_stem_unknown():
     """Test an unknown test guide stem returns an error message.
 
     Given:
@@ -209,7 +209,7 @@ async def test_test_guide_unknown_stem_returns_error():
 
 
 @pytest.mark.asyncio
-async def test_style_guide_markdown_returns_content():
+async def test_get_style_guide_should_return_bundled_markdown_guide():
     """Test the style/markdown URI serves the bundled Markdown style guide.
 
     Given:
@@ -227,7 +227,7 @@ async def test_style_guide_markdown_returns_content():
 
 
 @pytest.mark.asyncio
-async def test_default_config_returns_shipped_config():
+async def test_get_default_config_should_return_shipped_json():
     """Test default_config returns the package config.json content.
 
     Given:
@@ -248,7 +248,7 @@ async def test_default_config_returns_shipped_config():
 
 
 @pytest.mark.asyncio
-async def test_sdlc_guides_for_returns_python_guide_for_py_path():
+async def test_sdlc_guides_for_should_return_python_uri_for_py_path():
     """Test sdlc_guides_for resolves a Python source path to the python guide URI.
 
     Given:
@@ -266,7 +266,7 @@ async def test_sdlc_guides_for_returns_python_guide_for_py_path():
 
 
 @pytest.mark.asyncio
-async def test_sdlc_guides_for_returns_markdown_guide_for_md_path():
+async def test_sdlc_guides_for_should_return_markdown_uri_for_md_path():
     """Test sdlc_guides_for resolves a Markdown path to the markdown style guide.
 
     Given:
@@ -284,7 +284,7 @@ async def test_sdlc_guides_for_returns_markdown_guide_for_md_path():
 
 
 @pytest.mark.asyncio
-async def test_sdlc_guides_for_returns_empty_for_unmatched_path():
+async def test_sdlc_guides_for_should_return_empty_when_path_unmatched():
     """Test sdlc_guides_for returns an empty list when no pattern matches.
 
     Given:
@@ -302,7 +302,7 @@ async def test_sdlc_guides_for_returns_empty_for_unmatched_path():
 
 
 @pytest.mark.asyncio
-async def test_sdlc_guides_for_unions_across_paths():
+async def test_sdlc_guides_for_should_union_matches_across_paths():
     """Test sdlc_guides_for unions matches across multiple input paths.
 
     Given:
@@ -320,7 +320,7 @@ async def test_sdlc_guides_for_unions_across_paths():
 
 
 @pytest.mark.asyncio
-async def test_agents_md_returns_content():
+async def test_agents_md_should_return_file_content():
     """Test agents_md returns the AGENTS.md content.
 
     Given:
@@ -338,7 +338,7 @@ async def test_agents_md_returns_content():
 
 
 @pytest.mark.asyncio
-async def test_knowledge_graph_when_exists(monkeypatch, tmp_path):
+async def test_knowledge_graph_should_return_content_when_file_exists(monkeypatch, tmp_path):
     """Test knowledge_graph returns graph content when the file exists.
 
     Given:
@@ -363,7 +363,7 @@ async def test_knowledge_graph_when_exists(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_knowledge_graph_when_missing(monkeypatch, tmp_path):
+async def test_knowledge_graph_should_return_not_found_when_file_missing(monkeypatch, tmp_path):
     """Test knowledge_graph returns not-found message when file is missing.
 
     Given:

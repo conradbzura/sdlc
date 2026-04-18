@@ -15,7 +15,7 @@ from sdlc.guides import (
 )
 
 
-def test_load_package_default_returns_shipped_config():
+def test_load_package_default_should_return_shipped_config():
     """Test the shipped src/sdlc/config.json is loaded with expected structure.
 
     Given:
@@ -34,7 +34,7 @@ def test_load_package_default_returns_shipped_config():
     assert result["guide-map"]["style"]["**/*.md"] == ["markdown"]
 
 
-def test_load_user_config_returns_none_when_missing(tmp_path, monkeypatch):
+def test_load_user_config_should_return_none_when_file_and_env_missing(tmp_path, monkeypatch):
     """Test no user config is found when the conventional file is missing.
 
     Given:
@@ -54,7 +54,7 @@ def test_load_user_config_returns_none_when_missing(tmp_path, monkeypatch):
     assert result is None
 
 
-def test_load_user_config_reads_dot_sdlc_config(tmp_path, monkeypatch):
+def test_load_user_config_should_read_file_when_at_default_path(tmp_path, monkeypatch):
     """Test the conventional .sdlc/config.json path is read with its parent dir.
 
     Given:
@@ -80,7 +80,7 @@ def test_load_user_config_reads_dot_sdlc_config(tmp_path, monkeypatch):
     assert config_dir == sdlc_dir
 
 
-def test_load_user_config_honors_env_var(tmp_path, monkeypatch):
+def test_load_user_config_should_honor_env_var_when_set(tmp_path, monkeypatch):
     """Test SDLC_CONFIG env var takes precedence over the conventional path.
 
     Given:
@@ -111,7 +111,7 @@ def test_load_user_config_honors_env_var(tmp_path, monkeypatch):
     assert config_dir == custom_dir
 
 
-def test_load_user_config_raises_on_missing_env_path(tmp_path, monkeypatch):
+def test_load_user_config_should_raise_when_env_var_points_to_missing_file(tmp_path, monkeypatch):
     """Test SDLC_CONFIG pointing to a nonexistent file raises ValueError.
 
     Given:
@@ -129,7 +129,7 @@ def test_load_user_config_raises_on_missing_env_path(tmp_path, monkeypatch):
         load_user_config(tmp_path)
 
 
-def test_load_user_config_raises_on_malformed_json(tmp_path, monkeypatch):
+def test_load_user_config_should_raise_when_json_malformed(tmp_path, monkeypatch):
     """Test malformed JSON surfaces a clear error.
 
     Given:
@@ -150,7 +150,7 @@ def test_load_user_config_raises_on_malformed_json(tmp_path, monkeypatch):
         load_user_config(tmp_path)
 
 
-def test_load_user_config_raises_on_unknown_top_level_key(tmp_path, monkeypatch):
+def test_load_user_config_should_raise_when_top_level_key_unknown(tmp_path, monkeypatch):
     """Test unknown top-level keys are rejected.
 
     Given:
@@ -171,7 +171,7 @@ def test_load_user_config_raises_on_unknown_top_level_key(tmp_path, monkeypatch)
         load_user_config(tmp_path)
 
 
-def test_load_user_config_rejects_camel_case_with_hint(tmp_path, monkeypatch):
+def test_load_user_config_should_hint_kebab_case_when_key_is_camel_case(tmp_path, monkeypatch):
     """Test camelCase key variants are rejected with a helpful kebab-case hint.
 
     Given:
@@ -192,7 +192,7 @@ def test_load_user_config_rejects_camel_case_with_hint(tmp_path, monkeypatch):
         load_user_config(tmp_path)
 
 
-def test_load_user_config_rejects_non_string_guides_dir(tmp_path, monkeypatch):
+def test_load_user_config_should_raise_when_guides_dir_not_string(tmp_path, monkeypatch):
     """Test guides-dir must be a string.
 
     Given:
@@ -213,7 +213,7 @@ def test_load_user_config_rejects_non_string_guides_dir(tmp_path, monkeypatch):
         load_user_config(tmp_path)
 
 
-def test_load_user_config_rejects_unknown_kind(tmp_path, monkeypatch):
+def test_load_user_config_should_raise_when_guide_map_kind_unknown(tmp_path, monkeypatch):
     """Test guide-map can only contain 'test' or 'style' kinds.
 
     Given:
@@ -236,7 +236,7 @@ def test_load_user_config_rejects_unknown_kind(tmp_path, monkeypatch):
         load_user_config(tmp_path)
 
 
-def test_load_user_config_rejects_non_list_stems(tmp_path, monkeypatch):
+def test_load_user_config_should_raise_when_stems_not_a_list(tmp_path, monkeypatch):
     """Test pattern values must be lists of strings.
 
     Given:
@@ -259,7 +259,7 @@ def test_load_user_config_rejects_non_list_stems(tmp_path, monkeypatch):
         load_user_config(tmp_path)
 
 
-def test_merge_configs_with_no_user_returns_default_copy():
+def test_merge_configs_should_return_default_copy_when_user_is_none():
     """Test None user yields a value equal to the default config.
 
     Given:
@@ -279,7 +279,7 @@ def test_merge_configs_with_no_user_returns_default_copy():
     assert result == default
 
 
-def test_merge_configs_does_not_mutate_default():
+def test_merge_configs_should_not_mutate_default():
     """Test the merge does not mutate the input default dict.
 
     Given:
@@ -300,7 +300,7 @@ def test_merge_configs_does_not_mutate_default():
     assert default == {"guide-map": {"test": {"**/*.py": ["python"]}}}
 
 
-def test_merge_configs_user_guides_dir_overrides_default():
+def test_merge_configs_should_override_guides_dir_when_user_provides_it():
     """Test guides-dir from user replaces the default value.
 
     Given:
@@ -321,7 +321,7 @@ def test_merge_configs_user_guides_dir_overrides_default():
     assert result["guides-dir"] == "b"
 
 
-def test_merge_configs_adds_pattern_to_existing_namespace():
+def test_merge_configs_should_add_user_pattern_to_existing_namespace():
     """Test user pattern is added alongside default patterns in same namespace.
 
     Given:
@@ -345,7 +345,7 @@ def test_merge_configs_adds_pattern_to_existing_namespace():
     }
 
 
-def test_merge_configs_user_pattern_replaces_same_default_pattern():
+def test_merge_configs_should_replace_default_when_user_pattern_key_matches():
     """Test same pattern key in user replaces the default value.
 
     Given:
@@ -366,7 +366,7 @@ def test_merge_configs_user_pattern_replaces_same_default_pattern():
     assert result["guide-map"]["test"]["**/*.py"] == ["custom"]
 
 
-def test_merge_configs_unmentioned_namespace_passes_through():
+def test_merge_configs_should_preserve_default_namespace_when_user_omits_it():
     """Test default namespaces not mentioned in user config are preserved.
 
     Given:
@@ -392,7 +392,7 @@ def test_merge_configs_unmentioned_namespace_passes_through():
     assert result["guide-map"]["style"] == {"**/*.md": ["markdown"]}
 
 
-def test_merge_configs_empty_list_disables_default_pattern():
+def test_merge_configs_should_disable_pattern_when_user_stems_empty():
     """Test user setting a pattern to [] disables guides for that pattern.
 
     Given:
@@ -413,7 +413,7 @@ def test_merge_configs_empty_list_disables_default_pattern():
     assert result["guide-map"]["test"]["**/*.py"] == []
 
 
-def test_merge_configs_adds_new_namespace_not_in_default():
+def test_merge_configs_should_add_namespace_when_user_introduces_it():
     """Test user introducing a namespace absent from default is included.
 
     Given:
@@ -434,7 +434,7 @@ def test_merge_configs_adds_new_namespace_not_in_default():
     assert result["guide-map"]["style"] == {"**/*.md": ["markdown"]}
 
 
-def test_discover_guides_finds_bundled_only(tmp_path):
+def test_discover_guides_should_find_bundled_only_when_no_user_dir(tmp_path):
     """Test bundled guides are discovered when no user dir exists.
 
     Given:
@@ -459,7 +459,7 @@ def test_discover_guides_finds_bundled_only(tmp_path):
     assert result[("test", "python")] == pkg / "test-guides" / "python.md"
 
 
-def test_discover_guides_merges_user_guides_at_convention_path(tmp_path):
+def test_discover_guides_should_merge_user_guides_at_convention_path(tmp_path):
     """Test user guides at the default .sdlc/guides/ convention path are discovered.
 
     Given:
@@ -486,7 +486,7 @@ def test_discover_guides_merges_user_guides_at_convention_path(tmp_path):
     assert ("test", "pytest-patterns") in result
 
 
-def test_discover_guides_user_overrides_bundled_on_collision(tmp_path):
+def test_discover_guides_should_prefer_user_when_stems_collide(tmp_path):
     """Test a user guide with the same stem replaces the bundled one.
 
     Given:
@@ -513,7 +513,7 @@ def test_discover_guides_user_overrides_bundled_on_collision(tmp_path):
     assert result[("test", "python")].read_text() == "user"
 
 
-def test_discover_guides_resolves_guides_dir_relative_to_config_dir(tmp_path):
+def test_discover_guides_should_resolve_guides_dir_relative_to_config_dir(tmp_path):
     """Test guides-dir is resolved relative to user_config_dir, not cwd.
 
     Given:
@@ -541,7 +541,7 @@ def test_discover_guides_resolves_guides_dir_relative_to_config_dir(tmp_path):
     assert result[("test", "python")].read_text() == "custom location"
 
 
-def test_discover_guides_warns_on_missing_user_dir(tmp_path, recwarn):
+def test_discover_guides_should_warn_when_guides_dir_missing(tmp_path, recwarn):
     """Test a missing configured guides-dir surfaces a warning.
 
     Given:
@@ -565,7 +565,7 @@ def test_discover_guides_warns_on_missing_user_dir(tmp_path, recwarn):
     assert any("nope" in str(w.message) for w in recwarn)
 
 
-def test_resolve_guides_with_single_match(tmp_path):
+def test_resolve_guides_should_return_stems_when_single_pattern_matches(tmp_path):
     """Test a single matching pattern returns its mapped stems.
 
     Given:
@@ -586,7 +586,7 @@ def test_resolve_guides_with_single_match(tmp_path):
     assert result == ["python"]
 
 
-def test_resolve_guides_with_multi_match_unions_stems(tmp_path):
+def test_resolve_guides_should_union_stems_when_multiple_patterns_match(tmp_path):
     """Test multiple matching patterns union their stems with no duplicates.
 
     Given:
@@ -615,7 +615,7 @@ def test_resolve_guides_with_multi_match_unions_stems(tmp_path):
     assert sorted(result) == ["pytest", "python"]
 
 
-def test_resolve_guides_with_no_match_returns_empty(tmp_path):
+def test_resolve_guides_should_return_empty_when_no_pattern_matches(tmp_path):
     """Test no matching pattern yields an empty list.
 
     Given:
@@ -636,7 +636,7 @@ def test_resolve_guides_with_no_match_returns_empty(tmp_path):
     assert result == []
 
 
-def test_resolve_guides_skips_undiscovered_stems(tmp_path):
+def test_resolve_guides_should_skip_undiscovered_stems(tmp_path):
     """Test stems referenced in the map but missing from discovered are skipped.
 
     Given:
@@ -657,7 +657,7 @@ def test_resolve_guides_skips_undiscovered_stems(tmp_path):
     assert result == ["python"]
 
 
-def test_resolve_guides_handles_extensionless_filenames(tmp_path):
+def test_resolve_guides_should_match_extensionless_filenames(tmp_path):
     """Test patterns can match files without extensions.
 
     Given:
@@ -678,7 +678,7 @@ def test_resolve_guides_handles_extensionless_filenames(tmp_path):
     assert result == ["docker"]
 
 
-def test_resolve_guides_handles_directory_scoped_patterns(tmp_path):
+def test_resolve_guides_should_scope_matches_to_directory_patterns(tmp_path):
     """Test directory-scoped patterns match only paths under that directory.
 
     Given:
@@ -701,7 +701,7 @@ def test_resolve_guides_handles_directory_scoped_patterns(tmp_path):
     assert out_of_tests == []
 
 
-def test_resolve_guides_with_unknown_kind_returns_empty(tmp_path):
+def test_resolve_guides_should_return_empty_when_kind_unknown(tmp_path):
     """Test querying an unknown kind yields an empty list.
 
     Given:
@@ -722,7 +722,7 @@ def test_resolve_guides_with_unknown_kind_returns_empty(tmp_path):
     assert result == []
 
 
-def test_resolve_guides_with_empty_stem_list_returns_no_guides(tmp_path):
+def test_resolve_guides_should_return_empty_when_stems_list_empty(tmp_path):
     """Test a pattern mapped to [] yields no stems even on match.
 
     Given:
@@ -743,7 +743,7 @@ def test_resolve_guides_with_empty_stem_list_returns_no_guides(tmp_path):
     assert result == []
 
 
-def test_resolve_guides_unions_across_multiple_paths(tmp_path):
+def test_resolve_guides_should_union_matches_across_multiple_paths(tmp_path):
     """Test the path argument is treated as a union — any matching path counts.
 
     Given:
@@ -775,7 +775,7 @@ def test_resolve_guides_unions_across_multiple_paths(tmp_path):
     assert sorted(result) == ["pytest", "python"]
 
 
-def test_read_guide_returns_file_content(tmp_path):
+def test_read_guide_should_return_file_content_when_stem_known(tmp_path):
     """Test a discovered guide returns its file content.
 
     Given:
@@ -797,7 +797,7 @@ def test_read_guide_returns_file_content(tmp_path):
     assert result == "# Hello"
 
 
-def test_read_guide_returns_error_for_unknown_stem():
+def test_read_guide_should_return_error_when_stem_unknown():
     """Test an unknown (kind, stem) returns an error message.
 
     Given:
@@ -815,7 +815,7 @@ def test_read_guide_returns_error_for_unknown_stem():
     assert "not found" in result.lower()
 
 
-def test_load_state_with_no_user_config_uses_package_default(tmp_path, monkeypatch):
+def test_load_state_should_use_package_default_when_no_user_config(tmp_path, monkeypatch):
     """Test load_state with no user config falls back to the package default map.
 
     Given:
@@ -836,7 +836,7 @@ def test_load_state_with_no_user_config_uses_package_default(tmp_path, monkeypat
     assert state.guide_map["style"]["**/*.md"] == ["markdown"]
 
 
-def test_load_state_with_user_config_merges(tmp_path, monkeypatch):
+def test_load_state_should_merge_user_config_into_default(tmp_path, monkeypatch):
     """Test load_state merges user config on top of package default.
 
     Given:
@@ -864,7 +864,7 @@ def test_load_state_with_user_config_merges(tmp_path, monkeypatch):
     assert state.guide_map["test"]["tests/**/*.py"] == ["pytest-patterns"]
 
 
-def test_load_state_discovers_bundled_guides(tmp_path, monkeypatch):
+def test_load_state_should_discover_bundled_guides(tmp_path, monkeypatch):
     """Test the state's discovered map includes the package-bundled guides.
 
     Given:
