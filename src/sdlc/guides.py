@@ -205,12 +205,13 @@ def _validate_schema(data: object, path: Path) -> None:
         raise ValueError(f"{path}: top-level must be a JSON object")
     unknown = set(data.keys()) - ALLOWED_TOP_LEVEL_KEYS
     if unknown:
-        for bad in unknown:
-            if bad in CAMEL_CASE_HINTS:
-                raise ValueError(
-                    f"{path}: unknown key '{bad}' — did you mean "
-                    f"'{CAMEL_CASE_HINTS[bad]}'? (config uses kebab-case)"
-                )
+        hint_matches = sorted(unknown & CAMEL_CASE_HINTS.keys())
+        if hint_matches:
+            bad = hint_matches[0]
+            raise ValueError(
+                f"{path}: unknown key '{bad}' — did you mean "
+                f"'{CAMEL_CASE_HINTS[bad]}'? (config uses kebab-case)"
+            )
         raise ValueError(
             f"{path}: unknown top-level keys: {sorted(unknown)} "
             f"(allowed: {sorted(ALLOWED_TOP_LEVEL_KEYS)})"
