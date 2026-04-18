@@ -19,24 +19,26 @@ Test behavior, not implementation.
 
 ### 3. Test Naming
 
-Test methods mirror the qualified name of their subject:
+Test names use a BDD-style pattern that names both the behavior and the scenario:
 
 ```
-test_<method_name>_<brief_scenario>
+test_<method_name>_should_<expected_outcome>[_when_<condition>]
 ```
 
-The scenario portion is derived from the Given and When — it describes the condition and action, not the expected outcome:
+The `should_<outcome>` clause describes the observable behavior being verified (the docstring's `Then`). The optional `when_<condition>` clause describes the scenario that triggers it (the docstring's `Given` + `When`). Omit `when_` only when the test covers a single canonical scenario and the condition would add no information.
 
 ```
-test_dispatch_with_stopping_service
-test_to_protobuf_with_unpicklable_callable
-test___init___outside_task_context
+test_dispatch_should_raise_when_service_stopping
+test_to_protobuf_should_raise_when_callable_unpicklable
+test___init___should_succeed_outside_task_context
+test_load_package_default_should_return_shipped_config
 ```
 
 Rules:
 - `<method_name>` MUST match the method's `__name__` exactly, including dunder prefixes (e.g., `test___init___...`).
-- `<brief_scenario>` SHOULD be 2-5 words in snake_case.
-- Do NOT encode the expected outcome in the name — that belongs in the `Then` section of the docstring.
+- `<expected_outcome>` MUST be a short verb phrase describing observable behavior — `return_none`, `raise`, `emit_event`, `honor_env_var`. Use imperative present tense; MUST NOT use past tense or gerunds (`returned_none`, `raising`).
+- `<condition>` SHOULD be 2-5 words in snake_case describing the preconditions.
+- The test body MUST actually verify the behavior the name claims — drift between name and assertion is worse than either convention alone.
 
 ### 4. Docstrings (Given-When-Then)
 
