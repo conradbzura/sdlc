@@ -63,7 +63,7 @@ The stem is the filename without `.md`. Each discovered guide is exposed at `sdl
 ```
 
 - `guides-dir` — path to a directory containing `test/` and/or `style/` subdirs of `*.md` guides. Resolved relative to the config file's parent directory. Defaults to the convention path `<cwd>/.sdlc/guides`.
-- `guide-map` — namespace-split map (`test` / `style`). Each namespace maps glob patterns (gitignore-style) to lists of guide stems. A file picks up the union of guides from every pattern it matches in the requested namespace. Patterns can target extensionless files (`Dockerfile`), directory-scoped paths (`tests/**/*.py`), or any gitignore-compatible expression.
+- `guide-map` — namespace-split map (`test` / `style`). Each namespace maps glob patterns to lists of guide stems. A file picks up the union of guides from every pattern it matches in the requested namespace. Patterns are matched via [`pathlib.PurePath.full_match`](https://docs.python.org/3/library/pathlib.html#pathlib.PurePath.full_match) against the full relative path — see the Python docs for exact semantics. `**` matches any number of path components, so `**/*.py` matches Python files at any depth and `tests/**/*.py` matches them only under `tests/`. Bare patterns like `Dockerfile` are anchored to the root; use `**/Dockerfile` to match at any depth.
 
 ### Resolution order
 
