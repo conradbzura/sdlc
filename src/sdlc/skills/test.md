@@ -52,13 +52,7 @@ This skill is part of the development workflow pipeline: `issue` → `implement`
 
 An issue number MUST be provided as the sole argument (e.g., `test` with issue #103).
 
-> **Test guide:** Determine the language of the changed source files from their file extensions, then read the corresponding test guide before generating test specifications:
->
-> | Language | Guide |
-> |----------|-------|
-> | Python (`.py`) | MCP resource `sdlc://guides/test/python` |
->
-> If no guide exists for the detected language, inform the user and stop.
+> **Test guides:** Resolve the applicable test guides for the changed source files by calling the `sdlc_guides_for` MCP tool with the changed file paths and `kind="test"`. The tool returns a list of `sdlc://guides/test/{stem}` URIs derived from the configured glob map (see `sdlc://config/default` for the package defaults; project-level overrides live in `.sdlc/config.json`). Read every returned URI before generating test specifications. If the tool returns an empty list, no test guide applies — inform the user and stop.
 
 ## Subagent Execution (Optional)
 
