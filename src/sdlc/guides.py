@@ -13,9 +13,7 @@ import json
 import os
 import warnings
 from dataclasses import dataclass
-from pathlib import Path
-
-import pathspec
+from pathlib import Path, PurePath
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = PACKAGE_DIR / "config.json"
@@ -136,8 +134,7 @@ def resolve_guides(
     seen: set[str] = set()
     result: list[str] = []
     for pattern, stems in namespace.items():
-        spec = pathspec.PathSpec.from_lines("gitignore", [pattern])
-        if not any(spec.match_file(p) for p in paths):
+        if not any(PurePath(p).full_match(pattern) for p in paths):
             continue
         for stem in stems:
             if (kind, stem) in discovered and stem not in seen:

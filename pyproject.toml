@@ -7,11 +7,10 @@ name = "sdlc-mcp"
 version = "2026.4.17.0"
 description = "SDLC pipeline for LLM agents, served as an MCP server"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 license = "MIT"
 dependencies = [
     "mcp[cli]>=1.0.0",
-    "pathspec>=0.12.0",
 ]
 
 [project.scripts]
