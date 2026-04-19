@@ -95,10 +95,10 @@ If the PR does not exist, inform the user and stop. Parse the PR title, body, br
 MUST read the following files to establish the review baseline:
 
 - `AGENTS.md` — project-level instructions, architecture context, docstring conventions.
-- Read the MCP resource `sdlc://guides/test/python` — Python testing conventions (if the PR touches test files).
-- Read every MCP resource matching `sdlc://guides/style/*` — active authoring conventions.
+- Resolve applicable test guides by calling `sdlc_guides_for` with the changed test-file paths and `kind="test"`. Read every returned URI.
+- Resolve applicable style guides by calling `sdlc_guides_for` with the changed file paths and `kind="style"`. Read every returned URI.
 
-Only the guides relevant to the changed files need to be read. For example, the test guide is only needed if the PR modifies or adds test files.
+Only the guides relevant to the changed files are returned by the resolver — no manual filtering required. If `sdlc_guides_for` returns an empty list for a kind, no guide of that kind applies to the diff.
 
 ### 4. Read source files under review
 

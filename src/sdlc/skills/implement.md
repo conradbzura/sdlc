@@ -171,7 +171,7 @@ Before entering planning phase, MUST read enough of the codebase to plan confide
 - MUST check whether `.understand-anything/knowledge-graph.json` exists. If it does, MUST use the `understand-chat` skill with a query synthesized from the issue title and body to gather architectural context — component summaries, relationships, and layer assignments — that informs the planning phase by revealing which files, components, and layers are relevant to the issue. If the graph does not exist, skip this bullet and continue.
 - MUST read source files referenced in the issue's description.
 - MUST read existing tests for the affected modules.
-- MUST read the MCP resource `sdlc://guides/test/python` to internalize Python testing conventions.
+- MUST resolve applicable test guides by calling `sdlc_guides_for` with the candidate or referenced source-file paths and `kind="test"`, then read every returned URI to internalize the relevant testing conventions.
 - MUST read project-level instructions (`AGENTS.md`) for build tooling, documentation style, and architecture context.
 
 ### 7. Enter planning phase
@@ -180,7 +180,7 @@ The execution plan must be presented to the user for approval. It:
 
 - MUST map the issue's requirements (or unresolved review comments, on re-invocation) to concrete code changes: exact files, functions, classes, and the nature of each modification.
 - SHOULD prefer test-first ordering when applicable.
-- MUST follow the testing conventions in the Python test guide (MCP resource `sdlc://guides/test/python`). Test case IDs (e.g., WC-001, VP-001) MUST NOT be assigned — the docstring provides sufficient traceability without the maintenance burden of cross-PR ID schemes.
+- MUST follow the testing conventions in the test guides resolved via `sdlc_guides_for` (kind=`test`). Test case IDs (e.g., WC-001, VP-001) MUST NOT be assigned — the docstring provides sufficient traceability without the maintenance burden of cross-PR ID schemes.
 - MUST include a verification section with the exact command(s) to run the test suite (see the project test guide for the runner command).
 
 ### 8. Execute after approval

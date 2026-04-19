@@ -1,0 +1,10 @@
+{
+  "guide-map": {
+    "test": {
+      "**/*.py": ["python"]
+    },
+    "style": {
+      "**/*.md": ["markdown"]
+    }
+  }
+}
