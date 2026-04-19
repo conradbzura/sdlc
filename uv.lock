@@ -597,7 +597,7 @@ wheels = [
 
 [[package]]
 name = "sdlc-mcp"
-version = "2026.4.17.0"
+version = "2026.4.19.0"
 source = { editable = "." }
 dependencies = [
     { name = "mcp", extra = ["cli"] },
