@@ -13,7 +13,7 @@ Each tool returns the full workflow instructions for its pipeline stage. The LLM
 | Tool | Stage | Purpose |
 |------|-------|---------|
 | `sdlc_issue` | 1st | Draft and push a GitHub issue |
-| `sdlc_implement` | 2nd | Implement a GitHub issue with planning and code changes |
+| `sdlc_implement` | 2nd | Implement a GitHub issue, continue an in-progress PR, or address PR review feedback |
 | `sdlc_test` | 3rd | Analyze coverage and write comprehensive tests |
 | `sdlc_commit` | 4th | Stage and commit changes with atomic commits |
 | `sdlc_pr` | 5th | Review changes and create a draft pull request |
@@ -21,7 +21,7 @@ Each tool returns the full workflow instructions for its pipeline stage. The LLM
 | `sdlc_understand_chat` | — | Query the codebase knowledge graph |
 | `sdlc_guides_for` | — | Resolve which test or style guides apply to a list of file paths |
 
-The `implement`, `test`, and `commit` tools are iterative — they can be invoked multiple times for a given issue to address PR feedback or refine implementation.
+The `implement`, `test`, and `commit` tools are iterative — they can be invoked multiple times for a given issue to address PR feedback or refine implementation. `sdlc_implement` accepts either an issue number or a PR number and dispatches between three sibling skill prompts based on PR state: `implement` (fresh start, no PR yet), `implement-continue` (PR exists, no review feedback yet), and `implement-feedback` (PR has unresolved review threads or review-body comments).
 
 ### MCP Resources
 
@@ -139,11 +139,14 @@ sdlc/
     ├── __main__.py
     ├── server.py                    ← FastMCP server, tools, resources
     ├── guides.py                    ← Config loader, guide discovery, resolver
+    ├── pr_state.py                  ← gh wrappers and PR-state dispatch for sdlc_implement
     ├── config.json                  ← Package-default config (guide-map)
     ├── AGENTS.md                    ← you are here (canonical)
     ├── skills/                      ← Canonical skill definitions (read by server)
     │   ├── issue.md
     │   ├── implement.md
+    │   ├── implement-continue.md
+    │   ├── implement-feedback.md
     │   ├── test.md
     │   ├── commit.md
     │   ├── pr.md
