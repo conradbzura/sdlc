@@ -5,7 +5,7 @@ from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from sdlc import guides
+from sdlc import guides, pr_state
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 SKILLS_DIR = PACKAGE_DIR / "skills"
@@ -59,19 +59,43 @@ async def sdlc_issue(context: str | None = None) -> str:
 
 
 @mcp.tool()
-async def sdlc_implement(issue_number: int) -> str:
-    """Implement a GitHub issue with planning and code changes.
+async def sdlc_implement(number: int) -> str:
+    """Implement a GitHub issue or address feedback on an open PR.
 
     Use when the user says "implement", "implement #N", or similar.
-    Fetches the issue, creates a branch, gathers context, and enters
-    planning phase before writing code. On re-invocation after a PR
-    exists, addresses unresolved review feedback.
+    Pass an issue number for a fresh start; pass a PR number to continue
+    work on an in-progress PR or to address unresolved review feedback.
+
+    The endpoint inspects the GitHub state for ``number`` and returns one
+    of three skill prompts: the fresh-implementation prompt, the
+    continue-on-existing-branch prompt, or the PR-feedback-remediation
+    prompt. If ``gh`` is unavailable, falls back to the fresh prompt with
+    a diagnostic note.
 
     Args:
-        issue_number: The GitHub issue number to implement.
+        number: An issue number or an open PR number.
     """
-    skill = _read_skill("implement")
-    return f"{skill}\n---\n\nTarget issue: #{issue_number}"
+    try:
+        state = pr_state.dispatch(number)
+    except pr_state.GhUnavailable as exc:
+        skill = _read_skill("implement")
+        return (
+            f"{skill}\n---\n\nTarget: #{number}\n\n"
+            f"<!-- diagnostic: PR state could not be determined ({exc}); "
+            "falling back to fresh-implementation prompt. -->"
+        )
+    if state is None:
+        skill = _read_skill("implement")
+        return f"{skill}\n---\n\nTarget issue: #{number}"
+    if isinstance(state, pr_state.Findings):
+        skill = _read_skill("implement-feedback")
+        return f"{skill}\n---\n\nTarget: #{number}\n{state.format()}"
+    skill = _read_skill("implement-continue")
+    return (
+        f"{skill}\n---\n\n"
+        f"Target PR: #{state.pr_number} ({state.url})\n"
+        f"Branch: {state.head_ref}"
+    )
 
 
 @mcp.tool()
