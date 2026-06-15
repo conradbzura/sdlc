@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from sdlc import pr_state
+from sdlc.pr_state import Finding, Findings, GhUnavailable, PrContext
 from sdlc.server import (
     agents_md,
     get_default_config,
@@ -60,22 +62,114 @@ async def test_sdlc_issue_should_append_context_when_provided():
 
 
 @pytest.mark.asyncio
-async def test_sdlc_implement_should_interpolate_issue_number():
-    """Test sdlc_implement returns skill content with interpolated issue number.
+async def test_sdlc_implement_with_no_pr(monkeypatch):
+    """Test sdlc_implement returns the fresh skill when no PR is linked.
 
     Given:
-        An issue number.
+        pr_state.dispatch returns None for the given number.
     When:
-        sdlc_implement(issue_number=42) is called.
+        sdlc_implement(number=42) is called.
     Then:
-        It should return implement skill content with #42 appended.
+        It should return the fresh implement skill with #42 appended.
     """
+    # Arrange
+    monkeypatch.setattr(pr_state, "dispatch", lambda number: None)
+
     # Act
-    result = await sdlc_implement(issue_number=42)
+    result = await sdlc_implement(number=42)
 
     # Assert
     assert "# Implement Skill" in result
+    assert "# Implement Continue Skill" not in result
+    assert "# Implement Feedback Skill" not in result
     assert "#42" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_implement_with_no_feedback_pr(monkeypatch):
+    """Test sdlc_implement returns the continue skill for a PR with no feedback.
+
+    Given:
+        pr_state.dispatch returns a PrContext for the given number.
+    When:
+        sdlc_implement(number=42) is called.
+    Then:
+        It should return the continue skill with the PR metadata appended.
+    """
+    # Arrange
+    context = PrContext(pr_number=42, head_ref="feature-x", url="https://example/pr/42")
+    monkeypatch.setattr(pr_state, "dispatch", lambda number: context)
+
+    # Act
+    result = await sdlc_implement(number=42)
+
+    # Assert
+    assert "# Implement Continue Skill" in result
+    assert "feature-x" in result
+    assert "https://example/pr/42" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_implement_with_findings(monkeypatch):
+    """Test sdlc_implement returns the feedback skill when findings exist.
+
+    Given:
+        pr_state.dispatch returns a Findings instance for the given number.
+    When:
+        sdlc_implement(number=42) is called.
+    Then:
+        It should return the feedback skill with formatted findings appended.
+    """
+    # Arrange
+    findings = Findings(
+        pr_number=42,
+        head_ref="feature-x",
+        url="https://example/pr/42",
+        findings=[
+            Finding(
+                kind="review_thread",
+                path="src/sdlc/server.py",
+                line=64,
+                body="rename foo to bar",
+                author="alice",
+            ),
+        ],
+    )
+    monkeypatch.setattr(pr_state, "dispatch", lambda number: findings)
+
+    # Act
+    result = await sdlc_implement(number=42)
+
+    # Assert
+    assert "# Implement Feedback Skill" in result
+    assert "src/sdlc/server.py:64" in result
+    assert "rename foo to bar" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_implement_when_gh_unavailable(monkeypatch):
+    """Test sdlc_implement falls back to the fresh skill when gh is unavailable.
+
+    Given:
+        pr_state.dispatch raises GhUnavailable.
+    When:
+        sdlc_implement(number=42) is called.
+    Then:
+        It should return the fresh skill with a diagnostic comment appended.
+    """
+    # Arrange
+    def raise_unavailable(_number):
+        raise GhUnavailable("gh executable not found on PATH")
+
+    monkeypatch.setattr(pr_state, "dispatch", raise_unavailable)
+
+    # Act
+    result = await sdlc_implement(number=42)
+
+    # Assert
+    assert "# Implement Skill" in result
+    assert "diagnostic" in result
+    assert "gh executable not found" in result
 
 
 @pytest.mark.asyncio

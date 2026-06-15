@@ -109,10 +109,13 @@ sdlc/
         ├── __init__.py             # Package entry point
         ├── __main__.py             # python -m sdlc support
         ├── server.py               # FastMCP server, tool & resource registrations
+        ├── pr_state.py             # gh wrappers and PR-state dispatch for sdlc_implement
         ├── AGENTS.md               # Technical reference for agent implementations
         ├── skills/                 # Canonical skill definitions (read by server)
         │   ├── issue.md
         │   ├── implement.md
+        │   ├── implement-continue.md
+        │   ├── implement-feedback.md
         │   ├── test.md
         │   ├── commit.md
         │   ├── pr.md
@@ -129,7 +132,7 @@ sdlc/
 | Tool | Purpose |
 |------|---------|
 | `sdlc_issue` | Draft and push a GitHub issue |
-| `sdlc_implement` | Implement a GitHub issue with planning and code changes |
+| `sdlc_implement` | Implement a GitHub issue, continue an in-progress PR, or address PR review feedback |
 | `sdlc_test` | Analyze coverage and write comprehensive tests |
 | `sdlc_commit` | Stage and commit changes with atomic commits |
 | `sdlc_pr` | Review changes and create a draft pull request |
