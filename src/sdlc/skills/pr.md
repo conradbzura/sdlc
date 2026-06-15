@@ -29,7 +29,7 @@ This skill is part of the development workflow pipeline: `issue` → `implement`
 - MUST always create the PR as a draft -- never mark it ready for review automatically.
 - MUST NOT create the PR until the user explicitly approves the description.
 - MUST match the PR title exactly to the issue title with ` — Closes #<number>` appended.
-- MUST describe the net `<base>..HEAD` diff in the PR body, where `<base>` is the PR's base branch (discoverable via `gh pr view <number> --json baseRefName`), not the sequence of changes across the PR's commits. If a file, block, or behavior was added and later removed within the same PR (e.g., via fixup rebase or interactive history rewriting), it MUST NOT appear in the description — from the base branch's perspective it never existed.
+- MUST describe the net `<base>..HEAD` diff in the PR body, where `<base>` is the resolved base branch, not the sequence of changes across the PR's commits. `<base>` is resolved by precedence (see step 3): a `Target branch override: <target>` directive when present, otherwise the existing PR's base branch (`gh pr view <number> --json baseRefName`) when a PR exists, otherwise the repo default branch resolved via `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name`. There is no literal `main` fallback. If a file, block, or behavior was added and later removed within the same PR (e.g., via fixup rebase or interactive history rewriting), it MUST NOT appear in the description — from the base branch's perspective it never existed.
 - MUST use a heredoc for the `gh pr create` body to avoid shell escaping issues.
 - MUST structure the PR description according to the project's PR template if one exists, otherwise the built-in format defined in this document.
 - MUST assign the PR to the current user upon creation via `gh pr edit <number> --add-assignee @me`.
@@ -37,7 +37,9 @@ This skill is part of the development workflow pipeline: `issue` → `implement`
 
 ## Arguments
 
-An issue number MUST be provided as the sole argument (e.g., `pr` with issue #103). The issue number is used to identify the branch (`<number>-<kebab-case-summary>`) and to link the PR via `Closes #<number>`.
+An issue number MUST be provided (e.g., `pr` with issue #103). The issue number is used to identify the branch (`<number>-<kebab-case-summary>`) and to link the PR via `Closes #<number>`.
+
+An optional `target` branch MAY be provided to override the PR base. When set, the tool output carries a `Target branch override: <target>` directive and the PR MUST be based against `<target>` instead of the existing PR base or resolved repo default (see step 3 and step 7).
 
 ## Subagent Execution (Optional)
 
@@ -110,10 +112,27 @@ If a PR already exists, this is an update — the description will be edited rat
 
 ### 3. Review the branch diff
 
-Determine the base and diff against it:
+Resolve the base branch `<base>` before diffing. Precedence:
+
+1. **Target branch override** — when a `Target branch override: <target>` directive is present in the tool output, `<base>` MUST be `<target>`.
+2. **Existing PR base** — otherwise, when a PR already exists (detected in step 2), `<base>` MUST be that PR's base branch:
+
+   ```bash
+   gh pr view <number> --repo <target-repo> --json baseRefName --jq .baseRefName
+   ```
+
+3. **Repo default** — otherwise `<base>` MUST be the repository's default branch, resolved dynamically:
+
+   ```bash
+   gh repo view --json defaultBranchRef --jq .defaultBranchRef.name
+   ```
+
+There is no literal `main` fallback — the base MUST always resolve to an override, an existing PR base, or the `gh`-resolved default branch.
+
+Then diff against the resolved base:
 
 ```bash
-git merge-base HEAD $(git rev-parse --abbrev-ref @{upstream} 2>/dev/null || echo main)
+git merge-base HEAD <base>
 git log <merge-base>..HEAD --oneline
 git diff <merge-base>..HEAD
 git diff <merge-base>..HEAD --stat
@@ -186,10 +205,10 @@ git push -u origin <branch-name>
 
 **Creating a new PR:**
 
-A heredoc MUST be used for the body to avoid shell escaping issues:
+A heredoc MUST be used for the body to avoid shell escaping issues. The `--base <base>` flag MUST be passed so the PR targets the same branch the diff was computed against in step 3:
 
 ```bash
-gh pr create --draft --title "<title>" --body "$(cat <<'EOF'
+gh pr create --draft --base <base> --title "<title>" --body "$(cat <<'EOF'
 <body>
 EOF
 )"

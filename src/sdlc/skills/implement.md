@@ -49,7 +49,9 @@ This skill is part of the development workflow pipeline: `issue` → `implement`
 
 ## Arguments
 
-An issue number MUST be provided as the sole argument (e.g., `implement` with issue #103). The MCP endpoint routes PR numbers to sibling skills; if this skill is reached, the supplied number is an issue with no linked PR.
+An issue number MUST be provided (e.g., `implement` with issue #103). The MCP endpoint routes PR numbers to sibling skills; if this skill is reached, the supplied number is an issue with no linked PR.
+
+An optional `target` branch MAY be provided to override the branch the new branch is created from. When set, the tool output carries a `Target branch override: <target>` directive and the new branch MUST be created from `<target>` instead of the resolved repo default (see step 4).
 
 ## Subagent Execution (Optional)
 
@@ -115,8 +117,19 @@ Examples:
 
 The branch name MUST be under 50 characters. Filler words SHOULD be stripped.
 
+Resolve the branch to create from before checking out. Precedence:
+
+1. **Target branch override** — when a `Target branch override: <target>` directive is present in the tool output, the new branch MUST be created from `<target>`.
+2. **Repo default** — otherwise the new branch MUST be created from the repository's default branch, resolved dynamically:
+
+   ```bash
+   gh repo view --json defaultBranchRef --jq .defaultBranchRef.name
+   ```
+
+There is no literal `main` fallback — the default branch MUST always be resolved via `gh`.
+
 ```bash
-git checkout -b <branch-name> main
+git checkout -b <branch-name> <resolved-base>
 ```
 
 If the branch already exists, the user MUST be asked whether to switch to it or recreate it.
