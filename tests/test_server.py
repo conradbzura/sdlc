@@ -173,6 +173,49 @@ async def test_sdlc_implement_when_gh_unavailable(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_sdlc_implement_should_omit_target_directive_when_no_target(monkeypatch):
+    """Test sdlc_implement omits the override directive when no target is given.
+
+    Given:
+        pr_state.dispatch returns None and no target argument is provided.
+    When:
+        sdlc_implement(number=42) is called.
+    Then:
+        It should return fresh implement skill content without an override directive.
+    """
+    # Arrange
+    monkeypatch.setattr(pr_state, "dispatch", lambda number: None)
+
+    # Act
+    result = await sdlc_implement(number=42)
+
+    # Assert
+    assert "Branch from / base against this branch" not in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_implement_should_append_target_directive_when_target_given(monkeypatch):
+    """Test sdlc_implement appends the override directive when a target is given.
+
+    Given:
+        pr_state.dispatch returns None and a target branch of "stable".
+    When:
+        sdlc_implement(number=42, target="stable") is called.
+    Then:
+        It should return content with the override directive naming "stable".
+    """
+    # Arrange
+    monkeypatch.setattr(pr_state, "dispatch", lambda number: None)
+
+    # Act
+    result = await sdlc_implement(number=42, target="stable")
+
+    # Assert
+    assert "Target branch override: stable" in result
+    assert "Branch from / base against this branch" in result
+
+
+@pytest.mark.asyncio
 async def test_sdlc_test_should_interpolate_issue_number():
     """Test sdlc_test returns skill content with interpolated issue number.
 
@@ -226,6 +269,43 @@ async def test_sdlc_pr_should_interpolate_issue_number():
     # Assert
     assert "# PR Skill" in result
     assert "#42" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_pr_should_omit_target_directive_when_no_target():
+    """Test sdlc_pr omits the override directive when no target is given.
+
+    Given:
+        No target argument.
+    When:
+        sdlc_pr(issue_number=42) is called.
+    Then:
+        It should return pr skill content without an override directive.
+    """
+    # Act
+    result = await sdlc_pr(issue_number=42)
+
+    # Assert
+    assert "Branch from / base against this branch" not in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_pr_should_append_target_directive_when_target_given():
+    """Test sdlc_pr appends the override directive when a target is given.
+
+    Given:
+        A target branch of "master".
+    When:
+        sdlc_pr(issue_number=42, target="master") is called.
+    Then:
+        It should return content with the override directive naming "master".
+    """
+    # Act
+    result = await sdlc_pr(issue_number=42, target="master")
+
+    # Assert
+    assert "Target branch override: master" in result
+    assert "Branch from / base against this branch" in result
 
 
 @pytest.mark.asyncio
