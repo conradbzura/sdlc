@@ -40,6 +40,20 @@ def _read_file(path: Path) -> str:
     return path.read_text()
 
 
+def _target_branch_directive(target: str) -> str:
+    """Render the target-branch-override directive for a resolved target.
+
+    The wording is byte-identical across `sdlc_implement` and `sdlc_pr` so the
+    skills can reference it uniformly: implement branches FROM this branch and
+    pr bases the PR AGAINST it, instead of the resolved default branch.
+    """
+    return (
+        f"Target branch override: {target}\n"
+        "Branch from / base against this branch instead of the resolved "
+        "default branch."
+    )
+
+
 @mcp.tool()
 async def sdlc_issue(context: str | None = None) -> str:
     """Draft and push a GitHub issue.
@@ -59,7 +73,7 @@ async def sdlc_issue(context: str | None = None) -> str:
 
 
 @mcp.tool()
-async def sdlc_implement(number: int) -> str:
+async def sdlc_implement(number: int, target: str | None = None) -> str:
     """Implement a GitHub issue or address feedback on an open PR.
 
     Use when the user says "implement", "implement #N", or similar.
@@ -74,19 +88,29 @@ async def sdlc_implement(number: int) -> str:
 
     Args:
         number: An issue number or an open PR number.
+        target: Optional branch to override the resolved default. When set,
+            a fresh implementation creates its branch from this branch instead
+            of the repo default. Ignored on the continue and feedback paths,
+            which operate on an existing branch.
     """
     try:
         state = pr_state.dispatch(number)
     except pr_state.GhUnavailable as exc:
         skill = _read_skill("implement")
-        return (
+        parts = [
             f"{skill}\n---\n\nTarget: #{number}\n\n"
             f"<!-- diagnostic: PR state could not be determined ({exc}); "
             "falling back to fresh-implementation prompt. -->"
-        )
+        ]
+        if target:
+            parts.append(f"\n{_target_branch_directive(target)}")
+        return "".join(parts)
     if state is None:
         skill = _read_skill("implement")
-        return f"{skill}\n---\n\nTarget issue: #{number}"
+        parts = [f"{skill}\n---\n\nTarget issue: #{number}"]
+        if target:
+            parts.append(f"\n{_target_branch_directive(target)}")
+        return "".join(parts)
     if isinstance(state, pr_state.Findings):
         skill = _read_skill("implement-feedback")
         return f"{skill}\n---\n\nTarget: #{number}\n{state.format()}"
@@ -125,7 +149,7 @@ async def sdlc_commit() -> str:
 
 
 @mcp.tool()
-async def sdlc_pr(issue_number: int) -> str:
+async def sdlc_pr(issue_number: int, target: str | None = None) -> str:
     """Review changes and create a draft pull request.
 
     Use when the user says "pr", "create a PR for #N", "open a PR",
@@ -134,9 +158,14 @@ async def sdlc_pr(issue_number: int) -> str:
 
     Args:
         issue_number: The GitHub issue number to create a PR for.
+        target: Optional branch to override the resolved default. When set,
+            the PR is based against this branch instead of the repo default.
     """
     skill = _read_skill("pr")
-    return f"{skill}\n---\n\nTarget issue: #{issue_number}"
+    parts = [f"{skill}\n---\n\nTarget issue: #{issue_number}"]
+    if target:
+        parts.append(f"\n{_target_branch_directive(target)}")
+    return "".join(parts)
 
 
 @mcp.tool()
