@@ -18,16 +18,25 @@ The key words MUST, MUST NOT, SHALL, SHALL NOT, SHOULD, SHOULD NOT, REQUIRED, RE
 
 # Issue Skill
 
-Create a well-structured GitHub issue, either from a prepared `.issue.md` file or interactively from conversation context.
+Create a well-structured GitHub issue, either from a prepared `.issue.md` file or interactively from conversation context, or update an existing issue.
 
 ## Pipeline Context
 
 This skill is part of the development workflow pipeline: `issue` → `implement` → `test` → `commit` → `pr` → `review`. This skill is the **first** stage. The implement, test, and commit steps are iterative — they can be invoked multiple times for a given issue.
 
+## Arguments
+
+An issue number is OPTIONAL.
+
+- **Absent** — draft and push a **new** issue (the default path). Follow the **Create workflow** below.
+- **Present** (e.g., `issue #42`) — **update** the existing issue with that number. Follow the **Update workflow** below instead of the Create workflow.
+
 ## Invariants
 
 - MUST NOT push the issue to GitHub until the user explicitly approves the draft.
+- MUST NOT edit an existing issue until the user explicitly approves the proposed changes.
 - MUST use a heredoc for the `gh issue create` body to avoid shell escaping issues.
+- MUST use `gh issue edit <n> --body-file` (not an inline `--body`) when updating an existing issue's body.
 - MUST NOT add the `--assignee` flag -- issues are not auto-assigned at creation.
 - MUST use the `understand-chat` skill to query the knowledge graph for context gathering when `.understand-anything/knowledge-graph.json` exists.
 
@@ -48,7 +57,9 @@ This skill MAY be executed in an isolated subagent to preserve parent context. W
 **Other LLM assistants:**
 - Subagent execution may not be supported in your tool. Execute the skill inline following the normal workflow.
 
-## Workflow
+## Create workflow
+
+Follow this workflow when **no issue number** is supplied (the default path).
 
 ### Checklist
 
@@ -269,3 +280,89 @@ The user SHOULD be prompted with the next pipeline step: "Ready to implement? Ru
 ### 10. Prompt the user to move onto the implement step
 
 The user MUST be prompted with the next pipeline step: "Ready to implement? Run the `implement` skill with the issue number to create a branch and start planning." When working from a fork, note that the issue number refers to the issue on the upstream repo. DO NOT proceed on your own.
+
+## Update workflow
+
+Follow this workflow when an **issue number is supplied**. The goal is to apply a targeted edit to an existing issue — not to rewrite it from scratch.
+
+### Checklist
+
+1. Resolve target repository
+2. Fetch the existing issue
+3. Analyze the intended changes
+4. Pre-check labels
+5. Present the diff for approval
+6. Edit the issue
+7. Return the issue URL
+
+### 1. Resolve target repository
+
+Resolve the target repository exactly as in the Create workflow's "Resolve target repository" step: run `gh repo view --json isFork,parent`, and when `isFork` is `true`, use the upstream `<owner>/<name>` as the target unless the user explicitly asks to target the fork. All `gh` commands below that reference the issue or its labels MUST include `--repo <target>` when the target repo differs from the current repo.
+
+### 2. Fetch the existing issue
+
+Fetch the current title, body, and labels:
+
+```bash
+gh issue view <n> --repo <target> --json title,body,labels,state
+```
+
+- **If the issue does not exist** — `gh` exits non-zero. Surface the error to the user and stop; do not attempt to create a new issue.
+- **If the issue is closed** (`state` is `CLOSED`) — do NOT silently edit it. Ask the user whether to reopen it (`gh issue reopen <n> --repo <target>`) before editing, or to refuse the update. Proceed only on the user's explicit instruction.
+
+Record the fetched title, body, and label set as the **current** state — this is the baseline for the diff.
+
+### 3. Analyze the intended changes
+
+Determine the intended changes from the conversational context — what the user asked to add, remove, clarify, or relabel. Compute a **targeted** edit against the current state: change only what the user asked to change. MUST NOT reflow, reword, or restructure untouched prose, and MUST NOT reorder existing sections.
+
+When the current body follows a GitHub form-template structure (the issue was created from a form template in `.github/ISSUE_TEMPLATE/`), the section ordering MUST be preserved and the surrounding sections MUST NOT be reflowed — insert or amend content within the relevant section only.
+
+### 4. Pre-check labels
+
+When the intended changes add or remove labels, the label names MUST be validated against the repository's label set **before** editing, so unknown labels surface early:
+
+```bash
+gh label list --repo <target> --json name --jq '.[].name'
+```
+
+Any label to be added that is not in this set MUST be surfaced to the user before proceeding — do not pass an unknown label to `gh issue edit`. Resolve the discrepancy (correct the name, or ask the user to create the label) before continuing.
+
+### 5. Present the diff for approval
+
+Present the proposed change as a unified diff inside a fenced ` ```diff ` block, showing the current versus proposed **title**, **body**, and **labels**. The diff MUST be targeted — show only the lines that change plus minimal surrounding context, not a full rewrite of the issue:
+
+````markdown
+```diff
+ # <unchanged title line for context>
+@@ Body @@
+-<removed line>
++<added line>
+@@ Labels @@
+-<removed label>
++<added label>
+```
+````
+
+The user MUST explicitly approve the diff before any edit is posted. DO NOT proceed on your own.
+
+### 6. Edit the issue
+
+After approval, post the edit with `gh issue edit`. Write the new body to a temporary file and pass it via `--body-file` so the body is applied verbatim without shell-escaping issues:
+
+```bash
+gh issue edit <n> --repo <target> \
+  --title "<new title>" \
+  --body-file <path> \
+  --add-label "<label>" \
+  --remove-label "<label>"
+```
+
+- Include `--title` only when the title changes.
+- Include `--body-file` only when the body changes; the file MUST contain the full proposed body.
+- Include `--add-label` / `--remove-label` only for labels that actually change. Every `--add-label` value MUST have passed the step-4 pre-check.
+- The `--repo <target>` flag MUST be included when the target repo differs from the current repo.
+
+### 7. Return the issue URL
+
+Print the issue URL returned by `gh issue edit` so the user can review the updated issue directly. If further changes are still needed, the user MAY re-run this skill with the same issue number.

@@ -24,15 +24,15 @@ from sdlc.server import (
 
 
 @pytest.mark.asyncio
-async def test_sdlc_issue_should_return_skill_when_no_context():
+async def test_sdlc_issue_should_return_skill_when_no_arguments():
     """Test sdlc_issue returns skill content when called with no arguments.
 
     Given:
-        No context argument.
+        No issue number and no context argument.
     When:
         sdlc_issue() is called.
     Then:
-        It should return the issue skill content.
+        It should return the issue skill content with no update directive.
     """
     # Act
     result = await sdlc_issue()
@@ -40,6 +40,7 @@ async def test_sdlc_issue_should_return_skill_when_no_context():
     # Assert
     assert "# Issue Skill" in result
     assert "User context" not in result
+    assert "Target issue to update" not in result
 
 
 @pytest.mark.asyncio
@@ -58,6 +59,47 @@ async def test_sdlc_issue_should_append_context_when_provided():
 
     # Assert
     assert "# Issue Skill" in result
+    assert "Add retry logic" in result
+    assert "Target issue to update" not in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_issue_should_append_update_directive_when_issue_number_given():
+    """Test sdlc_issue appends an update directive when an issue number is given.
+
+    Given:
+        An issue number is provided.
+    When:
+        sdlc_issue(issue_number=42) is called.
+    Then:
+        It should return skill content with the update directive and #42.
+    """
+    # Act
+    result = await sdlc_issue(issue_number=42)
+
+    # Assert
+    assert "# Issue Skill" in result
+    assert "Target issue to update: #42" in result
+    assert "User context" not in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_issue_should_append_directive_and_context_when_both_given():
+    """Test sdlc_issue appends both the update directive and the context.
+
+    Given:
+        An issue number and a context string are provided.
+    When:
+        sdlc_issue(issue_number=42, context="Add retry logic") is called.
+    Then:
+        It should return skill content with both the update directive and context.
+    """
+    # Act
+    result = await sdlc_issue(issue_number=42, context="Add retry logic")
+
+    # Assert
+    assert "# Issue Skill" in result
+    assert "Target issue to update: #42" in result
     assert "Add retry logic" in result
 
 

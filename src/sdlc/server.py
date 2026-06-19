@@ -55,18 +55,29 @@ def _target_branch_directive(target: str) -> str:
 
 
 @mcp.tool()
-async def sdlc_issue(context: str | None = None) -> str:
-    """Draft and push a GitHub issue.
+async def sdlc_issue(
+    issue_number: int | None = None, context: str | None = None
+) -> str:
+    """Draft and push a GitHub issue, or update an existing one.
 
     Use when the user says "issue", "file an issue", "create an issue",
     "open a bug report", or similar. If `.issue.md` exists in the repo root,
     it is used as the source. Otherwise the issue is drafted interactively.
+    When an issue number is provided, the existing issue is updated instead of
+    a new one being created.
 
     Args:
+        issue_number: Optional GitHub issue number to update. When omitted, a
+            new issue is drafted; when provided, enter the update workflow.
         context: Optional description of the problem or feature to file.
     """
     skill = _read_skill("issue")
     parts = [skill]
+    if issue_number is not None:
+        parts.append(
+            f"\n---\n\nTarget issue to update: #{issue_number}\n\n"
+            "Enter the update workflow defined in this skill."
+        )
     if context:
         parts.append(f"\n---\n\nUser context for this issue:\n\n{context}")
     return "\n".join(parts)
