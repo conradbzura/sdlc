@@ -10,6 +10,7 @@ from sdlc import guides, pr_state
 PACKAGE_DIR = Path(__file__).resolve().parent
 SKILLS_DIR = PACKAGE_DIR / "skills"
 AGENTS_MD_PATH = PACKAGE_DIR / "AGENTS.md"
+ROLE_TEMPLATE_PATH = PACKAGE_DIR / "role-template.md"
 
 _state = guides.load_state(cwd=Path.cwd(), package_dir=PACKAGE_DIR)
 
@@ -226,6 +227,39 @@ async def sdlc_guides_for(
     return [f"sdlc://guides/{kind}/{stem}" for stem in stems]
 
 
+@mcp.tool()
+async def sdlc_roles() -> list[str]:
+    """List the available review roles as resource URIs.
+
+    Returns a list of `sdlc://guides/role/{stem}` URIs, one per discovered
+    role (bundled or user-supplied). Read each URI to obtain the role's lens,
+    blocking policy, and focus globs.
+    """
+    return [
+        f"sdlc://guides/role/{stem}" for stem in guides.list_roles(_state.discovered)
+    ]
+
+
+@mcp.tool()
+async def sdlc_role(name: str) -> str:
+    """Author a review role document.
+
+    Use when the user says "role", "create a role", "add a review role",
+    or similar. Drafts a role document (lens, blocking policy, focus globs)
+    and, on approval, writes it to `.sdlc/guides/role/<name>.md`.
+
+    Args:
+        name: The role name (stem) to author, e.g. "architect".
+    """
+    skill = _read_skill("role")
+    template = _read_file(ROLE_TEMPLATE_PATH)
+    return (
+        f"{skill}\n---\n\n"
+        f"Target role: {name}\n\n"
+        f"Role document template:\n\n{template}"
+    )
+
+
 @mcp.resource("sdlc://guides/test/{stem}")
 async def get_test_guide(stem: str) -> str:
     """Return the test guide identified by `stem` (e.g. "python")."""
@@ -238,10 +272,22 @@ async def get_style_guide(stem: str) -> str:
     return guides.read_guide("style", stem, _state.discovered)
 
 
+@mcp.resource("sdlc://guides/role/{stem}")
+async def get_role_guide(stem: str) -> str:
+    """Return the role guide identified by `stem` (e.g. "general-purpose")."""
+    return guides.read_guide("role", stem, _state.discovered)
+
+
 @mcp.resource("sdlc://config/default")
 async def get_default_config() -> str:
     """Return the package-default config.json content."""
     return _read_file(guides.DEFAULT_CONFIG_PATH)
+
+
+@mcp.resource("sdlc://role-template")
+async def role_template() -> str:
+    """Return the bundled role-document template."""
+    return _read_file(ROLE_TEMPLATE_PATH)
 
 
 @mcp.resource("sdlc://agents-md")
