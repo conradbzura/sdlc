@@ -6,6 +6,7 @@ import pytest
 
 from sdlc.guides import (
     discover_guides,
+    list_roles,
     load_package_default,
     load_state,
     load_user_config,
@@ -23,7 +24,7 @@ def test_load_package_default_should_return_shipped_config():
     When:
         load_package_default() is called with no arguments.
     Then:
-        It should return a dict with kebab-case 'guide-map' covering test and style.
+        It should return a dict with kebab-case 'guide-map' covering test, style, and role.
     """
     # Act
     result = load_package_default()
@@ -32,6 +33,7 @@ def test_load_package_default_should_return_shipped_config():
     assert "guide-map" in result
     assert result["guide-map"]["test"]["**/*.py"] == ["python"]
     assert result["guide-map"]["style"]["**/*.md"] == ["markdown"]
+    assert result["guide-map"]["role"]["**/*"] == ["general-purpose"]
 
 
 def test_load_user_config_should_return_none_when_file_and_env_missing(tmp_path, monkeypatch):
@@ -259,6 +261,33 @@ def test_load_user_config_should_raise_when_guide_map_kind_unknown(tmp_path, mon
     # Act & assert
     with pytest.raises(ValueError, match="docs"):
         load_user_config(tmp_path)
+
+
+def test_load_user_config_should_accept_guide_map_role_kind(tmp_path, monkeypatch):
+    """Test guide-map accepts the 'role' kind as a first-class namespace.
+
+    Given:
+        A guide-map declaring a 'role' namespace.
+    When:
+        load_user_config(cwd) is called.
+    Then:
+        It should return the parsed config with the role namespace intact.
+    """
+    # Arrange
+    monkeypatch.delenv("SDLC_CONFIG", raising=False)
+    sdlc_dir = tmp_path / ".sdlc"
+    sdlc_dir.mkdir()
+    (sdlc_dir / "config.json").write_text(
+        '{"guide-map": {"role": {"src/**/*.py": ["architect"]}}}'
+    )
+
+    # Act
+    result = load_user_config(tmp_path)
+
+    # Assert
+    assert result is not None
+    config, _ = result
+    assert config["guide-map"]["role"]["src/**/*.py"] == ["architect"]
 
 
 def test_load_user_config_should_raise_when_top_level_not_object(tmp_path, monkeypatch):
@@ -611,6 +640,87 @@ def test_discover_guides_should_warn_when_guides_dir_missing(tmp_path, recwarn):
     assert any("nope" in str(w.message) for w in recwarn)
 
 
+def test_discover_guides_should_find_bundled_role_when_role_guides_present(tmp_path):
+    """Test bundled role guides are discovered under role-guides/.
+
+    Given:
+        A package dir with role-guides/general-purpose.md and no user dir.
+    When:
+        discover_guides is called.
+    Then:
+        The bundled role is discovered as ('role', 'general-purpose').
+    """
+    # Arrange
+    pkg = tmp_path / "pkg"
+    (pkg / "role-guides").mkdir(parents=True)
+    (pkg / "role-guides" / "general-purpose.md").write_text("# Role")
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    config = {"guide-map": {}}
+
+    # Act
+    result = discover_guides(config, pkg, cwd, None)
+
+    # Assert
+    assert result[("role", "general-purpose")] == (
+        pkg / "role-guides" / "general-purpose.md"
+    )
+
+
+def test_discover_guides_should_merge_user_role_at_convention_path(tmp_path):
+    """Test user role guides at .sdlc/guides/role/ are discovered.
+
+    Given:
+        A bundled role and a user role at .sdlc/guides/role/architect.md.
+    When:
+        discover_guides is called with no user_config_dir.
+    Then:
+        Both the bundled and user roles are present.
+    """
+    # Arrange
+    pkg = tmp_path / "pkg"
+    (pkg / "role-guides").mkdir(parents=True)
+    (pkg / "role-guides" / "general-purpose.md").write_text("# GP")
+    cwd = tmp_path / "proj"
+    (cwd / ".sdlc" / "guides" / "role").mkdir(parents=True)
+    (cwd / ".sdlc" / "guides" / "role" / "architect.md").write_text("# Arch")
+    config = {"guide-map": {}}
+
+    # Act
+    result = discover_guides(config, pkg, cwd, None)
+
+    # Assert
+    assert ("role", "general-purpose") in result
+    assert ("role", "architect") in result
+
+
+def test_discover_guides_should_prefer_user_role_when_stems_collide(tmp_path):
+    """Test a user role with the same stem replaces the bundled one.
+
+    Given:
+        Bundled and user 'role/general-purpose' guides both exist.
+    When:
+        discover_guides is called.
+    Then:
+        The discovered path for ('role', 'general-purpose') is the user file.
+    """
+    # Arrange
+    pkg = tmp_path / "pkg"
+    (pkg / "role-guides").mkdir(parents=True)
+    (pkg / "role-guides" / "general-purpose.md").write_text("bundled")
+    cwd = tmp_path / "proj"
+    user_roles = cwd / ".sdlc" / "guides" / "role"
+    user_roles.mkdir(parents=True)
+    (user_roles / "general-purpose.md").write_text("user")
+    config = {"guide-map": {}}
+
+    # Act
+    result = discover_guides(config, pkg, cwd, None)
+
+    # Assert
+    assert result[("role", "general-purpose")].read_text() == "user"
+
+
 def test_resolve_guides_should_return_stems_when_single_pattern_matches(tmp_path):
     """Test a single matching pattern returns its mapped stems.
 
@@ -861,6 +971,54 @@ def test_read_guide_should_return_error_when_stem_unknown():
     assert "not found" in result.lower()
 
 
+def test_list_roles_should_return_sorted_role_stems(tmp_path):
+    """Test list_roles returns only role stems, sorted, ignoring other kinds.
+
+    Given:
+        A discovered map with several role stems plus test and style entries.
+    When:
+        list_roles is called.
+    Then:
+        Only the role stems are returned, in sorted order.
+    """
+    # Arrange
+    discovered = {
+        ("role", "security"): tmp_path / "s.md",
+        ("role", "architect"): tmp_path / "a.md",
+        ("test", "python"): tmp_path / "p.md",
+        ("style", "markdown"): tmp_path / "m.md",
+    }
+
+    # Act
+    result = list_roles(discovered)
+
+    # Assert
+    assert result == ["architect", "security"]
+
+
+def test_list_roles_should_return_empty_when_no_roles(tmp_path):
+    """Test list_roles returns an empty list when no role guides are discovered.
+
+    Given:
+        A discovered map containing only test and style guides.
+    When:
+        list_roles is called.
+    Then:
+        An empty list is returned.
+    """
+    # Arrange
+    discovered = {
+        ("test", "python"): tmp_path / "p.md",
+        ("style", "markdown"): tmp_path / "m.md",
+    }
+
+    # Act
+    result = list_roles(discovered)
+
+    # Assert
+    assert result == []
+
+
 def test_load_state_should_use_package_default_when_no_user_config(tmp_path, monkeypatch):
     """Test load_state with no user config falls back to the package default map.
 
@@ -929,6 +1087,26 @@ def test_load_state_should_discover_bundled_guides(tmp_path, monkeypatch):
     # Assert
     assert ("test", "python") in state.discovered
     assert ("style", "markdown") in state.discovered
+
+
+def test_load_state_should_discover_bundled_general_purpose_role(tmp_path, monkeypatch):
+    """Test the state's discovered map includes the bundled general-purpose role.
+
+    Given:
+        A clean working directory with no user guides.
+    When:
+        load_state is called.
+    Then:
+        The bundled ('role', 'general-purpose') guide is present in discovered.
+    """
+    # Arrange
+    monkeypatch.delenv("SDLC_CONFIG", raising=False)
+
+    # Act
+    state = load_state(cwd=tmp_path)
+
+    # Assert
+    assert ("role", "general-purpose") in state.discovered
 
 
 def test_load_state_should_honor_custom_package_dir(tmp_path, monkeypatch):
