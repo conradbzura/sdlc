@@ -17,10 +17,11 @@ Each tool returns the full workflow instructions for its pipeline stage. The LLM
 | `sdlc_test` | 3rd | Analyze coverage and write comprehensive tests |
 | `sdlc_commit` | 4th | Stage and commit changes with atomic commits |
 | `sdlc_pr` | 5th | Review changes and create a draft pull request |
-| `sdlc_review` | 6th | Review an open pull request for compliance and quality |
+| `sdlc_review` | 6th | Review an open PR and write a consolidated local review document under `.sdlc/reviews/` (no GitHub posting) |
 | `sdlc_understand_chat` | — | Query the codebase knowledge graph |
 | `sdlc_guides_for` | — | Resolve which test or style guides apply to a list of file paths |
 | `sdlc_roles` | — | List the available review roles as resource URIs |
+| `sdlc_role_scope` | — | Reverse-lookup the changed files a role's findings are confined to (over the merged `guide-map.role`) |
 | `sdlc_role` | — | Author a review role document (lens, blocking policy, focus globs) |
 
 The `implement`, `test`, and `commit` tools are iterative — they can be invoked multiple times for a given issue to address PR feedback or refine implementation. `sdlc_implement` accepts either an issue number or a PR number and dispatches between three sibling skill prompts based on PR state: `implement` (fresh start, no PR yet), `implement-continue` (PR exists, no review feedback yet), and `implement-feedback` (PR has unresolved review threads or review-body comments).
@@ -34,6 +35,7 @@ The `implement`, `test`, and `commit` tools are iterative — they can be invoke
 | `sdlc://guides/role/{stem}` | Review role identified by `{stem}` — bundled or user-supplied (e.g. `general-purpose`) |
 | `sdlc://config/default` | Package-default `config.json` content (read this to discover the bundled guide-map) |
 | `sdlc://role-template` | Bundled role-document template (the Lens and Blocking policy sections) |
+| `sdlc://review-template` | Bundled consolidated-review-document template (header, severity-tiered findings, cross-cutting decisions, fixup mapping) |
 | `sdlc://agents-md` | This file (project-level agent instructions) |
 | `sdlc://knowledge-graph` | Codebase knowledge graph (if generated) |
 
@@ -52,7 +54,7 @@ Guides are discovered from two sources at startup. Within each `kind` namespace 
 
 The stem is the filename without `.md`. Each discovered guide is exposed at `sdlc://guides/{kind}/{stem}`.
 
-All three kinds (`test`, `style`, `role`) are configured via `guide-map`. `test` and `style` guides are resolved from changed file paths; `role` guides are listed by name via `sdlc_roles`, read at `sdlc://guides/role/<stem>`, and selected explicitly, with their `guide-map.role` entries scoping where the selected role's findings apply. No review path consumes a selected role yet.
+All three kinds (`test`, `style`, `role`) are configured via `guide-map`. `test` and `style` guides are resolved from changed file paths; `role` guides are listed by name via `sdlc_roles`, read at `sdlc://guides/role/<stem>`, and selected explicitly. A role's `guide-map.role` entries scope which files a reviewer running that role confines its findings to — resolved by a **reverse lookup** over `guide-map.role` (given a role stem, the globs mapped to it; the inverse of `sdlc_guides_for`'s path-to-stems direction). The `sdlc_review` tool consumes selected roles: it runs N reviewers per role, each confined to its role's mapped files (see the Review pipeline below).
 
 ### Config file
 
@@ -95,7 +97,11 @@ User config merges onto the default per the following rules. Removing or replaci
 
 ### Skill integration
 
-The `implement`, `test`, and `review` skills do not hardcode guide URIs. Each calls `sdlc_guides_for(paths, kind)` with the relevant file paths and reads every returned URI. To add a guide for a new language or convention, drop the markdown file in `.sdlc/guides/{test,style}/` and (if the file should be picked up for a path that the default map doesn't cover) add an entry to `guide-map` in `.sdlc/config.json`. Review roles follow the same configuration pattern — a markdown file under `.sdlc/guides/role/` plus a `guide-map.role` entry (the `sdlc_role` skill authors both) — but, unlike `test` and `style` guides, are selected by name rather than resolved from paths via `sdlc_guides_for`.
+The `implement`, `test`, and `review` skills do not hardcode guide URIs. Each calls `sdlc_guides_for(paths, kind)` with the relevant file paths and reads every returned URI. To add a guide for a new language or convention, drop the markdown file in `.sdlc/guides/{test,style}/` and (if the file should be picked up for a path that the default map doesn't cover) add an entry to `guide-map` in `.sdlc/config.json`. Review roles follow the same configuration pattern — a markdown file under `.sdlc/guides/role/` plus a `guide-map.role` entry (the `sdlc_role` skill authors both) — but, unlike `test` and `style` guides, are selected by name rather than resolved from paths via `sdlc_guides_for`. When `sdlc_review` runs a role, it does the reverse: a reverse lookup over `guide-map.role` returns the globs mapped to that role, and the reviewer confines its findings to the changed files those globs match (any file may still be read for context).
+
+### The `.sdlc/reviews/` convention
+
+`sdlc_review` writes a standardized local review document — it posts nothing to GitHub. Each review round is written to `.sdlc/reviews/issue-#<N>/review-<iteration>.md`, where `<N>` is the first issue the PR closes when several are linked (resolved from `closingIssuesReferences`, falling back to parsing `Closes #N` in the PR body; the connection has no ordering guarantee, so `<N>` is one closing issue, not necessarily the only one) and `<iteration>` is 1-based, one greater than the highest existing `review-*.md` for that issue. The document is structured from the bundled template (`sdlc://review-template`): a header (roles used, reviewers per role, target HEAD sha, dedup approach, severity legend, branch commit map); findings grouped by severity tier (blocking first) — each with a stable ID, title, severity, a `Reference` (`file:line`, or a file-level / issue-level reference for a line-less finding), an Issue section with evidence, a Remediation checklist where the consolidator pre-selects the recommended option (`[x]`), lists alternatives (`[ ]`), and always offers an `Other: ___` slot, an optional Tests-to-add section, and a Touched commit; plus cross-cutting-decisions and fixup-mapping sections. The document is a local artifact: the user or agent reads it and applies each finding's pre-selected remediation and fixup-mapping entry as a manual work list. It is NOT auto-consumed by `sdlc_implement` — because nothing is posted to GitHub, a subsequent `sdlc_implement` call routes to `implement-continue` (not `implement-feedback`) unless the user separately surfaces the findings.
 
 ## Installation & Setup
 
@@ -151,6 +157,7 @@ sdlc/
     ├── pr_state.py                  ← gh wrappers and PR-state dispatch for sdlc_implement
     ├── config.json                  ← Package-default config (guide-map)
     ├── role-template.md             ← Bundled role-document template
+    ├── review-template.md           ← Bundled consolidated-review-document template
     ├── AGENTS.md                    ← you are here (canonical)
     ├── skills/                      ← Canonical skill definitions (read by server)
     │   ├── issue.md
@@ -173,7 +180,7 @@ sdlc/
 
 ## Pipeline Overview
 
-The typical development flow follows this sequence. Start by drafting a GitHub issue with acceptance criteria and description. Fetch the issue, create a feature branch, enter planning phase, and design a concrete implementation plan. Execute the plan by writing code and tests, guided by project context and test conventions. Optionally, analyze code changes, evaluate existing test coverage, and generate comprehensive test specifications targeting 100% coverage of public APIs. Analyze the working tree diff, group changes by logical kind, and create disciplined atomic commits with conventional-commit messages. Review the branch diff and create or update a draft pull request linked to the issue. Fetch the PR, analyze it against project guides, and post inline review comments with findings.
+The typical development flow follows this sequence. Start by drafting a GitHub issue with acceptance criteria and description. Fetch the issue, create a feature branch, enter planning phase, and design a concrete implementation plan. Execute the plan by writing code and tests, guided by project context and test conventions. Optionally, analyze code changes, evaluate existing test coverage, and generate comprehensive test specifications targeting 100% coverage of public APIs. Analyze the working tree diff, group changes by logical kind, and create disciplined atomic commits with conventional-commit messages. Review the branch diff and create or update a draft pull request linked to the issue. Fetch the PR, review it through one or more role lenses (N reviewers per role), and consolidate the findings into a single local review document under `.sdlc/reviews/` — nothing is posted to GitHub. The document is a local artifact the user or agent reads to drive fixups manually; `sdlc_implement` does not ingest it.
 
 The `implement`, `test`, and `commit` steps are iterative — you can run them multiple times to refine the implementation based on feedback or additional context. After each change, re-run `sdlc_pr` to update the PR description before final review.
 
