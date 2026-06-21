@@ -32,7 +32,7 @@ The `implement`, `test`, and `commit` tools are iterative — they can be invoke
 |-----|---------|
 | `sdlc://guides/test/{stem}` | Test guide identified by `{stem}` — bundled or user-supplied (e.g. `python`) |
 | `sdlc://guides/style/{stem}` | Style guide identified by `{stem}` — bundled or user-supplied (e.g. `markdown`) |
-| `sdlc://guides/role/{stem}` | Review role identified by `{stem}` — bundled or user-supplied (e.g. `general-purpose`) |
+| `sdlc://guides/role/{stem}` | Review role identified by `{stem}` — bundled (e.g. `general-purpose`, `aie`) or user-supplied |
 | `sdlc://config/default` | Package-default `config.json` content (read this to discover the bundled guide-map) |
 | `sdlc://role-template` | Bundled role-document template (the Lens and Blocking policy sections) |
 | `sdlc://review-template` | Bundled consolidated-review-document template (header, severity-tiered findings, cross-cutting decisions, fixup mapping) |
@@ -71,7 +71,7 @@ All three kinds (`test`, `style`, `role`) are configured via `guide-map`. `test`
 }
 ```
 
-The example above is illustrative: `pytest-patterns`, the `style` `**/*.py` → `python` entry, and the `architect` role are hypothetical user-supplied entries. Only `python` (test), `markdown` (style), and the `general-purpose` role ship by default — see `sdlc://config/default` for the authoritative bundled map.
+The example above is illustrative: `pytest-patterns`, the `style` `**/*.py` → `python` entry, and the `architect` role are hypothetical user-supplied entries. Only `python` (test), `markdown` (style), and the `general-purpose` and `aie` roles ship by default. The bundled `guide-map.role` maps only `**/*` → `general-purpose`; `aie` ships as a role document but is scoped per-project (its files are project-specific), so a project that wants it adds its own `guide-map.role` entry. See `sdlc://config/default` for the authoritative bundled map.
 
 - `guides-dir` — path to a directory containing `test/`, `style/`, and/or `role/` subdirs of `*.md` guides. Resolved relative to the config file's parent directory. Defaults to the convention path `<cwd>/.sdlc/guides`.
 - `guide-map` — namespace-split map (`test` / `style` / `role`). Each namespace maps glob patterns to lists of stems. A file picks up the union of stems from every pattern it matches in the requested namespace. Patterns are matched via [`pathlib.PurePath.full_match`](https://docs.python.org/3/library/pathlib.html#pathlib.PurePath.full_match) against the full relative path — see the Python docs for exact semantics. `**` matches any number of path components, so `**/*.py` matches Python files at any depth and `tests/**/*.py` matches them only under `tests/`. Bare patterns like `Dockerfile` are anchored to the root; use `**/Dockerfile` to match at any depth.
@@ -175,7 +175,8 @@ sdlc/
     ├── style-guides/                ← Bundled style guides (extend via .sdlc/guides/style/)
     │   └── markdown.md
     └── role-guides/                 ← Bundled review roles (extend via .sdlc/guides/role/)
-        └── general-purpose.md
+        ├── general-purpose.md
+        └── aie.md                   ← AI-engineering lens; scope set per-project in guide-map.role
 ```
 
 ## Pipeline Overview
