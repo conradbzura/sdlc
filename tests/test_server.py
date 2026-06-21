@@ -29,6 +29,46 @@ from sdlc.server import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _stub_gh_unavailable(monkeypatch):
+    """Default resolve_repo to GhUnavailable so tools degrade deterministically.
+
+    Tools whose skills run gh against issues/PRs resolve the target repo at
+    call time. Without this stub the resolution would shell out to the real
+    gh on the host, making output environment-dependent. Tests that exercise
+    the injection override this with their own resolve_repo patch.
+    """
+
+    def raise_unavailable():
+        raise GhUnavailable("gh stubbed unavailable in tests")
+
+    monkeypatch.setattr(pr_state, "resolve_repo", raise_unavailable)
+
+
+def _fork_repo():
+    """A resolved repo standing in for a fork whose upstream is upstream/sdlc."""
+    return pr_state._Repo(owner="upstream", name="sdlc", repo_flag="upstream/sdlc")
+
+
+def _current_repo():
+    """A resolved repo standing in for a non-fork (current repo applies)."""
+    return pr_state._Repo(owner="conradbzura", name="sdlc", repo_flag=None)
+
+
+def _patch_resolve_repo(monkeypatch, repo):
+    """Patch pr_state.resolve_repo to return ``repo`` for the duration of a test."""
+    monkeypatch.setattr(pr_state, "resolve_repo", lambda: repo)
+
+
+def _patch_resolve_repo_unavailable(monkeypatch):
+    """Patch pr_state.resolve_repo to raise GhUnavailable."""
+
+    def raise_unavailable():
+        raise GhUnavailable("gh executable not found on PATH")
+
+    monkeypatch.setattr(pr_state, "resolve_repo", raise_unavailable)
+
+
 @pytest.mark.asyncio
 async def test_sdlc_issue_should_return_skill_when_no_arguments():
     """Test sdlc_issue returns skill content when called with no arguments.
@@ -121,7 +161,7 @@ async def test_sdlc_implement_with_no_pr(monkeypatch):
         It should return the fresh implement skill with #42 appended.
     """
     # Arrange
-    monkeypatch.setattr(pr_state, "dispatch", lambda number: None)
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: None)
 
     # Act
     result = await sdlc_implement(number=42)
@@ -146,7 +186,7 @@ async def test_sdlc_implement_with_no_feedback_pr(monkeypatch):
     """
     # Arrange
     context = PrContext(pr_number=42, head_ref="feature-x", url="https://example/pr/42")
-    monkeypatch.setattr(pr_state, "dispatch", lambda number: context)
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: context)
 
     # Act
     result = await sdlc_implement(number=42)
@@ -183,7 +223,7 @@ async def test_sdlc_implement_with_findings(monkeypatch):
             ),
         ],
     )
-    monkeypatch.setattr(pr_state, "dispatch", lambda number: findings)
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: findings)
 
     # Act
     result = await sdlc_implement(number=42)
@@ -192,6 +232,72 @@ async def test_sdlc_implement_with_findings(monkeypatch):
     assert "# Implement Feedback Skill" in result
     assert "src/sdlc/server.py:64" in result
     assert "rename foo to bar" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_implement_should_resolve_repo_exactly_once(monkeypatch):
+    """Test sdlc_implement resolves the target repo exactly once per call.
+
+    Given:
+        A non-fork repo and a PR number with no unresolved feedback, with the
+        real dispatch running against a canned gh and a counting spy wrapping
+        resolve_repo.
+    When:
+        sdlc_implement(number=42) is called.
+    Then:
+        resolve_repo should be invoked exactly once — the single resolution is
+        threaded through dispatch rather than recomputed for the PR-state
+        classification.
+    """
+    # Arrange
+    call_count = 0
+
+    def counting_resolve_repo():
+        nonlocal call_count
+        call_count += 1
+        return _current_repo()
+
+    pr_view = json.dumps(
+        {"number": 42, "headRefName": "feature-x", "url": "https://example/pr/42"}
+    )
+    graphql_query = (
+        "query=query($owner: String!, $repo: String!, $pr: Int!) "
+        "{ repository(owner: $owner, name: $repo) { pullRequest(number: $pr) "
+        "{ reviewThreads(first: 100) { nodes { isResolved comments(first: 1) "
+        "{ nodes { body path line author { login } } } } } } } }"
+    )
+    responses = {
+        ("pr", "view", "42", "--json", "number,headRefName,url"): pr_view,
+        (
+            "api", "graphql",
+            "-f", graphql_query,
+            "-f", "owner=conradbzura",
+            "-f", "repo=sdlc",
+            "-F", "pr=42",
+        ): json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {"reviewThreads": {"nodes": []}}
+                    }
+                }
+            }
+        ),
+        ("pr", "view", "42", "--json", "reviews"): json.dumps({"reviews": []}),
+    }
+
+    def fake_run_gh(args, allow_failure=False):
+        return responses[tuple(args)]
+
+    monkeypatch.setattr(pr_state, "_run_gh", fake_run_gh)
+    monkeypatch.setattr(pr_state, "resolve_repo", counting_resolve_repo)
+
+    # Act
+    result = await sdlc_implement(number=42)
+
+    # Assert
+    assert call_count == 1
+    assert "# Implement Continue Skill" in result
 
 
 @pytest.mark.asyncio
@@ -206,7 +312,7 @@ async def test_sdlc_implement_when_gh_unavailable(monkeypatch):
         It should return the fresh skill with a diagnostic comment appended.
     """
     # Arrange
-    def raise_unavailable(_number):
+    def raise_unavailable(_number, repo=None):
         raise GhUnavailable("gh executable not found on PATH")
 
     monkeypatch.setattr(pr_state, "dispatch", raise_unavailable)
@@ -232,7 +338,7 @@ async def test_sdlc_implement_should_omit_target_directive_when_no_target(monkey
         It should return fresh implement skill content without an override directive.
     """
     # Arrange
-    monkeypatch.setattr(pr_state, "dispatch", lambda number: None)
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: None)
 
     # Act
     result = await sdlc_implement(number=42)
@@ -253,7 +359,7 @@ async def test_sdlc_implement_should_append_target_directive_when_target_given(m
         It should return content with the override directive naming "stable".
     """
     # Arrange
-    monkeypatch.setattr(pr_state, "dispatch", lambda number: None)
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: None)
 
     # Act
     result = await sdlc_implement(number=42, target="stable")
@@ -582,6 +688,410 @@ async def test_sdlc_understand_chat_should_interpolate_query():
     # Assert
     assert "# Understand Chat Skill" in result
     assert "How does auth work?" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_issue_should_inject_upstream_target_repo_when_fork(monkeypatch):
+    """Test sdlc_issue injects the upstream target-repo directive for a fork.
+
+    Given:
+        pr_state.resolve_repo reports the current repo is a fork of upstream/sdlc.
+    When:
+        sdlc_issue() is called.
+    Then:
+        It should append a "Target repo: upstream/sdlc" directive.
+    """
+    # Arrange
+    _patch_resolve_repo(monkeypatch, _fork_repo())
+
+    # Act
+    result = await sdlc_issue()
+
+    # Assert
+    assert "Target repo: upstream/sdlc" in result
+    assert "--repo upstream/sdlc" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_issue_should_inject_current_repo_directive_when_not_fork(monkeypatch):
+    """Test sdlc_issue injects the current-repo directive when not a fork.
+
+    Given:
+        pr_state.resolve_repo reports the current repo is not a fork.
+    When:
+        sdlc_issue() is called.
+    Then:
+        It should append a current-repo directive instructing to omit --repo.
+    """
+    # Arrange
+    _patch_resolve_repo(monkeypatch, _current_repo())
+
+    # Act
+    result = await sdlc_issue()
+
+    # Assert
+    assert "omit --repo on gh commands that reference issues or PRs" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_issue_should_omit_target_repo_when_gh_unavailable(monkeypatch):
+    """Test sdlc_issue appends no target-repo directive when gh is unavailable.
+
+    Given:
+        pr_state.resolve_repo raises GhUnavailable.
+    When:
+        sdlc_issue() is called.
+    Then:
+        It should still return the skill content with no "Target repo" directive.
+    """
+    # Arrange
+    _patch_resolve_repo_unavailable(monkeypatch)
+
+    # Act
+    result = await sdlc_issue()
+
+    # Assert
+    assert "# Issue Skill" in result
+    assert "Target repo: upstream/sdlc" not in result
+    assert "omit --repo on gh commands that reference issues or PRs" not in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_implement_should_inject_upstream_target_repo_when_fork(monkeypatch):
+    """Test sdlc_implement injects the upstream target-repo directive for a fork.
+
+    Given:
+        pr_state.dispatch returns None and resolve_repo reports a fork.
+    When:
+        sdlc_implement(number=42) is called.
+    Then:
+        It should append a "Target repo: upstream/sdlc" directive.
+    """
+    # Arrange
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: None)
+    _patch_resolve_repo(monkeypatch, _fork_repo())
+
+    # Act
+    result = await sdlc_implement(number=42)
+
+    # Assert
+    assert "Target repo: upstream/sdlc" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_implement_should_inject_target_repo_on_continue_path(monkeypatch):
+    """Test sdlc_implement injects the target-repo directive on the continue path.
+
+    Given:
+        pr_state.dispatch returns a PrContext and resolve_repo reports a fork.
+    When:
+        sdlc_implement(number=42) is called.
+    Then:
+        It should append the target-repo directive alongside the PR metadata.
+    """
+    # Arrange
+    context = PrContext(pr_number=42, head_ref="feature-x", url="https://example/pr/42")
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: context)
+    _patch_resolve_repo(monkeypatch, _fork_repo())
+
+    # Act
+    result = await sdlc_implement(number=42)
+
+    # Assert
+    assert "# Implement Continue Skill" in result
+    assert "Target repo: upstream/sdlc" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_implement_should_inject_target_repo_on_feedback_path(monkeypatch):
+    """Test sdlc_implement injects the target-repo directive on the feedback path.
+
+    Given:
+        pr_state.dispatch returns Findings and resolve_repo reports a fork.
+    When:
+        sdlc_implement(number=42) is called.
+    Then:
+        It should append the target-repo directive alongside the findings.
+    """
+    # Arrange
+    findings = Findings(
+        pr_number=42,
+        head_ref="feature-x",
+        url="https://example/pr/42",
+        findings=[
+            Finding(
+                kind="review_thread",
+                path="src/sdlc/server.py",
+                line=64,
+                body="rename foo to bar",
+                author="alice",
+            ),
+        ],
+    )
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: findings)
+    _patch_resolve_repo(monkeypatch, _fork_repo())
+
+    # Act
+    result = await sdlc_implement(number=42)
+
+    # Assert
+    assert "# Implement Feedback Skill" in result
+    assert "Target repo: upstream/sdlc" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_implement_should_inject_target_repo_when_gh_state_unavailable(monkeypatch):
+    """Test sdlc_implement still injects the target repo on the diagnostic path.
+
+    Given:
+        pr_state.dispatch raises GhUnavailable but resolve_repo succeeds for a fork.
+    When:
+        sdlc_implement(number=42) is called.
+    Then:
+        It should return the fresh skill with the diagnostic note and the
+        target-repo directive both appended.
+    """
+    # Arrange
+    def raise_unavailable(_number, repo=None):
+        raise GhUnavailable("gh state probe failed")
+
+    monkeypatch.setattr(pr_state, "dispatch", raise_unavailable)
+    _patch_resolve_repo(monkeypatch, _fork_repo())
+
+    # Act
+    result = await sdlc_implement(number=42)
+
+    # Assert
+    assert "# Implement Skill" in result
+    assert "diagnostic" in result
+    assert "Target repo: upstream/sdlc" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_implement_should_omit_target_repo_when_resolve_unavailable(monkeypatch):
+    """Test sdlc_implement omits the target-repo directive when resolve fails.
+
+    Given:
+        pr_state.dispatch returns None and resolve_repo raises GhUnavailable.
+    When:
+        sdlc_implement(number=42) is called.
+    Then:
+        It should return the fresh skill with no "Target repo" directive.
+    """
+    # Arrange
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: None)
+    _patch_resolve_repo_unavailable(monkeypatch)
+
+    # Act
+    result = await sdlc_implement(number=42)
+
+    # Assert
+    assert "# Implement Skill" in result
+    assert "Target repo: upstream/sdlc" not in result
+    assert "omit --repo on gh commands that reference issues or PRs" not in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_test_should_inject_target_repo_directive(monkeypatch):
+    """Test sdlc_test injects the upstream target-repo directive for a fork.
+
+    Given:
+        pr_state.resolve_repo reports the current repo is a fork.
+    When:
+        sdlc_test(issue_number=42) is called.
+    Then:
+        It should append a "Target repo: upstream/sdlc" directive.
+    """
+    # Arrange
+    _patch_resolve_repo(monkeypatch, _fork_repo())
+
+    # Act
+    result = await sdlc_test(issue_number=42)
+
+    # Assert
+    assert "# Test Skill" in result
+    assert "Target repo: upstream/sdlc" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_test_should_omit_target_repo_when_gh_unavailable(monkeypatch):
+    """Test sdlc_test appends no target-repo directive when gh is unavailable.
+
+    Given:
+        pr_state.resolve_repo raises GhUnavailable.
+    When:
+        sdlc_test(issue_number=42) is called.
+    Then:
+        It should return the skill content with no "Target repo" directive.
+    """
+    # Arrange
+    _patch_resolve_repo_unavailable(monkeypatch)
+
+    # Act
+    result = await sdlc_test(issue_number=42)
+
+    # Assert
+    assert "# Test Skill" in result
+    assert "Target repo: upstream/sdlc" not in result
+    assert "omit --repo on gh commands that reference issues or PRs" not in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_commit_should_inject_target_repo_directive(monkeypatch):
+    """Test sdlc_commit injects the upstream target-repo directive for a fork.
+
+    Given:
+        pr_state.resolve_repo reports the current repo is a fork.
+    When:
+        sdlc_commit() is called.
+    Then:
+        It should append a "Target repo: upstream/sdlc" directive.
+    """
+    # Arrange
+    _patch_resolve_repo(monkeypatch, _fork_repo())
+
+    # Act
+    result = await sdlc_commit()
+
+    # Assert
+    assert "# Commit Skill" in result
+    assert "Target repo: upstream/sdlc" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_commit_should_omit_target_repo_when_gh_unavailable(monkeypatch):
+    """Test sdlc_commit appends no target-repo directive when gh is unavailable.
+
+    Given:
+        pr_state.resolve_repo raises GhUnavailable.
+    When:
+        sdlc_commit() is called.
+    Then:
+        It should return the skill content with no "Target repo" directive.
+    """
+    # Arrange
+    _patch_resolve_repo_unavailable(monkeypatch)
+
+    # Act
+    result = await sdlc_commit()
+
+    # Assert
+    assert "# Commit Skill" in result
+    assert "Target repo: upstream/sdlc" not in result
+    assert "omit --repo on gh commands that reference issues or PRs" not in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_pr_should_inject_target_repo_directive(monkeypatch):
+    """Test sdlc_pr injects the upstream target-repo directive for a fork.
+
+    Given:
+        pr_state.resolve_repo reports the current repo is a fork.
+    When:
+        sdlc_pr(issue_number=42) is called.
+    Then:
+        It should append a "Target repo: upstream/sdlc" directive.
+    """
+    # Arrange
+    _patch_resolve_repo(monkeypatch, _fork_repo())
+
+    # Act
+    result = await sdlc_pr(issue_number=42)
+
+    # Assert
+    assert "# PR Skill" in result
+    assert "Target repo: upstream/sdlc" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_pr_should_inject_target_repo_alongside_target_branch(monkeypatch):
+    """Test sdlc_pr injects the target repo together with the branch override.
+
+    Given:
+        pr_state.resolve_repo reports a fork and a target branch is given.
+    When:
+        sdlc_pr(issue_number=42, target="master") is called.
+    Then:
+        It should append both the target-branch override and the target-repo
+        directive.
+    """
+    # Arrange
+    _patch_resolve_repo(monkeypatch, _fork_repo())
+
+    # Act
+    result = await sdlc_pr(issue_number=42, target="master")
+
+    # Assert
+    assert "Target branch override: master" in result
+    assert "Target repo: upstream/sdlc" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_pr_should_omit_target_repo_when_gh_unavailable(monkeypatch):
+    """Test sdlc_pr appends no target-repo directive when gh is unavailable.
+
+    Given:
+        pr_state.resolve_repo raises GhUnavailable.
+    When:
+        sdlc_pr(issue_number=42) is called.
+    Then:
+        It should return the skill content with no "Target repo" directive.
+    """
+    # Arrange
+    _patch_resolve_repo_unavailable(monkeypatch)
+
+    # Act
+    result = await sdlc_pr(issue_number=42)
+
+    # Assert
+    assert "# PR Skill" in result
+    assert "Target repo: upstream/sdlc" not in result
+    assert "omit --repo on gh commands that reference issues or PRs" not in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_inject_target_repo_directive(monkeypatch):
+    """Test sdlc_review injects the upstream target-repo directive for a fork.
+
+    Given:
+        pr_state.resolve_repo reports the current repo is a fork.
+    When:
+        sdlc_review(pr_number=10) is called.
+    Then:
+        It should append a "Target repo: upstream/sdlc" directive.
+    """
+    # Arrange
+    _patch_resolve_repo(monkeypatch, _fork_repo())
+
+    # Act
+    result = await sdlc_review(pr_number=10)
+
+    # Assert
+    assert "# Review Skill" in result
+    assert "Target repo: upstream/sdlc" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_omit_target_repo_when_gh_unavailable(monkeypatch):
+    """Test sdlc_review appends no target-repo directive when gh is unavailable.
+
+    Given:
+        pr_state.resolve_repo raises GhUnavailable.
+    When:
+        sdlc_review(pr_number=10) is called.
+    Then:
+        It should return the skill content with no "Target repo" directive.
+    """
+    # Arrange
+    _patch_resolve_repo_unavailable(monkeypatch)
+
+    # Act
+    result = await sdlc_review(pr_number=10)
+
+    # Assert
+    assert "# Review Skill" in result
+    assert "Target repo: upstream/sdlc" not in result
+    assert "omit --repo on gh commands that reference issues or PRs" not in result
 
 
 @pytest.mark.asyncio
