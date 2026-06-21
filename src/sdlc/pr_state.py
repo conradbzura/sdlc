@@ -1,8 +1,9 @@
-"""GitHub PR state detection for the `sdlc_implement` MCP endpoint."""
+"""GitHub PR state helpers for the ``sdlc_implement`` and ``sdlc_review`` MCP endpoints."""
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from dataclasses import dataclass
 from typing import Literal
@@ -81,6 +82,19 @@ _GRAPHQL_REVIEW_THREADS = (
     "{ nodes { body path line author { login } } } } } } } }"
 )
 
+_GRAPHQL_CLOSING_ISSUES = (
+    "query($owner: String!, $repo: String!, $pr: Int!) "
+    "{ repository(owner: $owner, name: $repo) { pullRequest(number: $pr) "
+    "{ closingIssuesReferences(first: 10) { nodes { number } } } } }"
+)
+
+# Closing keywords GitHub honors in a PR body: close/closes/closed,
+# fix/fixes/fixed, resolve/resolves/resolved — each followed by `#<number>`.
+_CLOSING_KEYWORD = re.compile(
+    r"\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+#(\d+)",
+    re.IGNORECASE,
+)
+
 
 def _run_gh(args: list[str], allow_failure: bool = False) -> str | None:
     """Invoke ``gh`` and return stdout.
@@ -152,6 +166,45 @@ def _find_linked_pr(repo: _Repo, issue_number: int) -> dict | None:
     if not stripped or stripped == "null":
         return None
     return json.loads(stripped)
+
+
+def _find_closing_issue(repo: _Repo, pr_number: int) -> int | None:
+    """Return the issue number PR ``pr_number`` closes, or ``None``.
+
+    Queries GitHub's ``closingIssuesReferences`` connection — the authoritative
+    set of issues that close when the PR merges, regardless of whether they were
+    linked via a ``Closes #N`` keyword or through the GitHub UI. This is the
+    correct relationship check: it is deterministic and does not depend on
+    parsing prose. Falls back to scanning the PR body for a
+    ``Closes`` / ``Fixes`` / ``Resolves #N`` keyword only when the connection is
+    empty, and returns ``None`` when neither surface yields a linked issue.
+    """
+    graphql_args = [
+        "api", "graphql",
+        "-f", f"query={_GRAPHQL_CLOSING_ISSUES}",
+        "-f", f"owner={repo.owner}",
+        "-f", f"repo={repo.name}",
+        "-F", f"pr={pr_number}",
+    ]
+    graphql_out = _run_gh(graphql_args)
+    nodes = (
+        json.loads(graphql_out)
+        .get("data", {})
+        .get("repository", {})
+        .get("pullRequest", {})
+        .get("closingIssuesReferences", {})
+        .get("nodes", [])
+    )
+    if nodes:
+        return int(nodes[0]["number"])
+
+    body_args = _with_repo(["pr", "view", str(pr_number)], repo.repo_flag)
+    body_args += ["--json", "body", "--jq", ".body"]
+    body = _run_gh(body_args) or ""
+    match = _CLOSING_KEYWORD.search(body)
+    if match:
+        return int(match.group(1))
+    return None
 
 
 def _query_review_state(
@@ -245,3 +298,16 @@ def dispatch(number: int) -> Findings | PrContext | None:
     return Findings(
         pr_number=pr_number, head_ref=head_ref, url=url, findings=findings
     )
+
+
+def closing_issue(pr_number: int) -> int | None:
+    """Resolve the issue that PR ``pr_number`` closes.
+
+    Resolves the target repository (routing to upstream when the current repo is
+    a fork), then performs the ``closingIssuesReferences`` relationship check
+    with a PR-body keyword fallback. Returns the linked issue number, or ``None``
+    when the PR has no linked issue. Raises ``GhUnavailable`` when ``gh`` is
+    missing, unauthenticated, or errors.
+    """
+    repo = _resolve_repo()
+    return _find_closing_issue(repo, pr_number)
