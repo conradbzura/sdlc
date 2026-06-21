@@ -11,6 +11,7 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 SKILLS_DIR = PACKAGE_DIR / "skills"
 AGENTS_MD_PATH = PACKAGE_DIR / "AGENTS.md"
 ROLE_TEMPLATE_PATH = PACKAGE_DIR / "role-template.md"
+REVIEW_TEMPLATE_PATH = PACKAGE_DIR / "review-template.md"
 
 _state = guides.load_state(cwd=Path.cwd(), package_dir=PACKAGE_DIR)
 
@@ -181,18 +182,59 @@ async def sdlc_pr(issue_number: int, target: str | None = None) -> str:
 
 
 @mcp.tool()
-async def sdlc_review(pr_number: int) -> str:
-    """Review an open pull request for compliance and quality.
+async def sdlc_review(
+    pr_number: int,
+    roles: list[str] | None = None,
+    subagents: int = 1,
+) -> str:
+    """Review an open pull request and produce a local consolidated document.
 
     Use when the user says "review", "review PR #N", "review this PR",
-    or similar. Analyzes the PR diff against project guides, categorizes
-    findings by severity, and posts an inline review.
+    or similar. Spawns `subagents` reviewer(s) per role across `roles`
+    (`subagents × len(roles)` reviewer subagents total), each reviewing the
+    diff through its role's lens and confined to that role's `guide-map.role`
+    files. The main session agent consolidates their findings into a single
+    `.sdlc/reviews/issue-#<N>/review-<iteration>.md`. Nothing is posted to
+    GitHub. The linked issue `<N>` is resolved here via the
+    `closingIssuesReferences` relationship (with a PR-body fallback) and
+    supplied to the skill.
 
     Args:
         pr_number: The PR number to review.
+        roles: Review-role stems to run, one reviewer set per role. Defaults
+            to ["general-purpose"] when omitted.
+        subagents: Number of independent reviewers to run per role. Defaults
+            to 1.
     """
+    if roles is None:
+        roles = ["general-purpose"]
     skill = _read_skill("review")
-    return f"{skill}\n---\n\nTarget PR: #{pr_number}"
+    template = _read_file(REVIEW_TEMPLATE_PATH)
+    roles_line = ", ".join(roles)
+    try:
+        issue_number = pr_state.closing_issue(pr_number)
+    except pr_state.GhUnavailable:
+        issue_number = None
+    if issue_number is not None:
+        issue_line = (
+            f"Resolved issue: #{issue_number}\n"
+            f"Review document directory: .sdlc/reviews/issue-#{issue_number}/"
+        )
+    else:
+        issue_line = (
+            "Resolved issue: unresolved -- the PR has no linked issue via the "
+            "closingIssuesReferences relationship or a Closes/Fixes/Resolves "
+            "keyword; ask the user which issue it addresses before writing the "
+            "review document."
+        )
+    return (
+        f"{skill}\n---\n\n"
+        f"Target PR: #{pr_number}\n"
+        f"Roles: {roles_line}\n"
+        f"Reviewers per role: {subagents}\n"
+        f"{issue_line}\n\n"
+        f"Review document template:\n\n{template}"
+    )
 
 
 @mcp.tool()
@@ -238,6 +280,29 @@ async def sdlc_roles() -> list[str]:
     return [
         f"sdlc://guides/role/{stem}" for stem in guides.list_roles(_state.discovered)
     ]
+
+
+@mcp.tool()
+async def sdlc_role_scope(paths: list[str], role: str) -> list[str]:
+    """Return the subset of `paths` a role's findings are confined to.
+
+    Performs the reverse lookup over the server's already-merged
+    `guide-map.role` (default config deep-merged with `.sdlc/config.json`) and
+    intersects the role's globs with `paths` using the same
+    `pathlib.PurePath.full_match` semantics `sdlc_guides_for` uses. The
+    `sdlc_review` skill calls this to scope each reviewer to its role's files
+    instead of re-deriving the merge and glob match by hand. An empty list
+    means the role maps to none of the given paths (a role with no
+    `guide-map.role` entry, or a real role whose globs match no changed file);
+    callers MUST distinguish those cases (see the review skill). The bundled
+    `general-purpose` role maps to `**/*`, so every path is in scope.
+
+    Args:
+        paths: File paths (relative to project root) to scope — typically the
+            PR's changed files.
+        role: The review-role stem to scope `paths` for.
+    """
+    return guides.files_for_role(paths, role, _state.guide_map)
 
 
 @mcp.tool()
@@ -288,6 +353,12 @@ async def get_default_config() -> str:
 async def role_template() -> str:
     """Return the bundled role-document template."""
     return _read_file(ROLE_TEMPLATE_PATH)
+
+
+@mcp.resource("sdlc://review-template")
+async def review_template() -> str:
+    """Return the bundled consolidated-review-document template."""
+    return _read_file(REVIEW_TEMPLATE_PATH)
 
 
 @mcp.resource("sdlc://agents-md")
