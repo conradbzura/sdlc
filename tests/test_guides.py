@@ -6,6 +6,8 @@ import pytest
 
 from sdlc.guides import (
     discover_guides,
+    files_for_role,
+    globs_for_role,
     list_roles,
     load_package_default,
     load_state,
@@ -1017,6 +1019,248 @@ def test_list_roles_should_return_empty_when_no_roles(tmp_path):
 
     # Assert
     assert result == []
+
+
+def test_globs_for_role_should_return_patterns_mapped_to_role():
+    """Test the reverse lookup returns every glob mapped to the role.
+
+    Given:
+        A guide-map.role mapping two globs to 'architect'.
+    When:
+        globs_for_role('architect', guide_map) is called.
+    Then:
+        Both globs are returned in map order.
+    """
+    # Arrange
+    guide_map = {
+        "role": {
+            "src/**/*.py": ["architect"],
+            "lib/**/*.py": ["architect"],
+        }
+    }
+
+    # Act
+    result = globs_for_role("architect", guide_map)
+
+    # Assert
+    assert result == ["src/**/*.py", "lib/**/*.py"]
+
+
+def test_globs_for_role_should_return_only_patterns_listing_the_role():
+    """Test the reverse lookup ignores globs that do not list the role.
+
+    Given:
+        A guide-map.role where one glob lists 'architect' and another lists
+        only 'security'.
+    When:
+        globs_for_role('architect', guide_map) is called.
+    Then:
+        Only the glob that lists 'architect' is returned.
+    """
+    # Arrange
+    guide_map = {
+        "role": {
+            "src/**/*.py": ["architect"],
+            "tests/**/*.py": ["security"],
+        }
+    }
+
+    # Act
+    result = globs_for_role("architect", guide_map)
+
+    # Assert
+    assert result == ["src/**/*.py"]
+
+
+def test_globs_for_role_should_match_role_among_multiple_stems():
+    """Test the reverse lookup matches a role sharing a glob with other roles.
+
+    Given:
+        A glob mapped to a list containing 'architect' alongside another role.
+    When:
+        globs_for_role('architect', guide_map) is called.
+    Then:
+        The shared glob is returned.
+    """
+    # Arrange
+    guide_map = {"role": {"src/**/*.py": ["architect", "security"]}}
+
+    # Act
+    result = globs_for_role("architect", guide_map)
+
+    # Assert
+    assert result == ["src/**/*.py"]
+
+
+def test_globs_for_role_should_return_empty_when_role_unmapped():
+    """Test the reverse lookup returns an empty list for an unmapped role.
+
+    Given:
+        A guide-map.role with no glob listing the requested role.
+    When:
+        globs_for_role('ghost', guide_map) is called.
+    Then:
+        An empty list is returned.
+    """
+    # Arrange
+    guide_map = {"role": {"src/**/*.py": ["architect"]}}
+
+    # Act
+    result = globs_for_role("ghost", guide_map)
+
+    # Assert
+    assert result == []
+
+
+def test_globs_for_role_should_return_empty_when_role_namespace_absent():
+    """Test the reverse lookup returns an empty list when no role namespace exists.
+
+    Given:
+        A guide-map with only test and style namespaces.
+    When:
+        globs_for_role('architect', guide_map) is called.
+    Then:
+        An empty list is returned.
+    """
+    # Arrange
+    guide_map = {"test": {"**/*.py": ["python"]}}
+
+    # Act
+    result = globs_for_role("architect", guide_map)
+
+    # Assert
+    assert result == []
+
+
+def test_globs_for_role_should_return_whole_diff_glob_for_general_purpose():
+    """Test the bundled general-purpose role maps to the whole-diff glob.
+
+    Given:
+        The shipped default config's guide-map.
+    When:
+        globs_for_role('general-purpose', guide_map) is called for the default map.
+    Then:
+        The '**/*' whole-diff glob is returned.
+    """
+    # Arrange
+    guide_map = load_package_default()["guide-map"]
+
+    # Act
+    result = globs_for_role("general-purpose", guide_map)
+
+    # Assert
+    assert result == ["**/*"]
+
+
+def test_files_for_role_should_return_paths_matching_the_role_globs():
+    """Test the scope lookup returns only paths matching the role's globs.
+
+    Given:
+        A guide-map.role mapping 'src/**/*.py' to 'architect' and a mix of
+        in-scope and out-of-scope paths.
+    When:
+        files_for_role(paths, 'architect', guide_map) is called.
+    Then:
+        Only the paths under src/ that match the glob are returned.
+    """
+    # Arrange
+    guide_map = {"role": {"src/**/*.py": ["architect"]}}
+    paths = ["src/foo.py", "tests/bar.py", "README.md"]
+
+    # Act
+    result = files_for_role(paths, "architect", guide_map)
+
+    # Assert
+    assert result == ["src/foo.py"]
+
+
+def test_files_for_role_should_union_matches_across_multiple_globs():
+    """Test the scope lookup unions matches from every glob mapped to the role.
+
+    Given:
+        Two globs both mapped to 'architect' and paths matching each.
+    When:
+        files_for_role(paths, 'architect', guide_map) is called.
+    Then:
+        Paths matching either glob are returned, in input order.
+    """
+    # Arrange
+    guide_map = {
+        "role": {
+            "src/**/*.py": ["architect"],
+            "lib/**/*.py": ["architect"],
+        }
+    }
+    paths = ["src/foo.py", "lib/bar.py", "docs/x.md"]
+
+    # Act
+    result = files_for_role(paths, "architect", guide_map)
+
+    # Assert
+    assert result == ["src/foo.py", "lib/bar.py"]
+
+
+def test_files_for_role_should_preserve_input_order_and_dedupe():
+    """Test the scope lookup preserves input order and drops duplicate paths.
+
+    Given:
+        An input list containing a duplicate in-scope path.
+    When:
+        files_for_role(paths, 'architect', guide_map) is called.
+    Then:
+        The path appears once, in its first-seen position.
+    """
+    # Arrange
+    guide_map = {"role": {"src/**/*.py": ["architect"]}}
+    paths = ["src/b.py", "src/a.py", "src/b.py"]
+
+    # Act
+    result = files_for_role(paths, "architect", guide_map)
+
+    # Assert
+    assert result == ["src/b.py", "src/a.py"]
+
+
+def test_files_for_role_should_return_empty_when_role_unmapped():
+    """Test the scope lookup returns an empty list for a role with no globs.
+
+    Given:
+        A guide-map.role with no glob listing the requested role.
+    When:
+        files_for_role(paths, 'ghost', guide_map) is called.
+    Then:
+        An empty list is returned even though paths are supplied.
+    """
+    # Arrange
+    guide_map = {"role": {"src/**/*.py": ["architect"]}}
+    paths = ["src/foo.py", "tests/bar.py"]
+
+    # Act
+    result = files_for_role(paths, "ghost", guide_map)
+
+    # Assert
+    assert result == []
+
+
+def test_files_for_role_should_return_all_paths_for_general_purpose():
+    """Test the general-purpose role scopes the whole diff via its '**/*' glob.
+
+    Given:
+        The shipped default config's guide-map and arbitrary changed paths.
+    When:
+        files_for_role(paths, 'general-purpose', guide_map) is called.
+    Then:
+        Every input path is returned, since '**/*' matches the whole diff.
+    """
+    # Arrange
+    guide_map = load_package_default()["guide-map"]
+    paths = ["src/foo.py", "README.md", "Dockerfile"]
+
+    # Act
+    result = files_for_role(paths, "general-purpose", guide_map)
+
+    # Assert
+    assert result == paths
 
 
 def test_load_state_should_use_package_default_when_no_user_config(tmp_path, monkeypatch):

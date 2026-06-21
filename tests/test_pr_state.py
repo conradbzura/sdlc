@@ -92,6 +92,39 @@ def _graphql_args(owner, repo, pr_number):
     )
 
 
+_CLOSING_QUERY = (
+    "query=query($owner: String!, $repo: String!, $pr: Int!) "
+    "{ repository(owner: $owner, name: $repo) { pullRequest(number: $pr) "
+    "{ closingIssuesReferences(first: 10) { nodes { number } } } } }"
+)
+
+
+def _closing_graphql_args(owner, repo, pr_number):
+    return (
+        "api", "graphql",
+        "-f", _CLOSING_QUERY,
+        "-f", f"owner={owner}",
+        "-f", f"repo={repo}",
+        "-F", f"pr={pr_number}",
+    )
+
+
+def _closing_payload(numbers):
+    return json.dumps(
+        {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "closingIssuesReferences": {
+                            "nodes": [{"number": n} for n in numbers]
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+
 def test_dispatch_with_issue_and_no_linked_pr(monkeypatch):
     """Test dispatch returns None for a fresh issue with no linked PR.
 
@@ -362,6 +395,113 @@ def test_dispatch_with_fork_repo(monkeypatch):
     # Assert
     assert isinstance(result, PrContext)
     assert result.pr_number == 42
+
+
+def test_closing_issue_should_resolve_via_closing_references(monkeypatch):
+    """Test closing_issue resolves the linked issue from closingIssuesReferences.
+
+    Given:
+        PR 42's closingIssuesReferences connection names issue 7.
+    When:
+        closing_issue(42) is called.
+    Then:
+        It should return 7 without consulting the PR body.
+    """
+    # Arrange
+    responses = {
+        ("repo", "view", "--json", _REPO_VIEW_FIELDS): _REPO_NOT_FORK,
+        _closing_graphql_args("conradbzura", "sdlc", 42): _closing_payload([7]),
+    }
+    monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
+
+    # Act
+    result = pr_state.closing_issue(42)
+
+    # Assert
+    assert result == 7
+
+
+def test_closing_issue_should_fall_back_to_body_keyword_when_references_empty(
+    monkeypatch,
+):
+    """Test closing_issue parses the PR body when the connection is empty.
+
+    Given:
+        PR 42 has an empty closingIssuesReferences connection but a body that
+        says "Closes #7".
+    When:
+        closing_issue(42) is called.
+    Then:
+        It should return 7 from the PR-body keyword fallback.
+    """
+    # Arrange
+    responses = {
+        ("repo", "view", "--json", _REPO_VIEW_FIELDS): _REPO_NOT_FORK,
+        _closing_graphql_args("conradbzura", "sdlc", 42): _closing_payload([]),
+        (
+            "pr", "view", "42", "--json", "body", "--jq", ".body",
+        ): "Implements the widget.\n\nCloses #7\n",
+    }
+    monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
+
+    # Act
+    result = pr_state.closing_issue(42)
+
+    # Assert
+    assert result == 7
+
+
+def test_closing_issue_should_return_none_when_pr_has_no_linked_issue(monkeypatch):
+    """Test closing_issue returns None when neither surface names an issue.
+
+    Given:
+        PR 42 has an empty closingIssuesReferences connection and a body with
+        no closing keyword.
+    When:
+        closing_issue(42) is called.
+    Then:
+        It should return None.
+    """
+    # Arrange
+    responses = {
+        ("repo", "view", "--json", _REPO_VIEW_FIELDS): _REPO_NOT_FORK,
+        _closing_graphql_args("conradbzura", "sdlc", 42): _closing_payload([]),
+        (
+            "pr", "view", "42", "--json", "body", "--jq", ".body",
+        ): "A standalone change with no linked issue.\n",
+    }
+    monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
+
+    # Act
+    result = pr_state.closing_issue(42)
+
+    # Assert
+    assert result is None
+
+
+def test_closing_issue_should_route_to_upstream_when_fork(monkeypatch):
+    """Test closing_issue queries upstream when the current repo is a fork.
+
+    Given:
+        gh repo view reports the repo is a fork of upstream/sdlc and PR 42's
+        connection names issue 7.
+    When:
+        closing_issue(42) is called.
+    Then:
+        It should resolve 7 using the upstream owner/repo in the graphql call.
+    """
+    # Arrange
+    responses = {
+        ("repo", "view", "--json", _REPO_VIEW_FIELDS): _REPO_FORK,
+        _closing_graphql_args("upstream", "sdlc", 42): _closing_payload([7]),
+    }
+    monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
+
+    # Act
+    result = pr_state.closing_issue(42)
+
+    # Assert
+    assert result == 7
 
 
 class TestFindings:
