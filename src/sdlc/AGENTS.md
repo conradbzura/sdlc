@@ -20,6 +20,8 @@ Each tool returns the full workflow instructions for its pipeline stage. The LLM
 | `sdlc_review` | 6th | Review an open pull request for compliance and quality |
 | `sdlc_understand_chat` | — | Query the codebase knowledge graph |
 | `sdlc_guides_for` | — | Resolve which test or style guides apply to a list of file paths |
+| `sdlc_roles` | — | List the available review roles as resource URIs |
+| `sdlc_role` | — | Author a review role document (lens, blocking policy, focus globs) |
 
 The `implement`, `test`, and `commit` tools are iterative — they can be invoked multiple times for a given issue to address PR feedback or refine implementation. `sdlc_implement` accepts either an issue number or a PR number and dispatches between three sibling skill prompts based on PR state: `implement` (fresh start, no PR yet), `implement-continue` (PR exists, no review feedback yet), and `implement-feedback` (PR has unresolved review threads or review-body comments).
 
@@ -29,7 +31,9 @@ The `implement`, `test`, and `commit` tools are iterative — they can be invoke
 |-----|---------|
 | `sdlc://guides/test/{stem}` | Test guide identified by `{stem}` — bundled or user-supplied (e.g. `python`) |
 | `sdlc://guides/style/{stem}` | Style guide identified by `{stem}` — bundled or user-supplied (e.g. `markdown`) |
+| `sdlc://guides/role/{stem}` | Review role identified by `{stem}` — bundled or user-supplied (e.g. `general-purpose`) |
 | `sdlc://config/default` | Package-default `config.json` content (read this to discover the bundled guide-map) |
+| `sdlc://role-template` | Bundled role-document template (the Lens and Blocking policy sections) |
 | `sdlc://agents-md` | This file (project-level agent instructions) |
 | `sdlc://knowledge-graph` | Codebase knowledge graph (if generated) |
 
@@ -37,16 +41,18 @@ Use the `sdlc_guides_for` tool to discover which `{stem}` values apply to a give
 
 ## Project Configuration
 
-Projects can extend or override the bundled test- and style-guides by dropping markdown files under `.sdlc/guides/{test,style}/` and (optionally) declaring a glob-to-guides map in `.sdlc/config.json`. The MCP server merges this user config on top of the package default at startup.
+Projects can extend or override the bundled test-, style-, and role-guides by dropping markdown files under `.sdlc/guides/{test,style,role}/` and (optionally) declaring a glob-to-guides map in `.sdlc/config.json`. The MCP server merges this user config on top of the package default at startup. Review roles use the same `guide-map` mechanism as `test` and `style` guides — a `role` namespace maps globs to role stems — with one difference in how they are consumed: a role is selected explicitly by name, and its `guide-map.role` entries scope which files the selected role's findings apply to (any file may still be read for context).
 
 ### Discovery
 
-Guides are discovered from two sources at startup. Within each `kind` namespace, user guides win on stem collision.
+Guides are discovered from two sources at startup. Within each `kind` namespace (`test`, `style`, `role`), user guides win on stem collision.
 
-1. **Bundled** — `src/sdlc/{test,style}-guides/*.md` shipped with the package.
-2. **User** — files under the directory named by `guides-dir` (resolved relative to the config file's parent directory), or the convention path `<cwd>/.sdlc/guides/` when `guides-dir` is unset. Must contain `test/` and/or `style/` subdirectories with `*.md` files.
+1. **Bundled** — `src/sdlc/{test,style,role}-guides/*.md` shipped with the package.
+2. **User** — files under the directory named by `guides-dir` (resolved relative to the config file's parent directory), or the convention path `<cwd>/.sdlc/guides/` when `guides-dir` is unset. Must contain `test/`, `style/`, and/or `role/` subdirectories with `*.md` files.
 
 The stem is the filename without `.md`. Each discovered guide is exposed at `sdlc://guides/{kind}/{stem}`.
+
+All three kinds (`test`, `style`, `role`) are configured via `guide-map`. `test` and `style` guides are resolved from changed file paths; `role` guides are listed by name via `sdlc_roles`, read at `sdlc://guides/role/<stem>`, and selected explicitly, with their `guide-map.role` entries scoping where the selected role's findings apply. No review path consumes a selected role yet.
 
 ### Config file
 
@@ -57,13 +63,16 @@ The stem is the filename without `.md`. Each discovered guide is exposed at `sdl
   "guides-dir": ".sdlc/guides",
   "guide-map": {
     "test":  { "**/*.py": ["python", "pytest-patterns"] },
-    "style": { "**/*.py": ["python"], "**/*.md": ["markdown"] }
+    "style": { "**/*.py": ["python"], "**/*.md": ["markdown"] },
+    "role":  { "src/**/*.py": ["architect"] }
   }
 }
 ```
 
-- `guides-dir` — path to a directory containing `test/` and/or `style/` subdirs of `*.md` guides. Resolved relative to the config file's parent directory. Defaults to the convention path `<cwd>/.sdlc/guides`.
-- `guide-map` — namespace-split map (`test` / `style`). Each namespace maps glob patterns to lists of guide stems. A file picks up the union of guides from every pattern it matches in the requested namespace. Patterns are matched via [`pathlib.PurePath.full_match`](https://docs.python.org/3/library/pathlib.html#pathlib.PurePath.full_match) against the full relative path — see the Python docs for exact semantics. `**` matches any number of path components, so `**/*.py` matches Python files at any depth and `tests/**/*.py` matches them only under `tests/`. Bare patterns like `Dockerfile` are anchored to the root; use `**/Dockerfile` to match at any depth.
+The example above is illustrative: `pytest-patterns`, the `style` `**/*.py` → `python` entry, and the `architect` role are hypothetical user-supplied entries. Only `python` (test), `markdown` (style), and the `general-purpose` role ship by default — see `sdlc://config/default` for the authoritative bundled map.
+
+- `guides-dir` — path to a directory containing `test/`, `style/`, and/or `role/` subdirs of `*.md` guides. Resolved relative to the config file's parent directory. Defaults to the convention path `<cwd>/.sdlc/guides`.
+- `guide-map` — namespace-split map (`test` / `style` / `role`). Each namespace maps glob patterns to lists of stems. A file picks up the union of stems from every pattern it matches in the requested namespace. Patterns are matched via [`pathlib.PurePath.full_match`](https://docs.python.org/3/library/pathlib.html#pathlib.PurePath.full_match) against the full relative path — see the Python docs for exact semantics. `**` matches any number of path components, so `**/*.py` matches Python files at any depth and `tests/**/*.py` matches them only under `tests/`. Bare patterns like `Dockerfile` are anchored to the root; use `**/Dockerfile` to match at any depth.
 
 ### Resolution order
 
@@ -81,12 +90,12 @@ The stem is the filename without `.md`. Each discovered guide is exposed at `sdl
 User config merges onto the default per the following rules. Removing or replacing a default pattern requires writing the same pattern key with the desired value (or `[]` to disable):
 
 - **Top level:** `guides-dir` from user replaces default.
-- **`guide-map`:** per-namespace deep merge — user's `test` dict updates the default's `test` dict; same for `style`. Unmentioned namespaces pass through unchanged.
+- **`guide-map`:** per-namespace deep merge — user's `test` dict updates the default's `test` dict; same for `style` and `role`. Unmentioned namespaces pass through unchanged.
 - **Inside a namespace:** pattern keys merge shallowly — a user pattern key replaces the default's same-pattern entry; disjoint pattern keys coexist.
 
 ### Skill integration
 
-The `implement`, `test`, and `review` skills do not hardcode guide URIs. Each calls `sdlc_guides_for(paths, kind)` with the relevant file paths and reads every returned URI. To add a guide for a new language or convention, drop the markdown file in `.sdlc/guides/{test,style}/` and (if the file should be picked up for a path that the default map doesn't cover) add an entry to `guide-map` in `.sdlc/config.json`.
+The `implement`, `test`, and `review` skills do not hardcode guide URIs. Each calls `sdlc_guides_for(paths, kind)` with the relevant file paths and reads every returned URI. To add a guide for a new language or convention, drop the markdown file in `.sdlc/guides/{test,style}/` and (if the file should be picked up for a path that the default map doesn't cover) add an entry to `guide-map` in `.sdlc/config.json`. Review roles follow the same configuration pattern — a markdown file under `.sdlc/guides/role/` plus a `guide-map.role` entry (the `sdlc_role` skill authors both) — but, unlike `test` and `style` guides, are selected by name rather than resolved from paths via `sdlc_guides_for`.
 
 ## Installation & Setup
 
@@ -141,6 +150,7 @@ sdlc/
     ├── guides.py                    ← Config loader, guide discovery, resolver
     ├── pr_state.py                  ← gh wrappers and PR-state dispatch for sdlc_implement
     ├── config.json                  ← Package-default config (guide-map)
+    ├── role-template.md             ← Bundled role-document template
     ├── AGENTS.md                    ← you are here (canonical)
     ├── skills/                      ← Canonical skill definitions (read by server)
     │   ├── issue.md
@@ -151,11 +161,14 @@ sdlc/
     │   ├── commit.md
     │   ├── pr.md
     │   ├── review.md
+    │   ├── role.md
     │   └── understand-chat.md
     ├── test-guides/                 ← Bundled test guides (extend via .sdlc/guides/test/)
     │   └── python.md
-    └── style-guides/                ← Bundled style guides (extend via .sdlc/guides/style/)
-        └── markdown.md
+    ├── style-guides/                ← Bundled style guides (extend via .sdlc/guides/style/)
+    │   └── markdown.md
+    └── role-guides/                 ← Bundled review roles (extend via .sdlc/guides/role/)
+        └── general-purpose.md
 ```
 
 ## Pipeline Overview

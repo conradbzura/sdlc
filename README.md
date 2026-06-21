@@ -120,11 +120,15 @@ sdlc/
         │   ├── commit.md
         │   ├── pr.md
         │   ├── review.md
+        │   ├── role.md
         │   └── understand-chat.md
+        ├── role-template.md        # Bundled role-document template
         ├── test-guides/            # Testing conventions (served as MCP resources)
         │   └── python.md
-        └── style-guides/           # Style conventions (served as MCP resources)
-            └── markdown.md
+        ├── style-guides/           # Style conventions (served as MCP resources)
+        │   └── markdown.md
+        └── role-guides/            # Review roles (served as MCP resources)
+            └── general-purpose.md
 ```
 
 ### MCP Tools
@@ -138,6 +142,8 @@ sdlc/
 | `sdlc_pr` | Review changes and create a draft pull request |
 | `sdlc_review` | Review an open pull request for compliance and quality |
 | `sdlc_understand_chat` | Query the codebase knowledge graph |
+| `sdlc_roles` | List the available review roles |
+| `sdlc_role` | Author a review role document |
 
 ### MCP Resources
 
@@ -145,6 +151,8 @@ sdlc/
 |-----|---------|
 | `sdlc://guides/test/python` | Python testing conventions |
 | `sdlc://guides/style/markdown` | Markdown style conventions |
+| `sdlc://guides/role/general-purpose` | Default review role |
+| `sdlc://role-template` | Role-document template |
 | `sdlc://agents-md` | Project-level agent instructions |
 | `sdlc://knowledge-graph` | Codebase knowledge graph (if generated) |
 
@@ -161,6 +169,7 @@ The pipeline enforces disciplined commits — atomic, well-structured, with conv
 - **[src/sdlc/skills/commit.md](./src/sdlc/skills/commit.md)** — Commit skill
 - **[src/sdlc/skills/pr.md](./src/sdlc/skills/pr.md)** — Pull request skill
 - **[src/sdlc/skills/review.md](./src/sdlc/skills/review.md)** — Code review skill
+- **[src/sdlc/skills/role.md](./src/sdlc/skills/role.md)** — Review-role authoring skill
 - **[src/sdlc/test-guides/python.md](./src/sdlc/test-guides/python.md)** — Python testing conventions
 - **[src/sdlc/style-guides/markdown.md](./src/sdlc/style-guides/markdown.md)** — Markdown style conventions
 

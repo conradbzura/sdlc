@@ -1,9 +1,13 @@
 """Guide config loading, discovery, and resolution.
 
-Guides are markdown files served as MCP resources. Two namespaces exist:
-``test`` and ``style``. Bundled guides ship with the package; user guides
-extend or override them via a ``.sdlc/config.json`` file (path overridable
-via the ``SDLC_CONFIG`` environment variable).
+Guides are markdown files served as MCP resources. The ``test``, ``style``,
+and ``role`` namespaces are all configured through ``guide-map`` (glob ->
+stems) and discovered by stem. ``test`` and ``style`` guides are resolved
+from changed file paths; ``role`` guides are selected by name, and their
+``guide-map`` entries scope where a selected role's findings apply. Bundled
+guides ship with the package; user guides extend or override them via a
+``.sdlc/config.json`` file (path overridable via the ``SDLC_CONFIG``
+environment variable).
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from pathlib import Path, PurePath
 PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = PACKAGE_DIR / "config.json"
 
-KINDS = ("test", "style")
+KINDS = ("test", "style", "role")
 ALLOWED_TOP_LEVEL_KEYS = {"guides-dir", "guide-map"}
 CAMEL_CASE_HINTS = {"guidesDir": "guides-dir", "guideMap": "guide-map"}
 
@@ -153,6 +157,11 @@ def read_guide(
     if path is None:
         return f"Error: guide '{kind}/{stem}' not found"
     return path.read_text()
+
+
+def list_roles(discovered: dict[tuple[str, str], Path]) -> list[str]:
+    """Return the sorted stems of all discovered role guides."""
+    return sorted(stem for (kind, stem) in discovered if kind == "role")
 
 
 def load_state(

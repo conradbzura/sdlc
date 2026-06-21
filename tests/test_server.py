@@ -9,15 +9,19 @@ from sdlc.pr_state import Finding, Findings, GhUnavailable, PrContext
 from sdlc.server import (
     agents_md,
     get_default_config,
+    get_role_guide,
     get_style_guide,
     get_test_guide,
     knowledge_graph,
+    role_template,
     sdlc_commit,
     sdlc_guides_for,
     sdlc_implement,
     sdlc_issue,
     sdlc_pr,
     sdlc_review,
+    sdlc_role,
+    sdlc_roles,
     sdlc_test,
     sdlc_understand_chat,
 )
@@ -461,6 +465,136 @@ async def test_get_default_config_should_return_shipped_json():
     assert "guide-map" in parsed
     assert "test" in parsed["guide-map"]
     assert "style" in parsed["guide-map"]
+    assert "role" in parsed["guide-map"]
+
+
+@pytest.mark.asyncio
+async def test_get_role_guide_should_return_bundled_general_purpose_role():
+    """Test the role/general-purpose URI serves the bundled default role.
+
+    Given:
+        The package bundles src/sdlc/role-guides/general-purpose.md.
+    When:
+        get_role_guide(stem="general-purpose") is called.
+    Then:
+        It should return the general-purpose role content.
+    """
+    # Act
+    result = await get_role_guide(stem="general-purpose")
+
+    # Assert
+    assert "# Role: general-purpose" in result
+
+
+@pytest.mark.asyncio
+async def test_get_role_guide_should_return_error_when_stem_unknown():
+    """Test an unknown role guide stem returns an error message.
+
+    Given:
+        A stem with no corresponding role file.
+    When:
+        get_role_guide(stem="nonexistent") is called.
+    Then:
+        It should return a "not found" message.
+    """
+    # Act
+    result = await get_role_guide(stem="nonexistent")
+
+    # Assert
+    assert "not found" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_role_template_should_return_template_content():
+    """Test the role-template resource serves the bundled role template.
+
+    Given:
+        The package bundles src/sdlc/role-template.md.
+    When:
+        role_template() is called.
+    Then:
+        It should return the two required body section headings.
+    """
+    # Act
+    result = await role_template()
+
+    # Assert
+    assert "## Lens / identity" in result
+    assert "## Blocking policy" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_roles_should_include_general_purpose_uri():
+    """Test sdlc_roles lists the bundled general-purpose role as a URI.
+
+    Given:
+        The package bundles the general-purpose role.
+    When:
+        sdlc_roles() is called.
+    Then:
+        The general-purpose role URI is present in the result.
+    """
+    # Act
+    result = await sdlc_roles()
+
+    # Assert
+    assert "sdlc://guides/role/general-purpose" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_roles_should_return_role_uris():
+    """Test every entry sdlc_roles returns is a role resource URI.
+
+    Given:
+        The discovered roles (at least the bundled general-purpose).
+    When:
+        sdlc_roles() is called.
+    Then:
+        Every returned entry is an sdlc://guides/role/ URI.
+    """
+    # Act
+    result = await sdlc_roles()
+
+    # Assert
+    assert all(uri.startswith("sdlc://guides/role/") for uri in result)
+
+
+@pytest.mark.asyncio
+async def test_sdlc_role_should_return_skill_with_target_role():
+    """Test sdlc_role returns the role skill with the target role appended.
+
+    Given:
+        A role name.
+    When:
+        sdlc_role(name="architect") is called.
+    Then:
+        It should return the role skill content with "Target role: architect".
+    """
+    # Act
+    result = await sdlc_role(name="architect")
+
+    # Assert
+    assert "# Role Skill" in result
+    assert "Target role: architect" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_role_should_inline_role_template():
+    """Test sdlc_role inlines the role-document template into the prompt.
+
+    Given:
+        A role name.
+    When:
+        sdlc_role(name="architect") is called.
+    Then:
+        It should include the template's two required body section headings.
+    """
+    # Act
+    result = await sdlc_role(name="architect")
+
+    # Assert
+    assert "## Lens / identity" in result
+    assert "## Blocking policy" in result
 
 
 @pytest.mark.asyncio
