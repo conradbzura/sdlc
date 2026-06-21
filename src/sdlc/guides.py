@@ -164,6 +164,56 @@ def list_roles(discovered: dict[tuple[str, str], Path]) -> list[str]:
     return sorted(stem for (kind, stem) in discovered if kind == "role")
 
 
+def globs_for_role(
+    role: str,
+    guide_map: dict[str, dict[str, list[str]]],
+) -> list[str]:
+    """Return the glob patterns scoping ``role`` under ``guide-map.role``.
+
+    This is the reverse of :func:`resolve_guides`: instead of mapping a path to
+    the stems whose patterns match it, it maps a role stem to every pattern that
+    lists it in the ``role`` namespace. A reviewer assigned ``role`` confines its
+    findings to files matching the returned patterns (any file may still be read
+    for context). Patterns preserve their order of appearance in the map and are
+    de-duplicated. Returns an empty list when no pattern maps to ``role``.
+    """
+    namespace = guide_map.get("role", {})
+    seen: set[str] = set()
+    result: list[str] = []
+    for pattern, stems in namespace.items():
+        if role in stems and pattern not in seen:
+            seen.add(pattern)
+            result.append(pattern)
+    return result
+
+
+def files_for_role(
+    paths: list[str],
+    role: str,
+    guide_map: dict[str, dict[str, list[str]]],
+) -> list[str]:
+    """Return the subset of ``paths`` scoped to ``role`` under ``guide-map.role``.
+
+    Composes :func:`globs_for_role` (the role-to-globs reverse lookup over the
+    already-merged ``guide-map.role``) with the same ``PurePath.full_match``
+    matching :func:`resolve_guides` uses, so a reviewer's in-scope file set is
+    computed from ground truth rather than re-derived from prose. A path is
+    in scope when it matches any glob mapped to ``role``. Input order is
+    preserved and paths are de-duplicated. Returns an empty list when no glob
+    maps to ``role`` or no path matches.
+    """
+    patterns = globs_for_role(role, guide_map)
+    seen: set[str] = set()
+    result: list[str] = []
+    for path in paths:
+        if path in seen:
+            continue
+        if any(PurePath(path).full_match(pattern) for pattern in patterns):
+            seen.add(path)
+            result.append(path)
+    return result
+
+
 def load_state(
     cwd: Path | None = None,
     package_dir: Path | None = None,
