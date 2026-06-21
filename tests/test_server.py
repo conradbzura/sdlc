@@ -679,6 +679,26 @@ async def test_get_role_guide_should_return_bundled_general_purpose_role():
 
 
 @pytest.mark.asyncio
+async def test_get_role_guide_should_return_bundled_aie_role():
+    """Test the role/aie URI serves the bundled AI-engineering role.
+
+    Given:
+        The package bundles src/sdlc/role-guides/aie.md.
+    When:
+        get_role_guide(stem="aie") is called.
+    Then:
+        It should return the aie role content with its lens and blocking policy.
+    """
+    # Act
+    result = await get_role_guide(stem="aie")
+
+    # Assert
+    assert "# Role: aie" in result
+    assert "## Lens / identity" in result
+    assert "## Blocking policy" in result
+
+
+@pytest.mark.asyncio
 async def test_get_role_guide_should_return_error_when_stem_unknown():
     """Test an unknown role guide stem returns an error message.
 
@@ -750,6 +770,24 @@ async def test_sdlc_roles_should_include_general_purpose_uri():
 
     # Assert
     assert "sdlc://guides/role/general-purpose" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_roles_should_include_aie_uri():
+    """Test sdlc_roles lists the bundled aie role as a URI.
+
+    Given:
+        The package bundles the aie role alongside general-purpose.
+    When:
+        sdlc_roles() is called.
+    Then:
+        The aie role URI is present in the result.
+    """
+    # Act
+    result = await sdlc_roles()
+
+    # Assert
+    assert "sdlc://guides/role/aie" in result
 
 
 @pytest.mark.asyncio
