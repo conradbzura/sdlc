@@ -23,7 +23,7 @@ Fetch a GitHub issue, create a branch, gather codebase context, and enter planni
 
 ## Pipeline Context
 
-This skill is part of the development workflow pipeline: `issue` → `implement` → `test` → `commit` → `pr` → `review`. This skill is the **second** stage. The `sdlc_implement` MCP endpoint dispatches between three sibling prompts based on PR state — this skill is returned when the supplied number is an issue with no linked PR. PR-based work (continuing an in-progress branch or addressing review feedback) is routed to the `implement-continue` and `implement-feedback` skills respectively.
+This skill is part of the development workflow pipeline: `issue` → `implement` → `test` → `commit` → `pr` → `review`. This skill is the **second** stage. The `sdlc_implement` MCP endpoint dispatches between three sibling prompts based on PR state and the `--review` selector — this skill is returned when the supplied number is an issue with no linked PR and no local review document applies. Continuing an in-progress branch is routed to the `implement-continue` skill; addressing a local review document's findings is routed to the `implement-feedback` skill.
 
 ## Implementation Notes
 
