@@ -53,7 +53,7 @@ cd sdlc
 pip install -e .
 ```
 
-You now have seven tools available: `sdlc_issue`, `sdlc_implement`, `sdlc_test`, `sdlc_commit`, `sdlc_pr`, `sdlc_review`, `sdlc_understand_chat`.
+You now have eleven tools available: the pipeline stages `sdlc_issue`, `sdlc_implement`, `sdlc_test`, `sdlc_commit`, `sdlc_pr`, and `sdlc_review`, plus the supporting tools `sdlc_understand_chat`, `sdlc_guides_for`, `sdlc_roles`, `sdlc_role_scope`, and `sdlc_role`.
 
 ### End-to-End Example
 
@@ -91,7 +91,7 @@ If you have a PR template defined in your `.github` dir, the agent will follow t
 
 **6. Review the PR (Optional)**
 
-The agent calls `sdlc_review` with the PR number. It runs one or more reviewer roles (N reviewers per role) over the PR diff, each confined to the files its role is mapped to, then consolidates their findings — deduped, merged across roles, highest severity wins — into a single local document at `.sdlc/reviews/issue-#<N>/review-<iteration>.md`. The document groups findings by severity (blocking first), gives each a stable ID and a `Reference`, and pre-selects a recommended remediation per finding with alternatives and an `Other` slot. You review and approve the document; nothing is posted to GitHub. This document is exactly what `sdlc_implement` consumes to drive fixups — see the next step.
+The agent calls `sdlc_review` with either the PR number or a set of local file paths/globs (exactly one). It runs one or more reviewer roles (N reviewers per role) over the target — the PR diff in PR mode, or the named files' whole contents in paths mode — each confined to the files its role is mapped to, then consolidates their findings — deduped, merged across roles, highest severity wins — into a single local document. In PR mode that document lives at `.sdlc/reviews/issue-#<N>/review-<iteration>.md`; in paths mode it lives at `.sdlc/reviews/<slug>/review-<iteration>.md`, where `<slug>` is derived deterministically from the paths so repeated reviews of the same target accumulate together. The document groups findings by severity (blocking first), gives each a stable ID and a `Reference`, and pre-selects a recommended remediation per finding with alternatives and an `Other` slot (PR-mode documents also map each finding to its touched commit for fixups; paths-mode documents omit commit attribution). You review and approve the document; nothing is posted to GitHub. In PR mode this document is exactly what `sdlc_implement` consumes to drive fixups — see the next step.
 
 **7. Iterate or Merge**
 
@@ -142,7 +142,7 @@ sdlc/
 | `sdlc_test` | Analyze coverage and write comprehensive tests |
 | `sdlc_commit` | Stage and commit changes with atomic commits |
 | `sdlc_pr` | Review changes and create a draft pull request |
-| `sdlc_review` | Review an open PR and write a consolidated local review document under `.sdlc/reviews/` |
+| `sdlc_review` | Review an open PR (diff) or a set of local file paths/globs, writing a consolidated local review document under `.sdlc/reviews/` |
 | `sdlc_understand_chat` | Query the codebase knowledge graph |
 | `sdlc_roles` | List the available review roles |
 | `sdlc_role_scope` | Reverse-lookup the changed files a role's findings are confined to |
