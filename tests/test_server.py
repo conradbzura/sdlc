@@ -5,7 +5,12 @@ import json
 import pytest
 
 from sdlc import pr_state
-from sdlc.pr_state import Finding, Findings, GhUnavailable, PrContext
+from sdlc.pr_state import (
+    GhUnavailable,
+    PrContext,
+    ReviewFinding,
+    ReviewFindings,
+)
 from sdlc.server import (
     agents_md,
     get_default_config,
@@ -161,7 +166,7 @@ async def test_sdlc_implement_with_no_pr(monkeypatch):
         It should return the fresh implement skill with #42 appended.
     """
     # Arrange
-    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: None)
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None, review=None: None)
 
     # Act
     result = await sdlc_implement(number=42)
@@ -186,7 +191,7 @@ async def test_sdlc_implement_with_no_feedback_pr(monkeypatch):
     """
     # Arrange
     context = PrContext(pr_number=42, head_ref="feature-x", url="https://example/pr/42")
-    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: context)
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None, review=None: context)
 
     # Act
     result = await sdlc_implement(number=42)
@@ -198,32 +203,36 @@ async def test_sdlc_implement_with_no_feedback_pr(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sdlc_implement_with_findings(monkeypatch):
-    """Test sdlc_implement returns the feedback skill when findings exist.
+async def test_sdlc_implement_with_review_findings(monkeypatch):
+    """Test sdlc_implement returns the feedback skill when review findings exist.
 
     Given:
-        pr_state.dispatch returns a Findings instance for the given number.
+        pr_state.dispatch returns a ReviewFindings instance for the number.
     When:
         sdlc_implement(number=42) is called.
     Then:
-        It should return the feedback skill with formatted findings appended.
+        It should return the feedback skill with the rendered review document.
     """
     # Arrange
-    findings = Findings(
-        pr_number=42,
-        head_ref="feature-x",
-        url="https://example/pr/42",
+    review_findings = ReviewFindings(
+        issue_number=7,
+        iteration=2,
+        path=".sdlc/reviews/issue-#7/review-2.md",
         findings=[
-            Finding(
-                kind="review_thread",
-                path="src/sdlc/server.py",
-                line=64,
-                body="rename foo to bar",
-                author="alice",
+            ReviewFinding(
+                id="B1",
+                title="Rename foo to bar",
+                severity="blocking",
+                reference="`src/sdlc/server.py:64`",
+                issue="The symbol foo should be bar.",
+                remediation="- [x] Rename foo to bar. *(Recommended.)*",
+                touched_commit="`abc1234`",
             ),
         ],
     )
-    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: findings)
+    monkeypatch.setattr(
+        pr_state, "dispatch", lambda number, repo=None, review=None: review_findings
+    )
 
     # Act
     result = await sdlc_implement(number=42)
@@ -231,17 +240,98 @@ async def test_sdlc_implement_with_findings(monkeypatch):
     # Assert
     assert "# Implement Feedback Skill" in result
     assert "src/sdlc/server.py:64" in result
-    assert "rename foo to bar" in result
+    assert "Rename foo to bar" in result
+    assert "Iteration: 2" in result
 
 
 @pytest.mark.asyncio
-async def test_sdlc_implement_should_resolve_repo_exactly_once(monkeypatch):
+async def test_sdlc_implement_should_thread_int_review_to_dispatch(monkeypatch):
+    """Test sdlc_implement passes an int review selector through to dispatch.
+
+    Given:
+        A captured dispatch spy and review=3.
+    When:
+        sdlc_implement(number=7, review=3) is called.
+    Then:
+        dispatch should receive review=3.
+    """
+    # Arrange
+    captured = {}
+
+    def fake_dispatch(number, repo=None, review=None):
+        captured["review"] = review
+        return None
+
+    monkeypatch.setattr(pr_state, "dispatch", fake_dispatch)
+
+    # Act
+    await sdlc_implement(number=7, review=3)
+
+    # Assert
+    assert captured["review"] == 3
+
+
+@pytest.mark.asyncio
+async def test_sdlc_implement_should_thread_pr_url_review_to_dispatch(monkeypatch):
+    """Test sdlc_implement passes a PR-URL review selector through to dispatch.
+
+    Given:
+        A captured dispatch spy and a PR-URL review argument.
+    When:
+        sdlc_implement(number=7, review=<pr-url>) is called.
+    Then:
+        dispatch should receive the PR URL unchanged.
+    """
+    # Arrange
+    captured = {}
+    url = "https://github.com/conradbzura/sdlc/pull/42"
+
+    def fake_dispatch(number, repo=None, review=None):
+        captured["review"] = review
+        return None
+
+    monkeypatch.setattr(pr_state, "dispatch", fake_dispatch)
+
+    # Act
+    await sdlc_implement(number=7, review=url)
+
+    # Assert
+    assert captured["review"] == url
+
+
+@pytest.mark.asyncio
+async def test_sdlc_implement_should_report_missing_iteration(monkeypatch):
+    """Test sdlc_implement returns a diagnostic when dispatch raises ValueError.
+
+    Given:
+        pr_state.dispatch raises ValueError for a missing review iteration.
+    When:
+        sdlc_implement(number=7, review=9) is called.
+    Then:
+        It should return a clear diagnostic string rather than propagating.
+    """
+    # Arrange
+    def raise_value_error(number, repo=None, review=None):
+        raise ValueError("Review iteration 9 not found for issue #7")
+
+    monkeypatch.setattr(pr_state, "dispatch", raise_value_error)
+
+    # Act
+    result = await sdlc_implement(number=7, review=9)
+
+    # Assert
+    assert "Could not load the requested review feedback" in result
+    assert "iteration 9 not found" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_implement_should_resolve_repo_exactly_once(tmp_path, monkeypatch):
     """Test sdlc_implement resolves the target repo exactly once per call.
 
     Given:
-        A non-fork repo and a PR number with no unresolved feedback, with the
-        real dispatch running against a canned gh and a counting spy wrapping
-        resolve_repo.
+        A non-fork repo and a PR number whose closing issue has no local review
+        document, with the real dispatch running against a canned gh and a
+        counting spy wrapping resolve_repo.
     When:
         sdlc_implement(number=42) is called.
     Then:
@@ -250,6 +340,7 @@ async def test_sdlc_implement_should_resolve_repo_exactly_once(monkeypatch):
         classification.
     """
     # Arrange
+    monkeypatch.chdir(tmp_path)
     call_count = 0
 
     def counting_resolve_repo():
@@ -260,30 +351,31 @@ async def test_sdlc_implement_should_resolve_repo_exactly_once(monkeypatch):
     pr_view = json.dumps(
         {"number": 42, "headRefName": "feature-x", "url": "https://example/pr/42"}
     )
-    graphql_query = (
+    closing_query = (
         "query=query($owner: String!, $repo: String!, $pr: Int!) "
         "{ repository(owner: $owner, name: $repo) { pullRequest(number: $pr) "
-        "{ reviewThreads(first: 100) { nodes { isResolved comments(first: 1) "
-        "{ nodes { body path line author { login } } } } } } } }"
+        "{ closingIssuesReferences(first: 10) { nodes { number } } } } }"
+    )
+    closing_payload = json.dumps(
+        {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "closingIssuesReferences": {"nodes": [{"number": 7}]}
+                    }
+                }
+            }
+        }
     )
     responses = {
         ("pr", "view", "42", "--json", "number,headRefName,url"): pr_view,
         (
             "api", "graphql",
-            "-f", graphql_query,
+            "-f", closing_query,
             "-f", "owner=conradbzura",
             "-f", "repo=sdlc",
             "-F", "pr=42",
-        ): json.dumps(
-            {
-                "data": {
-                    "repository": {
-                        "pullRequest": {"reviewThreads": {"nodes": []}}
-                    }
-                }
-            }
-        ),
-        ("pr", "view", "42", "--json", "reviews"): json.dumps({"reviews": []}),
+        ): closing_payload,
     }
 
     def fake_run_gh(args, allow_failure=False):
@@ -312,7 +404,7 @@ async def test_sdlc_implement_when_gh_unavailable(monkeypatch):
         It should return the fresh skill with a diagnostic comment appended.
     """
     # Arrange
-    def raise_unavailable(_number, repo=None):
+    def raise_unavailable(_number, repo=None, review=None):
         raise GhUnavailable("gh executable not found on PATH")
 
     monkeypatch.setattr(pr_state, "dispatch", raise_unavailable)
@@ -338,7 +430,7 @@ async def test_sdlc_implement_should_omit_target_directive_when_no_target(monkey
         It should return fresh implement skill content without an override directive.
     """
     # Arrange
-    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: None)
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None, review=None: None)
 
     # Act
     result = await sdlc_implement(number=42)
@@ -359,7 +451,7 @@ async def test_sdlc_implement_should_append_target_directive_when_target_given(m
         It should return content with the override directive naming "stable".
     """
     # Arrange
-    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: None)
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None, review=None: None)
 
     # Act
     result = await sdlc_implement(number=42, target="stable")
@@ -768,7 +860,7 @@ async def test_sdlc_implement_should_inject_upstream_target_repo_when_fork(monke
         It should append a "Target repo: upstream/sdlc" directive.
     """
     # Arrange
-    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: None)
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None, review=None: None)
     _patch_resolve_repo(monkeypatch, _fork_repo())
 
     # Act
@@ -791,7 +883,7 @@ async def test_sdlc_implement_should_inject_target_repo_on_continue_path(monkeyp
     """
     # Arrange
     context = PrContext(pr_number=42, head_ref="feature-x", url="https://example/pr/42")
-    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: context)
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None, review=None: context)
     _patch_resolve_repo(monkeypatch, _fork_repo())
 
     # Act
@@ -807,28 +899,32 @@ async def test_sdlc_implement_should_inject_target_repo_on_feedback_path(monkeyp
     """Test sdlc_implement injects the target-repo directive on the feedback path.
 
     Given:
-        pr_state.dispatch returns Findings and resolve_repo reports a fork.
+        pr_state.dispatch returns ReviewFindings and resolve_repo reports a fork.
     When:
         sdlc_implement(number=42) is called.
     Then:
         It should append the target-repo directive alongside the findings.
     """
     # Arrange
-    findings = Findings(
-        pr_number=42,
-        head_ref="feature-x",
-        url="https://example/pr/42",
+    review_findings = ReviewFindings(
+        issue_number=7,
+        iteration=1,
+        path=".sdlc/reviews/issue-#7/review-1.md",
         findings=[
-            Finding(
-                kind="review_thread",
-                path="src/sdlc/server.py",
-                line=64,
-                body="rename foo to bar",
-                author="alice",
+            ReviewFinding(
+                id="B1",
+                title="Rename foo to bar",
+                severity="blocking",
+                reference="`src/sdlc/server.py:64`",
+                issue="The symbol foo should be bar.",
+                remediation="- [x] Rename foo to bar.",
+                touched_commit="`abc1234`",
             ),
         ],
     )
-    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: findings)
+    monkeypatch.setattr(
+        pr_state, "dispatch", lambda number, repo=None, review=None: review_findings
+    )
     _patch_resolve_repo(monkeypatch, _fork_repo())
 
     # Act
@@ -852,7 +948,7 @@ async def test_sdlc_implement_should_inject_target_repo_when_gh_state_unavailabl
         target-repo directive both appended.
     """
     # Arrange
-    def raise_unavailable(_number, repo=None):
+    def raise_unavailable(_number, repo=None, review=None):
         raise GhUnavailable("gh state probe failed")
 
     monkeypatch.setattr(pr_state, "dispatch", raise_unavailable)
@@ -879,7 +975,7 @@ async def test_sdlc_implement_should_omit_target_repo_when_resolve_unavailable(m
         It should return the fresh skill with no "Target repo" directive.
     """
     # Arrange
-    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None: None)
+    monkeypatch.setattr(pr_state, "dispatch", lambda number, repo=None, review=None: None)
     _patch_resolve_repo_unavailable(monkeypatch)
 
     # Act
