@@ -1,11 +1,14 @@
 ---
 name: review
 description: >
-  Review an open pull request for guide compliance, correctness, and code
-  quality. Use this skill whenever the user says "review", "review PR #N",
-  "review this PR", or similar. Fetches the PR diff and metadata, runs one or
-  more reviewer subagents per role (each confined to its role's mapped files),
-  consolidates their findings into a single standardized local document under
+  Review an open pull request, or a set of local file paths, for guide
+  compliance, correctness, and code quality. Use this skill whenever the user
+  says "review", "review PR #N", "review this PR", "review these files", or
+  similar. In PR mode it fetches the diff and metadata; in paths mode it
+  expands the supplied paths and globs against the working tree and reviews the
+  matched files as they stand. Either way it runs one or more reviewer
+  subagents per role (each confined to its role's mapped files), consolidates
+  their findings into a single standardized local document under
   `.sdlc/reviews/`, and presents it. Does not post to GitHub.
 subagent:
   support: optional
@@ -20,7 +23,14 @@ The key words MUST, MUST NOT, SHALL, SHALL NOT, SHOULD, SHOULD NOT, REQUIRED, RE
 
 # Review Skill
 
-Fetch a pull request, review its diff through one or more role lenses (N reviewers per role), consolidate the findings into a single standardized local review document under `.sdlc/reviews/`, and present it for the user to drive fixups. This skill writes a local document; it does NOT post to GitHub.
+Review either a pull request's diff or a set of local file paths through one or more role lenses (N reviewers per role), consolidate the findings into a single standardized local review document under `.sdlc/reviews/`, and present it for the user to drive fixups. This skill writes a local document; it does NOT post to GitHub.
+
+The arguments appended below select the mode by carrying **exactly one** of two target directives:
+
+- **PR mode** — a `Target PR: #<pr-number>` directive is present. Review the PR diff; the steps fetch metadata, the diff, and the branch commit map, and the document lands under `.sdlc/reviews/issue-#<N>/`.
+- **PATHS mode** — a `Target paths:` directive is present. There is no PR, no diff, no linked issue, and no `Target repo` directive. Expand the listed literal paths and globs against the working tree and review each matched file's whole contents. The endpoint computes the document directory and injects it as `Review document directory: .sdlc/reviews/<slug>/`. Run no `gh` and post nothing.
+
+Where a step below is marked **(PR mode)** or **(paths mode)** it applies only to that mode; unmarked steps apply to both.
 
 ## Pipeline Context
 
@@ -37,8 +47,8 @@ The total number of reviewer subagents is **N × (number of roles)**. Each revie
 
 ## Invariants
 
-- MUST NOT post anything to GitHub. This skill produces a local document only — there is no `gh api .../reviews` call, no review event, and no inline comments.
-- When the review proceeds to completion, MUST write exactly one consolidated document per invocation, at `.sdlc/reviews/issue-#<N>/review-<iteration>.md`, where `<N>` is the resolved linked issue and `<iteration>` is the 1-based next iteration. The unresolved-issue branch (the PR has no linked issue) and the declined-large-diff branch may end without writing a document — no document is written when the run does not reach completion on those paths.
+- MUST NOT post anything to GitHub. This skill produces a local document only — there is no `gh api .../reviews` call, no review event, and no inline comments. In **paths mode** the skill additionally runs no `gh` at all (no repo resolution, no PR fetch, no commit map).
+- When the review proceeds to completion, MUST write exactly one consolidated document per invocation, under the injected `Review document directory`, at `<dir>/review-<iteration>.md`. In PR mode `<dir>` is `.sdlc/reviews/issue-#<N>/` (`<N>` = the resolved linked issue); in paths mode `<dir>` is `.sdlc/reviews/<slug>/`, the endpoint-computed slug. `<iteration>` is the 1-based next iteration in both modes. In PR mode the unresolved-issue branch (the PR has no linked issue) and the declined-large-diff branch may end without writing a document — no document is written when the run does not reach completion on those paths. (Both of those branches are PR-mode only; paths mode has no linked-issue resolution and no remote diff to decline.)
 - MUST NOT write the document until the user has approved the consolidated findings, exactly as presented.
 - Each reviewer's findings MUST be confined to the files mapped to its role in `guide-map.role` (any file MAY be read for context). The default `general-purpose` role is mapped to `**/*`, so its findings span the whole diff.
 - When consolidating, each finding MUST be assigned the **highest** severity any role gives it; where roles disagree, the dissent MUST be noted on the finding.
@@ -48,16 +58,17 @@ The total number of reviewer subagents is **N × (number of roles)**. Each revie
 
 ## Arguments
 
-The MCP endpoint appends the following below this skill prompt:
+The MCP endpoint appends the following below this skill prompt. **Exactly one** of `Target PR:` / `Target paths:` is present — it selects the mode:
 
-- `Target PR: #<pr-number>` — the PR to review.
-- `Roles: <role-a>, <role-b>, …` — the role stems to review through (defaults to `general-purpose`).
-- `Reviewers per role: <N>` — how many independent reviewers to run per role (defaults to 1).
-- `Resolved issue: #<N>` — the linked issue resolved by the endpoint via the `closingIssuesReferences` relationship (or an `unresolved` notice when the PR has no linked issue). Defines the `.sdlc/reviews/issue-#<N>/` path.
-- `Review document directory: .sdlc/reviews/issue-#<N>/` — the directory holding this PR's review rounds.
+- `Target PR: #<pr-number>` — *(PR mode)* the PR to review.
+- `Target paths:` followed by the literal file paths and/or globs to review, one per line — *(paths mode)* the artifacts to review in place against the working tree. No PR, no diff, no linked issue.
+- `Roles: <role-a>, <role-b>, …` — the role stems to review through (defaults to `general-purpose`). Same meaning in both modes.
+- `Reviewers per role: <N>` — how many independent reviewers to run per role (defaults to 1). Same meaning in both modes.
+- `Resolved issue: #<N>` — *(PR mode only)* the linked issue resolved by the endpoint via the `closingIssuesReferences` relationship (or an `unresolved` notice when the PR has no linked issue). Defines the `.sdlc/reviews/issue-#<N>/` path. Absent in paths mode.
+- `Review document directory: .sdlc/reviews/<dir>/` — the directory holding this target's review rounds: `issue-#<N>/` in PR mode, or a slug derived deterministically from the raw `paths` strings in paths mode. In paths mode this line is always present (the endpoint computes the slug); in PR mode it is omitted on the `unresolved` branch.
 - The bundled review-document template (also available as the `sdlc://review-template` resource), which defines the exact structure of the document to write.
 
-The tool output carries a `Target repo: <id>` directive identifying the repository for `gh` commands that reference issues or PRs (the upstream `<owner>/<name>` when the current repo is a fork, otherwise the current repo). Consume it in step 1 rather than re-deriving the target repo.
+**(PR mode)** The tool output also carries a `Target repo: <id>` directive identifying the repository for `gh` commands that reference issues or PRs (the upstream `<owner>/<name>` when the current repo is a fork, otherwise the current repo). Consume it in step 1 rather than re-deriving the target repo. **In paths mode there is no `Target repo` directive** — paths mode runs no `gh`, so skip step 1 entirely.
 
 ## Subagent Execution (Optional)
 
@@ -80,8 +91,8 @@ This skill MAY itself be executed in an isolated orchestrator subagent to preser
 
 ### Checklist
 
-1. Resolve target repository
-2. Fetch the PR metadata, diff, and commit map
+1. Resolve target repository *(PR mode only)*
+2. Acquire the review targets (PR diff + commit map, or the matched paths)
 3. Resolve the review-document path
 4. Read project guides and styles
 5. Resolve each role's lens and mapped files
@@ -92,7 +103,9 @@ This skill MAY itself be executed in an isolated orchestrator subagent to preser
 10. Write the review document
 11. Prompt the user with next steps
 
-### 1. Resolve target repository
+### 1. Resolve target repository *(PR mode)*
+
+**In paths mode, skip this step** — there is no `Target repo` directive and no `gh` is run; go straight to step 2.
 
 The MCP tool resolves the target repository once and appends a `Target repo: <id>` directive to this skill prompt. Consume it — do NOT run `gh repo view` to re-derive it:
 
@@ -105,7 +118,11 @@ If the directive is absent — which only happens when the tool could not reach 
 
 All `gh` commands in subsequent steps that reference issues or PRs MUST include `--repo <target>` when the target repo differs from the current repo.
 
-### 2. Fetch the PR metadata, diff, and commit map
+### 2. Acquire the review targets
+
+The two modes acquire different inputs for the reviewers. Follow the subsection for the mode the appended arguments selected.
+
+#### PR mode — fetch the PR metadata, diff, and commit map
 
 ```bash
 gh pr view <number> --repo <target> --json title,body,headRefName,baseRefName,changedFiles,headRefOid
@@ -132,9 +149,33 @@ git log <baseRefName>..<headRefName> --name-only --pretty=format:'%h %s'
 
 (or `gh pr view <number> --repo <target> --json commits` combined with the `--name-only` log). This yields the per-commit `(<sha>, <conventional-commit subject>, <touched files>)` tuples. Hold this **branch commit map** for use in step 8: it fills the header commit map, attributes each finding's `file:line` to the commit that owns that file, and builds the fixup mapping. Do NOT improvise shas — derive them from this command.
 
+#### PATHS mode — expand the paths and capture file contents
+
+There is no PR, no remote diff, and no commit map in this mode. Instead, expand the literal paths and globs from the `Target paths:` directive against the working tree and collect the files that match:
+
+```bash
+# For each entry under `Target paths:` — a literal file is itself; a glob expands.
+# e.g. with shell globbing (nullglob), or `git ls-files -- <pattern>` to respect tracking:
+git ls-files -- <each Target paths entry>
+```
+
+Resolve every entry: a literal path contributes that file (warn if it does not exist); a glob contributes every working-tree file it matches. Deduplicate the union into the **matched file set**. If the union is empty, see the "no files matched" edge case below.
+
+**Capture each matched file's WHOLE contents** (not a diff) — this exact text is interpolated into each reviewer's brief in step 7 (reviewers are spawned into fresh contexts and do NOT inherit your reads). Skip binary files (note them to the user). There is no `headRefOid`, no PR-head verification, and no commit map: the reviewers review the artifacts exactly as they stand in the working tree, and step 8 omits all commit-attribution.
+
 ### 3. Resolve the review-document path
 
-The document lives at `.sdlc/reviews/issue-#<N>/review-<iteration>.md`.
+**(PR mode)** The document lives at `.sdlc/reviews/issue-#<N>/review-<iteration>.md`.
+
+**(PATHS mode)** The document lives at `<Review document directory>/review-<iteration>.md`, where the directory is the `Review document directory: .sdlc/reviews/<slug>/` line injected by the endpoint. Use it verbatim — the endpoint computes the slug deterministically from the raw `paths` so successive paths-mode reviews of the same target accumulate their rounds in one directory; do NOT re-derive it. There is no linked-issue resolution in this mode (skip the `<N>` discussion below). Then resolve `<iteration>` exactly as the PR flow does — inspect the injected directory for existing `review-*.md` rounds:
+
+```bash
+ls <Review document directory>/review-*.md 2>/dev/null
+```
+
+`<iteration>` is one greater than the highest existing `<n>`, or `1` when the directory has none. Do NOT create the directory or file yet — that happens in step 10.
+
+**(PR mode)** The remainder of this step resolves the PR-mode `issue-#<N>/` directory; paths mode is fully covered above.
 
 **`<N>` — the linked issue — is resolved for you.** The MCP endpoint performs the relationship check via GitHub's `closingIssuesReferences` connection (issues that close when the PR merges, whether linked via a `Closes #N` keyword or the GitHub UI), with a `Closes` / `Fixes` / `Resolves #N` PR-body fallback. When several issues are linked, the endpoint resolves the **first** of them (the connection has no ordering guarantee), so `<N>` is one closing issue, not necessarily the only one. It appends the result below this prompt as `Resolved issue: #<N>`, together with the `Review document directory`. Use the provided `<N>` directly; do NOT re-derive it. If you can tell the PR closes more than one issue, surface a note to the user confirming the chosen `issue-#<N>/` directory before writing. If the appended directive reports the issue as **unresolved** (the PR has no linked issue), ask the user which issue the PR addresses before proceeding; do NOT guess the path.
 
@@ -175,11 +216,11 @@ MUST check whether a knowledge graph exists:
 test -f .understand-anything/knowledge-graph.json && echo "exists" || echo "missing"
 ```
 
-If the graph exists, MUST use the `understand-chat` skill with a query listing the changed file paths from the PR diff to gather architectural context — component summaries, relationships, and layer assignments — that reveals how changed components fit into the broader architecture and informs review quality. If the graph does not exist, skip this step and continue. When a graph exists, pass the resulting summary to the reviewer subagents via the optional architectural-context slot in the step-7 brief (the reviewers do NOT inherit this `understand-chat` output otherwise); omit that slot when no graph exists.
+If the graph exists, MUST use the `understand-chat` skill with a query listing the file paths under review (the PR's changed files in PR mode, or the matched file set from step 2 in paths mode) to gather architectural context — component summaries, relationships, and layer assignments — that reveals how changed components fit into the broader architecture and informs review quality. If the graph does not exist, skip this step and continue. When a graph exists, pass the resulting summary to the reviewer subagents via the optional architectural-context slot in the step-7 brief (the reviewers do NOT inherit this `understand-chat` output otherwise); omit that slot when no graph exists.
 
 ### 7. Dispatch reviewer subagents (N per role)
 
-For each role, spawn **N independent reviewer subagents** (N = reviewers per role). A reviewer reviews the diff through exactly one role's lens and returns structured findings — it MUST NOT write any file or post anything.
+For each role, spawn **N independent reviewer subagents** (N = reviewers per role). A reviewer reviews the artifacts (the PR diff in PR mode, or the matched files in paths mode) through exactly one role's lens and returns structured findings — it MUST NOT write any file or post anything.
 
 **Claude Code:** Spawn each reviewer using the Agent tool. Run all reviewers concurrently where the tool allows. A reviewer is spawned into a fresh, isolated context: it inherits none of your reads, so every input it needs MUST be interpolated into its brief (replace each `<…>` placeholder with the actual value before spawning). Each reviewer's brief MUST include:
 
@@ -187,12 +228,14 @@ For each role, spawn **N independent reviewer subagents** (N = reviewers per rol
 > - Your lens and blocking policy: `<the role document body>`.
 > - Your findings are confined to these files (matched from `guide-map.role`): `<the role's in-scope changed files>`. You MAY read any other file for context, but raise findings ONLY against your in-scope files.
 > - Apply your role's blocking policy to classify each finding as **Blocking** or **Advisory**.
-> - The PR diff under review (full text): `<pr-diff>` — the `gh pr diff` output captured in step 2. Review THIS diff; do not infer the diff from whatever branch or working tree you happen to be on.
+> - The artifacts under review — interpolate the slot for the active mode (include exactly one):
+>   - **(PR mode)** The PR diff under review (full text): `<pr-diff>` — the `gh pr diff` output captured in step 2. Review THIS diff; do not infer the diff from whatever branch or working tree you happen to be on.
+>   - **(PATHS mode)** The files under review, each as its whole current contents (no diff): for each matched file from step 2, `<file-path>` followed by `<the file's full contents>`. Review these artifacts as they stand in the working tree — there is no PR, no diff, and no base to compare against.
 > - The project guides to review against (full text): `<AGENTS.md body + the body of each resolved test and style guide from step 4>`. Cite guide rules only from this text — do NOT fabricate requirements that are not in it.
-> - Architectural context for the changed files (when a knowledge graph exists): `<the understand-chat summary from step 6>`. *(Omit this bullet entirely when no knowledge graph exists.)*
-> - Read each in-scope changed file from the local checkout, which is at the PR head `<sha>` (the orchestrator verified this in step 2); if a changed file is a test, also read the module it tests (and vice versa).
+> - Architectural context for the files under review (when a knowledge graph exists): `<the understand-chat summary from step 6>`. *(Omit this bullet entirely when no knowledge graph exists.)*
+> - **(PR mode)** Read each in-scope changed file from the local checkout, which is at the PR head `<sha>` (the orchestrator verified this in step 2); if a changed file is a test, also read the module it tests (and vice versa). **(PATHS mode)** Your in-scope files' whole contents are supplied above; you MAY read any other file for context, and if an in-scope file is a test, also read the module it tests (and vice versa). Drop the PR-head / `<sha>` wording in paths mode — there is no PR head.
 > - Investigate through your assigned lens: apply the focus areas your role's lens / blocking policy defines above. **Only** when your role is `general-purpose` (or its document does not enumerate its own focus) fall back to the generic checklist: guide compliance (cite the specific MUST / SHALL / SHOULD rule), naming and convention drift, coverage regressions (new public APIs without tests, removed tests without justification), correctness bugs (logic errors, race conditions, missing error handling at boundaries, incorrect API use), and code quality (unnecessary complexity, dead code, duplicated logic). Do not pull yourself off your lens to chase items the generic list names but your role does not.
-> - Return **structured findings only** — for each: a short title, severity, a reference, the issue with concrete evidence, a recommended remediation (and any alternatives), and optional tests-to-add. The reference is `file:line` when a single changed line applies; otherwise use a file-level reference (`<file>`) or an issue-level one (`(cross-cutting — no single line)` / `issue acceptance criterion #<n>`). Issue-level omissions (something the PR missed) and diff-spanning architectural concerns are first-class findings even without a line — raise them. Do NOT attribute a commit sha (the orchestrator owns commit attribution in step 8). Do NOT write a file, do NOT post to GitHub, do NOT consolidate — return your raw findings to the orchestrator.
+> - Return **structured findings only** — for each: a short title, severity, a reference, the issue with concrete evidence, a recommended remediation (and any alternatives), and optional tests-to-add. The reference is `file:line` when a single line applies; otherwise use a file-level reference (`<file>`) or a cross-cutting one (`(cross-cutting — no single line)`; in PR mode an issue-level `issue acceptance criterion #<n>` is also available). Omissions and file-spanning architectural concerns are first-class findings even without a line — raise them. **(PR mode only)** Do NOT attribute a commit sha — the orchestrator owns commit attribution in step 8. *(In paths mode there are no commits to attribute, so there is nothing to omit here.)* Do NOT write a file, do NOT post to GitHub, do NOT consolidate — return your raw findings to the orchestrator.
 
 **Other LLM assistants:** If subagents are unavailable, perform each role's review inline, one role at a time, holding each role's findings separately so they can be consolidated in step 8.
 
@@ -206,8 +249,8 @@ The main session agent (NOT a reviewer) merges every reviewer's findings into on
 - **Assign stable IDs** — `B1, B2, …` for blocking findings, `A1, A2, …` for advisory, in a stable order.
 - **Pre-select remediation** — for each finding, choose the recommended remediation and mark it `[x]`, list reasonable alternatives as `[ ]`, and always append an `Other: ___` slot.
 - **Group by severity tier, blocking first** — Tier 1 (Blocking) then Tier 2 (Advisory).
-- **Attribute each finding to a commit** — using the **branch commit map** built in step 2, match each finding's `file:line` (or file-level reference) against the commit that touched that file to set its `Touched commit`. The consolidator owns this attribution; do not rely on any sha from a reviewer (the reviewers were told not to supply one). A finding with no single file (cross-cutting / issue-level) maps to the commit(s) most responsible, or is grouped under the relevant commit in the fixup mapping with a note.
-- Populate the document header (roles used, reviewers per role, target HEAD sha, dedup approach, severity legend, and the branch commit map from step 2), and fill the **cross-cutting decisions** and **fixup mapping** sections, following the bundled template appended below this prompt exactly.
+- **(PR mode) Attribute each finding to a commit** — using the **branch commit map** built in step 2, match each finding's `file:line` (or file-level reference) against the commit that touched that file to set its `Touched commit`. The consolidator owns this attribution; do not rely on any sha from a reviewer (the reviewers were told not to supply one). A finding with no single file (cross-cutting / issue-level) maps to the commit(s) most responsible, or is grouped under the relevant commit in the fixup mapping with a note. **(PATHS mode) Skip this bullet entirely** — there is no commit map, so findings carry no `Touched commit`.
+- Populate the document header and fill the **cross-cutting decisions** section, following the bundled template appended below this prompt exactly. **(PR mode)** The header carries roles used, reviewers per role, target HEAD sha, dedup approach, severity legend, and the branch commit map from step 2; also fill the **fixup mapping** section. **(PATHS mode)** The header carries roles used, reviewers per role, dedup approach, and severity legend, and identifies the reviewed paths in place of the PR / HEAD-sha / Closes line; **omit the branch-commit-map line, every finding's `Touched commit`, and the entire fixup-mapping section** — none of them have meaning without a PR. Keep the severity tiers, stable IDs, references, evidence, and remediation checklists exactly as in PR mode.
 
 Severity definitions (the raising role's blocking policy is authoritative — the MUST/SHALL gloss is one common example, not the definition, since a role's policy need not be phrased in MUST/SHALL terms):
 
@@ -228,38 +271,46 @@ The document MUST NOT be written until the user explicitly approves the final co
 
 ### 10. Write the review document
 
-After approval, create the directory and write the document:
+After approval, create the directory (the injected `Review document directory` — `.sdlc/reviews/issue-#<N>/` in PR mode, `.sdlc/reviews/<slug>/` in paths mode) and write the document:
 
 ```bash
-mkdir -p .sdlc/reviews/issue-#<N>
+mkdir -p <Review document directory>
 ```
 
-Write the approved consolidated document to `.sdlc/reviews/issue-#<N>/review-<iteration>.md`, following the bundled template structure exactly: the header, the severity-tiered findings (blocking first) with stable IDs / titles / severities / `Reference` (`file:line`, or a file-level / issue-level reference for a line-less finding) / Issue + evidence / Remediation checklist (`[x]` recommended, `[ ]` alternatives, `Other: ___`) / optional Tests-to-add / Touched commit, and the cross-cutting-decisions and fixup-mapping sections. Do NOT post anything to GitHub.
+Write the approved consolidated document to `<Review document directory>/review-<iteration>.md`, following the bundled template structure exactly: the header, the severity-tiered findings (blocking first) with stable IDs / titles / severities / `Reference` (`file:line`, or a file-level / issue-level reference for a line-less finding) / Issue + evidence / Remediation checklist (`[x]` recommended, `[ ]` alternatives, `Other: ___`) / optional Tests-to-add, plus the cross-cutting-decisions section. **(PR mode)** also include each finding's `Touched commit` and the fixup-mapping section; **(paths mode)** omit both (no commits exist to attribute or fold into). Do NOT post anything to GitHub.
 
 ### 11. Prompt the user with next steps
 
-After the document is written, prompt the user:
+After the document is written, prompt the user. **(PR mode):**
 
 > Review written to `.sdlc/reviews/issue-#<N>/review-<iteration>.md`. This document is a local artifact — nothing was posted to GitHub, and the `implement` skill does not read it automatically. Read it yourself (or with the user) and use each finding's pre-selected remediation and fixup-mapping entry as the work list, applying the fixups directly; then re-run `commit`, `pr`, and `review` as needed. When the findings are resolved and you are satisfied, run `gh pr ready <number>` to mark the PR ready for merge.
+
+**(PATHS mode):**
+
+> Review written to `<Review document directory>/review-<iteration>.md`. This document is a local artifact — nothing was posted to GitHub, and the `implement` skill does not read it automatically. Read it yourself (or with the user) and use each finding's pre-selected remediation as the work list, applying the fixups directly to the reviewed files; then re-run `review` over the same paths as needed. There is no PR or fixup mapping in this mode.
 
 DO NOT proceed on your own.
 
 ## Edge Cases
 
-**PR is already merged or closed:** Inform the user that the PR is not open and stop.
+**Paths mode runs no `gh` and posts nothing:** In paths mode the skill performs no repo resolution, no PR fetch, and no commit-map enumeration — there is no GitHub interaction at all. The document lands under the endpoint-computed `.sdlc/reviews/<slug>/` directory. The PR-only edge cases below (`PR is already merged or closed`, `No linked issue`, and `Very large diffs`) do not apply in paths mode.
 
-**No findings:** If every reviewer returns clean, present the empty-findings document (header plus empty severity tiers) for approval as in step 9, and only after the user approves, write it so the round is recorded; inform the user that no issues were found and the PR looks ready. The approval gate still applies on the clean path — do not write before approval. Do not post anything.
+**No files matched the paths/globs (paths mode):** If expanding the `Target paths:` entries against the working tree yields no files (every literal path is missing and every glob matches nothing), inform the user that nothing matched, list the entries you tried, and stop — there is nothing to review and no document is written. If only some entries are empty, note the misses and proceed with the files that did match.
 
-**No linked issue (the endpoint reports `Resolved issue: unresolved`):** Ask the user which issue the PR addresses; do not guess the `.sdlc/reviews/issue-#<N>/` path.
+**PR is already merged or closed (PR mode):** Inform the user that the PR is not open and stop.
+
+**No findings:** If every reviewer returns clean, present the empty-findings document (header plus empty severity tiers) for approval as in step 9, and only after the user approves, write it so the round is recorded; inform the user that no issues were found and the target looks clean. The approval gate still applies on the clean path — do not write before approval. Do not post anything.
+
+**No linked issue (PR mode — the endpoint reports `Resolved issue: unresolved`):** Ask the user which issue the PR addresses; do not guess the `.sdlc/reviews/issue-#<N>/` path. *(Paths mode has no linked issue and uses the injected `<slug>` directory, so this never arises there.)*
 
 **Unknown / misspelled role:** A requested role with no discovered document (not among `sdlc_roles`, or whose `sdlc://guides/role/<stem>` read returns `Error: guide ... not found`) MUST halt the run with a corrective prompt asking the user to fix the role name. Do NOT dispatch a reviewer with an empty or error lens.
 
 **A role exists but has no `guide-map.role` entry:** `sdlc_role_scope` returns empty for it just as it does for an unmapped role. Warn the user the role will contribute nothing (it is not scoped to any files), then skip it.
 
-**A role maps to globs that match none of the changed files:** Note in the header that the discovered, mapped role had no in-scope files on this PR and skip its reviewers; it contributes no findings.
+**A role maps to globs that match none of the reviewed files:** Note in the header that the discovered, mapped role had no in-scope files on this target (the PR's changed files, or paths mode's matched files) and skip its reviewers; it contributes no findings.
 
-**Binary files in diff:** Binary files MUST be skipped during analysis. Note their presence to the user but do not attempt to review them.
+**Binary files:** Binary files MUST be skipped during analysis — in both the PR diff and a paths-mode match. Note their presence to the user but do not attempt to review them.
 
-**Very large diffs:** For PRs with more than 20 changed files or more than 1000 lines changed, the agent SHOULD summarize the scope to the user and ask whether to review the full diff or focus on specific files before dispatching reviewers.
+**Very large diffs (PR mode):** For PRs with more than 20 changed files or more than 1000 lines changed, the agent SHOULD summarize the scope to the user and ask whether to review the full diff or focus on specific files before dispatching reviewers. *(This is PR-mode only — paths mode reviews exactly the files the user named.)*
 
-**Files outside the repository's guide coverage:** If changed files are in a language or domain not covered by any project guide, review them for general correctness and code quality only. Do not fabricate guide requirements that do not exist.
+**Files outside the repository's guide coverage:** If reviewed files are in a language or domain not covered by any project guide, review them for general correctness and code quality only. Do not fabricate guide requirements that do not exist.
