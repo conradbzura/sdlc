@@ -13,7 +13,7 @@ Each tool returns the full workflow instructions for its pipeline stage. The LLM
 | Tool | Stage | Purpose |
 |------|-------|---------|
 | `sdlc_issue` | 1st | Draft and push a GitHub issue |
-| `sdlc_implement` | 2nd | Implement a GitHub issue, continue an in-progress PR, or address PR review feedback |
+| `sdlc_implement` | 2nd | Implement a GitHub issue, continue an in-progress PR, or address a local review document's findings (`--review` selects an iteration or a PR URL to convert) |
 | `sdlc_test` | 3rd | Analyze coverage and write comprehensive tests |
 | `sdlc_commit` | 4th | Stage and commit changes with atomic commits |
 | `sdlc_pr` | 5th | Review changes and create a draft pull request |
@@ -24,7 +24,19 @@ Each tool returns the full workflow instructions for its pipeline stage. The LLM
 | `sdlc_role_scope` | — | Reverse-lookup the changed files a role's findings are confined to (over the merged `guide-map.role`) |
 | `sdlc_role` | — | Author a review role document (lens, blocking policy, focus globs) |
 
-The `implement`, `test`, and `commit` tools are iterative — they can be invoked multiple times for a given issue to address PR feedback or refine implementation. `sdlc_implement` accepts either an issue number or a PR number and dispatches between three sibling skill prompts based on PR state: `implement` (fresh start, no PR yet), `implement-continue` (PR exists, no review feedback yet), and `implement-feedback` (PR has unresolved review threads or review-body comments).
+The `implement`, `test`, and `commit` tools are iterative — they can be invoked multiple times for a given issue to address review feedback or refine implementation. `sdlc_implement` accepts either an issue number or a PR number plus a polymorphic `--review` selector, and dispatches between three sibling skill prompts:
+
+- `implement` — fresh start (the number is an issue with no linked PR, and no local review document applies).
+- `implement-continue` — a PR is in scope but no local review document exists for its closing issue.
+- `implement-feedback` — a local review document is selected and its findings drive the remediation walk-through.
+
+`--review` chooses the finding source for the feedback path:
+
+- **omitted / `None`** — load the latest `.sdlc/reviews/issue-#<N>/review-<iteration>.md` for the closing issue `<N>` when one exists; otherwise fall through to `implement-continue` (linked PR) or `implement` (bare issue). Missing local docs are NOT an error on this default path.
+- **`int`** — load that exact local iteration. A missing iteration is surfaced as a clear diagnostic, never a silent fresh fallback.
+- **PR URL (`str`)** — fetch that PR's review threads and review-body comments, render them into a NEW local review document at the next iteration (never overwriting), and consume it. A string that is not a GitHub PR URL is rejected — a numeric string is never coerced into an iteration.
+
+The dispatcher no longer auto-detects GitHub review threads: GitHub findings enter the implement loop only through an explicit `--review <pr-url>` conversion. Local documents are read directly off disk and need no `gh` round-trip.
 
 #### Target-repo resolution
 
@@ -105,7 +117,9 @@ The `implement`, `test`, and `review` skills do not hardcode guide URIs. Each ca
 
 ### The `.sdlc/reviews/` convention
 
-`sdlc_review` writes a standardized local review document — it posts nothing to GitHub. Each review round is written to `.sdlc/reviews/issue-#<N>/review-<iteration>.md`, where `<N>` is the first issue the PR closes when several are linked (resolved from `closingIssuesReferences`, falling back to parsing `Closes #N` in the PR body; the connection has no ordering guarantee, so `<N>` is one closing issue, not necessarily the only one) and `<iteration>` is 1-based, one greater than the highest existing `review-*.md` for that issue. The document is structured from the bundled template (`sdlc://review-template`): a header (roles used, reviewers per role, target HEAD sha, dedup approach, severity legend, branch commit map); findings grouped by severity tier (blocking first) — each with a stable ID, title, severity, a `Reference` (`file:line`, or a file-level / issue-level reference for a line-less finding), an Issue section with evidence, a Remediation checklist where the consolidator pre-selects the recommended option (`[x]`), lists alternatives (`[ ]`), and always offers an `Other: ___` slot, an optional Tests-to-add section, and a Touched commit; plus cross-cutting-decisions and fixup-mapping sections. The document is a local artifact: the user or agent reads it and applies each finding's pre-selected remediation and fixup-mapping entry as a manual work list. It is NOT auto-consumed by `sdlc_implement` — because nothing is posted to GitHub, a subsequent `sdlc_implement` call routes to `implement-continue` (not `implement-feedback`) unless the user separately surfaces the findings.
+`sdlc_review` writes a standardized local review document — it posts nothing to GitHub. Each review round is written to `.sdlc/reviews/issue-#<N>/review-<iteration>.md`, where `<N>` is the first issue the PR closes when several are linked (resolved from `closingIssuesReferences`, falling back to parsing `Closes #N` in the PR body; the connection has no ordering guarantee, so `<N>` is one closing issue, not necessarily the only one) and `<iteration>` is 1-based, one greater than the highest existing `review-*.md` for that issue. The document is structured from the bundled template (`sdlc://review-template`): a header (roles used, reviewers per role, target HEAD sha, dedup approach, severity legend, branch commit map); findings grouped by severity tier (blocking first) — each with a stable ID, title, severity, a `Reference` (`file:line`, or a file-level / issue-level reference for a line-less finding), an Issue section with evidence, a Remediation checklist where the consolidator pre-selects the recommended option (`[x]`), lists alternatives (`[ ]`), and always offers an `Other: ___` slot, an optional Tests-to-add section, and a Touched commit; plus cross-cutting-decisions and fixup-mapping sections.
+
+This document is the finding source `sdlc_implement` consumes on its feedback path. By default a subsequent `sdlc_implement <N>` (or `sdlc_implement <pr#>`) parses the **latest** `review-<iteration>.md` for the closing issue, renders its findings, and routes to `implement-feedback` so the agent walks each finding's pre-selected remediation through a per-finding approval gate. `--review <int>` selects a specific earlier iteration instead. `sdlc_implement` reads the document straight off disk — `sdlc_review` posts nothing to GitHub, and the dispatcher no longer probes GitHub review threads. A PR's GitHub review feedback can still feed the loop, but only by explicitly converting it first: `--review <pr-url>` fetches that PR's threads and review-body comments and writes them into a fresh local review document (at the next iteration) before consuming it.
 
 ## Installation & Setup
 
@@ -185,7 +199,7 @@ sdlc/
 
 ## Pipeline Overview
 
-The typical development flow follows this sequence. Start by drafting a GitHub issue with acceptance criteria and description. Fetch the issue, create a feature branch, enter planning phase, and design a concrete implementation plan. Execute the plan by writing code and tests, guided by project context and test conventions. Optionally, analyze code changes, evaluate existing test coverage, and generate comprehensive test specifications targeting 100% coverage of public APIs. Analyze the working tree diff, group changes by logical kind, and create disciplined atomic commits with conventional-commit messages. Review the branch diff and create or update a draft pull request linked to the issue. Fetch the PR, review it through one or more role lenses (N reviewers per role), and consolidate the findings into a single local review document under `.sdlc/reviews/` — nothing is posted to GitHub. The document is a local artifact the user or agent reads to drive fixups manually; `sdlc_implement` does not ingest it.
+The typical development flow follows this sequence. Start by drafting a GitHub issue with acceptance criteria and description. Fetch the issue, create a feature branch, enter planning phase, and design a concrete implementation plan. Execute the plan by writing code and tests, guided by project context and test conventions. Optionally, analyze code changes, evaluate existing test coverage, and generate comprehensive test specifications targeting 100% coverage of public APIs. Analyze the working tree diff, group changes by logical kind, and create disciplined atomic commits with conventional-commit messages. Review the branch diff and create or update a draft pull request linked to the issue. Fetch the PR, review it through one or more role lenses (N reviewers per role), and consolidate the findings into a single local review document under `.sdlc/reviews/` — nothing is posted to GitHub. To act on the findings, re-run `sdlc_implement`: it parses the latest review document (or the `--review`-selected iteration / PR-URL conversion), renders the findings, and routes to `implement-feedback` for a per-finding, approval-gated remediation walk-through.
 
 The `implement`, `test`, and `commit` steps are iterative — you can run them multiple times to refine the implementation based on feedback or additional context. After each change, re-run `sdlc_pr` to update the PR description before final review.
 
