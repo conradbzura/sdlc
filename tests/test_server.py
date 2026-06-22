@@ -13,6 +13,7 @@ from sdlc.server import (
     get_style_guide,
     get_test_guide,
     knowledge_graph,
+    review_template,
     role_template,
     sdlc_commit,
     sdlc_guides_for,
@@ -21,6 +22,7 @@ from sdlc.server import (
     sdlc_pr,
     sdlc_review,
     sdlc_role,
+    sdlc_role_scope,
     sdlc_roles,
     sdlc_test,
     sdlc_understand_chat,
@@ -355,7 +357,7 @@ async def test_sdlc_pr_should_append_target_directive_when_target_given():
 
 
 @pytest.mark.asyncio
-async def test_sdlc_review_should_interpolate_pr_number():
+async def test_sdlc_review_should_interpolate_pr_number(monkeypatch):
     """Test sdlc_review returns skill content with interpolated PR number.
 
     Given:
@@ -365,12 +367,202 @@ async def test_sdlc_review_should_interpolate_pr_number():
     Then:
         It should return review skill content with #10 appended.
     """
+    # Arrange
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+
     # Act
     result = await sdlc_review(pr_number=10)
 
     # Assert
     assert "# Review Skill" in result
     assert "#10" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_default_to_general_purpose_role_when_roles_omitted(
+    monkeypatch,
+):
+    """Test sdlc_review applies the general-purpose role default when roles omitted.
+
+    Given:
+        A PR number and no roles argument.
+    When:
+        sdlc_review(pr_number=10) is called.
+    Then:
+        It should name the general-purpose role in the appended composition.
+    """
+    # Arrange
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+
+    # Act
+    result = await sdlc_review(pr_number=10)
+
+    # Assert
+    assert "Roles: general-purpose" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_default_reviewers_per_role_to_one(monkeypatch):
+    """Test sdlc_review defaults the per-role reviewer count to one.
+
+    Given:
+        A PR number and no subagents argument.
+    When:
+        sdlc_review(pr_number=10) is called.
+    Then:
+        It should report one reviewer per role.
+    """
+    # Arrange
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+
+    # Act
+    result = await sdlc_review(pr_number=10)
+
+    # Assert
+    assert "Reviewers per role: 1" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_list_all_roles_when_multiple_given(monkeypatch):
+    """Test sdlc_review renders every supplied role in the composition.
+
+    Given:
+        A PR number and a roles list of two roles.
+    When:
+        sdlc_review(pr_number=10, roles=["architect", "security"]) is called.
+    Then:
+        It should name both roles in the appended composition.
+    """
+    # Arrange
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+
+    # Act
+    result = await sdlc_review(pr_number=10, roles=["architect", "security"])
+
+    # Assert
+    assert "Roles: architect, security" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_report_subagent_count_when_given(monkeypatch):
+    """Test sdlc_review reports the requested per-role reviewer count.
+
+    Given:
+        A PR number and subagents=5.
+    When:
+        sdlc_review(pr_number=10, subagents=5) is called.
+    Then:
+        It should report five reviewers per role.
+    """
+    # Arrange
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+
+    # Act
+    result = await sdlc_review(pr_number=10, subagents=5)
+
+    # Assert
+    assert "Reviewers per role: 5" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_inline_review_template(monkeypatch):
+    """Test sdlc_review inlines the consolidated-review-document template.
+
+    Given:
+        A PR number.
+    When:
+        sdlc_review(pr_number=10) is called.
+    Then:
+        It should include the template's blocking and advisory tier headings.
+    """
+    # Arrange
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+
+    # Act
+    result = await sdlc_review(pr_number=10)
+
+    # Assert
+    assert "## Tier 1 — Blocking" in result
+    assert "## Tier 2 — Advisory" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_append_resolved_issue_directive_when_linked(
+    monkeypatch,
+):
+    """Test sdlc_review appends the resolved issue and its document directory.
+
+    Given:
+        closing_issue resolves PR 10 to linked issue 7.
+    When:
+        sdlc_review(pr_number=10) is called.
+    Then:
+        It should append the resolved issue number and the issue's review
+        document directory.
+    """
+    # Arrange
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+
+    # Act
+    result = await sdlc_review(pr_number=10)
+
+    # Assert
+    assert "Resolved issue: #7" in result
+    assert "Review document directory: .sdlc/reviews/issue-#7/" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_note_unresolved_when_no_linked_issue(monkeypatch):
+    """Test sdlc_review notes an unresolved issue when the PR has no link.
+
+    Given:
+        closing_issue returns None for PR 10.
+    When:
+        sdlc_review(pr_number=10) is called.
+    Then:
+        It should append an unresolved notice instead of a document directory.
+    """
+    # Arrange
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: None)
+
+    # Act
+    result = await sdlc_review(pr_number=10)
+
+    # Assert
+    directive = (
+        result.split("Reviewers per role: 1\n", 1)[1]
+        .split("\n\nReview document template:", 1)[0]
+    )
+    assert directive.startswith("Resolved issue: unresolved")
+    assert "Review document directory:" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_degrade_when_issue_resolution_unavailable(
+    monkeypatch,
+):
+    """Test sdlc_review degrades gracefully when gh resolution fails.
+
+    Given:
+        closing_issue raises GhUnavailable for PR 10.
+    When:
+        sdlc_review(pr_number=10) is called.
+    Then:
+        It should still return the review skill with an unresolved-issue notice
+        rather than propagating the error.
+    """
+    # Arrange
+    def raise_unavailable(pr_number):
+        raise GhUnavailable("gh missing")
+
+    monkeypatch.setattr(pr_state, "closing_issue", raise_unavailable)
+
+    # Act
+    result = await sdlc_review(pr_number=10)
+
+    # Assert
+    assert "# Review Skill" in result
+    assert "Resolved issue: unresolved" in result
 
 
 @pytest.mark.asyncio
@@ -524,6 +716,25 @@ async def test_role_template_should_return_template_content():
 
 
 @pytest.mark.asyncio
+async def test_review_template_should_return_template_content():
+    """Test the review-template resource serves the bundled review template.
+
+    Given:
+        The package bundles src/sdlc/review-template.md.
+    When:
+        review_template() is called.
+    Then:
+        It should return the blocking and advisory severity-tier headings.
+    """
+    # Act
+    result = await review_template()
+
+    # Assert
+    assert "## Tier 1 — Blocking" in result
+    assert "## Tier 2 — Advisory" in result
+
+
+@pytest.mark.asyncio
 async def test_sdlc_roles_should_include_general_purpose_uri():
     """Test sdlc_roles lists the bundled general-purpose role as a URI.
 
@@ -557,6 +768,45 @@ async def test_sdlc_roles_should_return_role_uris():
 
     # Assert
     assert all(uri.startswith("sdlc://guides/role/") for uri in result)
+
+
+@pytest.mark.asyncio
+async def test_sdlc_role_scope_should_return_all_paths_for_general_purpose():
+    """Test sdlc_role_scope scopes the whole diff to the general-purpose role.
+
+    Given:
+        The bundled default guide-map maps general-purpose to '**/*'.
+    When:
+        sdlc_role_scope(paths, role="general-purpose") is called.
+    Then:
+        Every supplied path is returned in scope.
+    """
+    # Arrange
+    paths = ["src/sdlc/server.py", "README.md"]
+
+    # Act
+    result = await sdlc_role_scope(paths=paths, role="general-purpose")
+
+    # Assert
+    assert result == paths
+
+
+@pytest.mark.asyncio
+async def test_sdlc_role_scope_should_return_empty_for_unknown_role():
+    """Test sdlc_role_scope returns no files for a role with no guide-map entry.
+
+    Given:
+        A role stem not mapped to any glob in the bundled guide-map.role.
+    When:
+        sdlc_role_scope(paths, role="nonexistent") is called.
+    Then:
+        It should return an empty list regardless of the supplied paths.
+    """
+    # Act
+    result = await sdlc_role_scope(paths=["src/sdlc/server.py"], role="nonexistent")
+
+    # Assert
+    assert result == []
 
 
 @pytest.mark.asyncio

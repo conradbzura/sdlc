@@ -91,7 +91,7 @@ If you have a PR template defined in your `.github` dir, the agent will follow t
 
 **6. Review the PR (Optional)**
 
-The agent calls `sdlc_review` with the PR number. It analyzes the PR against project guides (style, testing, architecture), groups findings by severity, and posts inline review comments. You approve or request changes, and the review is posted.
+The agent calls `sdlc_review` with the PR number. It runs one or more reviewer roles (N reviewers per role) over the PR diff, each confined to the files its role is mapped to, then consolidates their findings — deduped, merged across roles, highest severity wins — into a single local document at `.sdlc/reviews/issue-#<N>/review-<iteration>.md`. The document groups findings by severity (blocking first), gives each a stable ID and a `Reference`, and pre-selects a recommended remediation per finding with alternatives and an `Other` slot. You review and approve the document; nothing is posted to GitHub. The document is a local artifact you (or the agent) read to drive fixups manually — `sdlc_implement` does not ingest it, so address the findings directly using each one's pre-selected remediation and fixup-mapping entry as the work list.
 
 **7. Iterate or Merge**
 
@@ -123,6 +123,7 @@ sdlc/
         │   ├── role.md
         │   └── understand-chat.md
         ├── role-template.md        # Bundled role-document template
+        ├── review-template.md      # Bundled consolidated-review-document template
         ├── test-guides/            # Testing conventions (served as MCP resources)
         │   └── python.md
         ├── style-guides/           # Style conventions (served as MCP resources)
@@ -140,9 +141,10 @@ sdlc/
 | `sdlc_test` | Analyze coverage and write comprehensive tests |
 | `sdlc_commit` | Stage and commit changes with atomic commits |
 | `sdlc_pr` | Review changes and create a draft pull request |
-| `sdlc_review` | Review an open pull request for compliance and quality |
+| `sdlc_review` | Review an open PR and write a consolidated local review document under `.sdlc/reviews/` |
 | `sdlc_understand_chat` | Query the codebase knowledge graph |
 | `sdlc_roles` | List the available review roles |
+| `sdlc_role_scope` | Reverse-lookup the changed files a role's findings are confined to |
 | `sdlc_role` | Author a review role document |
 
 ### MCP Resources
@@ -153,12 +155,13 @@ sdlc/
 | `sdlc://guides/style/markdown` | Markdown style conventions |
 | `sdlc://guides/role/general-purpose` | Default review role |
 | `sdlc://role-template` | Role-document template |
+| `sdlc://review-template` | Consolidated-review-document template |
 | `sdlc://agents-md` | Project-level agent instructions |
 | `sdlc://knowledge-graph` | Codebase knowledge graph (if generated) |
 
 ## What You Get
 
-The pipeline enforces disciplined commits — atomic, well-structured, with conventional-commit messages that make your history readable. It emphasizes test-first planning, generating comprehensive test specs before implementation. Code quality is enforced through guide-based compliance review with inline comments. Every action is presented for review before execution, so you never have unwanted surprises. When you get PR feedback, you loop back to implementation, refine, and iterate. The system is tool-agnostic — any MCP-compatible client can connect. For large codebases, you can generate lightweight knowledge graphs to give the agent architectural context without shipping megabytes of source code as context.
+The pipeline enforces disciplined commits — atomic, well-structured, with conventional-commit messages that make your history readable. It emphasizes test-first planning, generating comprehensive test specs before implementation. Code quality is enforced through guide-based, role-driven review that produces a consolidated local review document — an actionable, option-per-finding remediation plan you keep under `.sdlc/reviews/`. Every action is presented for review before execution, so you never have unwanted surprises. When you get PR feedback, you loop back to implementation, refine, and iterate. The system is tool-agnostic — any MCP-compatible client can connect. For large codebases, you can generate lightweight knowledge graphs to give the agent architectural context without shipping megabytes of source code as context.
 
 ## Documentation
 
