@@ -34,7 +34,7 @@ This skill is part of the development workflow pipeline: `issue` → `implement`
 - MUST NOT merge the staging branch back without explicit user approval.
 - MUST verify staged diff with `git diff --cached` before every commit.
 - MUST NOT include untracked files without asking the user first.
-- MUST check whether the current repo is a fork via `gh repo view --json isFork,parent` and resolve the target repo before any git operations.
+- MUST resolve the target repo before any git operations by consuming the injected `Target repo: <id>` directive from the tool output (when the directive is absent, `gh` is unavailable — note that and proceed with the local commit operations, which need no `--repo`, rather than deriving fork status another way).
 
 ## Subagent Execution (Optional)
 
@@ -71,12 +71,11 @@ This skill MAY be executed in an isolated subagent to preserve parent context. W
 ```bash
 git status
 git diff HEAD
-gh repo view --json isFork,parent
 ```
 
 If the working tree is clean (nothing to commit), tell the user and stop.
 
-If `isFork` is `true`, note the upstream repo — this context is useful for ensuring commit footers and branch references align with the upstream issue tracker. No `--repo` flags are needed for commit operations (they are local), but awareness of the fork relationship prevents mistakes in commit messages that reference issues or PRs.
+Resolve the target repo by consuming the injected `Target repo: <id>` directive from the tool output. A `Target repo: <owner>/<name>` directive means the current repo is a fork of that upstream; `Target repo: current repo …` means it is not. If the directive is absent, `gh` is unavailable — surface that, and proceed with the commit operations anyway (they are local and need no `gh`), treating the fork relationship as unknown rather than guessing it. When the directive does identify a fork, note the upstream repo — this context is useful for ensuring commit footers and branch references align with the upstream issue tracker. No `--repo` flags are needed for commit operations (they are local), but awareness of the fork relationship prevents mistakes in commit messages that reference issues or PRs.
 
 Untracked files SHOULD be checked for new source files, config files, etc. The user MUST be asked before including untracked files unless their inclusion is obvious. Build artifacts, cache directories, and anything in .gitignore MUST be ignored.
 

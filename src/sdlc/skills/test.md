@@ -52,6 +52,8 @@ This skill is part of the development workflow pipeline: `issue` → `implement`
 
 An issue number MUST be provided as the sole argument (e.g., `test` with issue #103).
 
+The tool output carries a `Target repo: <id>` directive identifying the repository for `gh` commands that reference issues or PRs (the upstream `<owner>/<name>` when the current repo is a fork, otherwise the current repo). Consume it in step 1 rather than re-deriving the target repo.
+
 > **Test guides:** Resolve the applicable test guides for the changed source files by calling the `sdlc_guides_for` MCP tool with the changed file paths and `kind="test"`. The tool returns a list of `sdlc://guides/test/{stem}` URIs derived from the configured glob map (see `sdlc://config/default` for the package defaults; project-level overrides live in `.sdlc/config.json`). Read every returned URI before generating test specifications. If the tool returns an empty list, no test guide applies — inform the user and stop.
 
 ## Subagent Execution (Optional)
@@ -86,10 +88,13 @@ This skill MAY be executed in an isolated subagent to preserve parent context. W
 
 ### 1. Resolve issue, PR, and branch
 
-Perform the same resolution logic as the implement skill:
+Resolve the target repository as the implement skill does: consume the injected `Target repo: <id>` directive from the tool output. `Target repo: <owner>/<name>` means the current repo is a fork and `gh` commands referencing issues or PRs MUST include `--repo <owner>/<name>`; `Target repo: current repo …` means no `--repo` flag is needed. If the directive is absent — which only happens when the tool could not reach `gh` — surface that `gh` is unavailable and STOP (or ask the user how to proceed). Every `gh` command in the steps below would fail for the same reason, so there is no actionable fallback; do not guess the target repo.
+
+**User override:** If the user explicitly asks to target the fork — by saying "fork", "on the fork", "fork #N", or similar — the target repo MUST be set to the current (fork) repo instead of the injected upstream. The user's explicit intent always takes precedence over the injected directive.
+
+Then fetch the issue:
 
 ```bash
-gh repo view --json isFork,parent
 gh issue view <number> --repo <target>
 ```
 

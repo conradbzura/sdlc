@@ -5,7 +5,7 @@ import json
 import pytest
 
 from sdlc import pr_state
-from sdlc.pr_state import Finding, Findings, GhUnavailable, PrContext
+from sdlc.pr_state import Finding, Findings, GhUnavailable, PrContext, resolve_repo
 
 
 def _make_fake_run_gh(responses):
@@ -502,6 +502,132 @@ def test_closing_issue_should_route_to_upstream_when_fork(monkeypatch):
 
     # Assert
     assert result == 7
+
+
+def test_resolve_repo_should_return_no_flag_when_not_a_fork(monkeypatch):
+    """Test resolve_repo signals the current repo when it is not a fork.
+
+    Given:
+        gh repo view reports the current repo is not a fork.
+    When:
+        resolve_repo() is called.
+    Then:
+        It should return a repo whose repo_flag is None (no --repo needed)
+        carrying the current owner and name.
+    """
+    # Arrange
+    responses = {
+        ("repo", "view", "--json", _REPO_VIEW_FIELDS): _REPO_NOT_FORK,
+    }
+    monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
+
+    # Act
+    repo = resolve_repo()
+
+    # Assert
+    assert repo.repo_flag is None
+    assert repo.owner == "conradbzura"
+    assert repo.name == "sdlc"
+
+
+def test_resolve_repo_should_return_upstream_flag_when_a_fork(monkeypatch):
+    """Test resolve_repo targets the upstream when the current repo is a fork.
+
+    Given:
+        gh repo view reports the current repo is a fork of upstream/sdlc.
+    When:
+        resolve_repo() is called.
+    Then:
+        It should return a repo whose repo_flag is the upstream
+        "upstream/sdlc" identifier with the upstream owner and name.
+    """
+    # Arrange
+    responses = {
+        ("repo", "view", "--json", _REPO_VIEW_FIELDS): _REPO_FORK,
+    }
+    monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
+
+    # Act
+    repo = resolve_repo()
+
+    # Assert
+    assert repo.repo_flag == "upstream/sdlc"
+    assert repo.owner == "upstream"
+    assert repo.name == "sdlc"
+
+
+def test_resolve_repo_should_raise_when_gh_unavailable(monkeypatch):
+    """Test resolve_repo propagates GhUnavailable when gh fails.
+
+    Given:
+        gh repo view fails (gh missing or unauthenticated).
+    When:
+        resolve_repo() is called.
+    Then:
+        It should raise GhUnavailable.
+    """
+    # Arrange
+    def fake(args, allow_failure=False):
+        raise GhUnavailable("gh repo view failed (canned)")
+
+    monkeypatch.setattr(pr_state, "_run_gh", fake)
+
+    # Act & assert
+    with pytest.raises(GhUnavailable):
+        resolve_repo()
+
+
+def test_resolve_repo_should_raise_when_gh_output_is_malformed(monkeypatch):
+    """Test resolve_repo raises GhUnavailable when gh returns malformed JSON.
+
+    Given:
+        gh repo view exits 0 but emits output that is not valid JSON.
+    When:
+        resolve_repo() is called.
+    Then:
+        It should raise GhUnavailable rather than a JSONDecodeError, so the
+        graceful-degradation contract holds.
+    """
+    # Arrange
+    responses = {
+        ("repo", "view", "--json", _REPO_VIEW_FIELDS): "not json{",
+    }
+    monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
+
+    # Act & assert
+    with pytest.raises(GhUnavailable):
+        resolve_repo()
+
+
+def test_resolve_repo_should_raise_when_fork_parent_is_null(monkeypatch):
+    """Test resolve_repo raises GhUnavailable when a fork has a null parent.
+
+    Given:
+        gh repo view reports isFork true but the parent field is null (a
+        permissions quirk).
+    When:
+        resolve_repo() is called.
+    Then:
+        It should raise GhUnavailable rather than a TypeError/KeyError, so the
+        graceful-degradation contract holds.
+    """
+    # Arrange
+    fork_without_parent = json.dumps(
+        {
+            "owner": {"login": "fork-owner"},
+            "name": "sdlc",
+            "isFork": True,
+            "parent": None,
+        }
+    )
+    responses = {
+        ("repo", "view", "--json", _REPO_VIEW_FIELDS): fork_without_parent,
+    }
+    monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
+
+    # Act & assert
+    with pytest.raises(GhUnavailable):
+        resolve_repo()
 
 
 class TestFindings:

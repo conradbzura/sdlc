@@ -43,7 +43,7 @@ This skill does **not** use the structured planning interface (`EnterPlanMode` f
 
 ## Arguments
 
-The MCP endpoint supplies the PR number, branch name, PR URL, and an enumerated list of findings (review threads and review-body comments) appended below this skill prompt. The agent MUST treat that enumeration as a starting point and re-query (step 3) to confirm completeness before walking through findings.
+The MCP endpoint supplies the PR number, branch name, PR URL, and an enumerated list of findings (review threads and review-body comments) appended below this skill prompt. The agent MUST treat that enumeration as a starting point and re-query (step 3) to confirm completeness before walking through findings. The endpoint also appends a `Target repo: <id>` directive identifying the repository for `gh` commands that reference issues or PRs (the upstream `<owner>/<name>` when the current repo is a fork, otherwise the current repo); consume it in step 1 rather than re-deriving the target repo.
 
 ## Subagent Execution (Optional)
 
@@ -78,11 +78,11 @@ This skill MAY be executed in an isolated subagent to preserve parent context. W
 
 ### 1. Resolve target repository
 
-```bash
-gh repo view --json isFork,parent
-```
+The MCP tool resolves the target repository once and appends a `Target repo: <id>` directive to this skill prompt. Consume it — do NOT run `gh repo view` to re-derive it. `Target repo: <owner>/<name>` means the current repo is a fork and `gh` commands referencing issues or PRs MUST include `--repo <owner>/<name>`; `Target repo: current repo …` means no `--repo` flag is needed. If the directive is absent — which only happens when the tool could not reach `gh` — surface that `gh` is unavailable and STOP (or ask the user how to proceed). Every `gh` command in the steps below would fail for the same reason, so there is no actionable fallback; do not guess the target repo.
 
-If `isFork` is `true`, use upstream `<owner>/<name>` as the target. All `gh` commands in subsequent steps that reference issues or PRs MUST include `--repo <target>` when the target repo differs from the current repo.
+**User override:** If the user explicitly asks to target the fork — by saying "fork", "on the fork", "fork #N", or similar — the target repo MUST be set to the current (fork) repo instead of the injected upstream. The user's explicit intent always takes precedence over the injected directive.
+
+All `gh` commands in subsequent steps that reference issues or PRs MUST include `--repo <target>` when the target repo differs from the current repo.
 
 ### 2. Check out the PR branch
 

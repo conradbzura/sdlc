@@ -31,6 +31,8 @@ An issue number is OPTIONAL.
 - **Absent** — draft and push a **new** issue (the default path). Follow the **Create workflow** below.
 - **Present** (e.g., `issue #42`) — **update** the existing issue with that number. Follow the **Update workflow** below instead of the Create workflow.
 
+The tool output carries a `Target repo: <id>` directive identifying the repository for `gh` commands that reference issues or PRs (the upstream `<owner>/<name>` when the current repo is a fork, otherwise the current repo). Consume it in the "Resolve target repository" step rather than re-deriving the target repo.
+
 ## Invariants
 
 - MUST NOT push the issue to GitHub until the user explicitly approves the draft.
@@ -87,13 +89,14 @@ test -f .issue.md && echo "exists" || echo "missing"
 
 ### 2. Resolve target repository
 
-```bash
-gh repo view --json isFork,parent
-```
+The MCP tool resolves the target repository once and appends a `Target repo: <id>` directive to this skill prompt. Consume it — do NOT run `gh repo view` to re-derive it:
 
-If `isFork` is `true`, extract `parent.owner.login` and `parent.name` to form the upstream repo identifier (`<owner>/<name>`). This upstream identifier becomes the **target repo** for all subsequent `gh` commands that reference issues or pull requests. If the repo is not a fork, the target repo is the current repo and no `--repo` flag is needed.
+- `Target repo: <owner>/<name>` — the current repo is a fork; `<owner>/<name>` is the upstream. All subsequent `gh` commands that reference issues or pull requests MUST include `--repo <owner>/<name>`.
+- `Target repo: current repo — omit --repo …` — the current repo is the target; no `--repo` flag is needed.
 
-**User override:** If the user explicitly asks to target the fork — by saying "fork", "on the fork", "fork #N", or similar — the target repo MUST be set to the current (fork) repo instead of upstream. The user's explicit intent always takes precedence.
+If the directive is absent — which only happens when the tool could not reach `gh` — surface that `gh` is unavailable and STOP (or ask the user how to proceed). Every `gh` command in the steps below would fail for the same reason, so there is no actionable fallback; do not guess the target repo.
+
+**User override:** If the user explicitly asks to target the fork — by saying "fork", "on the fork", "fork #N", or similar — the target repo MUST be set to the current (fork) repo instead of the injected upstream. The user's explicit intent always takes precedence over the injected directive.
 
 All `gh` commands in subsequent steps that reference issues or PRs MUST include `--repo <target>` when the target repo differs from the current repo.
 
@@ -297,7 +300,7 @@ Follow this workflow when an **issue number is supplied**. The goal is to apply 
 
 ### 1. Resolve target repository
 
-Resolve the target repository exactly as in the Create workflow's "Resolve target repository" step: run `gh repo view --json isFork,parent`, and when `isFork` is `true`, use the upstream `<owner>/<name>` as the target unless the user explicitly asks to target the fork. All `gh` commands below that reference the issue or its labels MUST include `--repo <target>` when the target repo differs from the current repo.
+Resolve the target repository exactly as in the Create workflow's "Resolve target repository" step: consume the injected `Target repo: <id>` directive from the tool output (the upstream `<owner>/<name>` when the current repo is a fork, otherwise the current repo). If the directive is absent, `gh` is unavailable — surface that and STOP, exactly as the Create workflow's step does, since every `gh` command below would fail. The user-prose fork override still takes precedence. All `gh` commands below that reference the issue or its labels MUST include `--repo <target>` when the target repo differs from the current repo.
 
 ### 2. Fetch the existing issue
 

@@ -120,15 +120,30 @@ def _run_gh(args: list[str], allow_failure: bool = False) -> str | None:
     return result.stdout
 
 
-def _resolve_repo() -> _Repo:
+def resolve_repo() -> _Repo:
+    """Resolve the target repository for ``gh`` commands.
+
+    Returns a ``_Repo`` whose ``repo_flag`` is the ``--repo`` value
+    (``"<owner>/<name>"``) when the current repo is a fork — so that issues
+    and PRs are addressed against the upstream — and ``None`` otherwise (the
+    current repo applies and no ``--repo`` flag is needed).
+
+    Raises ``GhUnavailable`` when ``gh`` is missing, unauthenticated, or
+    returns an unexpected error.
+    """
     out = _run_gh(["repo", "view", "--json", "owner,name,isFork,parent"])
-    data = json.loads(out)
-    if data.get("isFork"):
-        parent = data["parent"]
-        owner = parent["owner"]["login"]
-        name = parent["name"]
-        return _Repo(owner=owner, name=name, repo_flag=f"{owner}/{name}")
-    return _Repo(owner=data["owner"]["login"], name=data["name"], repo_flag=None)
+    try:
+        data = json.loads(out)
+        if data.get("isFork"):
+            parent = data["parent"]
+            owner = parent["owner"]["login"]
+            name = parent["name"]
+            return _Repo(owner=owner, name=name, repo_flag=f"{owner}/{name}")
+        return _Repo(
+            owner=data["owner"]["login"], name=data["name"], repo_flag=None
+        )
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise GhUnavailable(f"gh repo view returned unexpected output: {exc}") from exc
 
 
 def _with_repo(args: list[str], repo_flag: str | None) -> list[str]:
@@ -268,8 +283,15 @@ def _query_review_state(
     return threads, body_findings
 
 
-def dispatch(number: int) -> Findings | PrContext | None:
+def dispatch(number: int, repo: _Repo | None = None) -> Findings | PrContext | None:
     """Classify ``number`` and gather PR feedback if applicable.
+
+    Args:
+      number: An issue number or an open PR number.
+      repo: A pre-resolved target repository. When ``None`` (the default),
+        the repo is resolved via ``resolve_repo()``. Callers that already
+        resolved the repo (e.g. to build the target-repo directive) SHOULD
+        pass it to avoid a redundant ``gh repo view`` round-trip.
 
     Returns:
       * ``None`` — ``number`` is an issue with no linked PR (fresh flow).
@@ -279,7 +301,8 @@ def dispatch(number: int) -> Findings | PrContext | None:
     Raises ``GhUnavailable`` for any error, including ``number`` not being
     a known issue or PR in the target repo.
     """
-    repo = _resolve_repo()
+    if repo is None:
+        repo = resolve_repo()
     kind, pr_meta = _classify_number(repo, number)
     if kind == "missing":
         raise GhUnavailable(f"#{number} is neither an open issue nor a PR")
@@ -309,5 +332,5 @@ def closing_issue(pr_number: int) -> int | None:
     when the PR has no linked issue. Raises ``GhUnavailable`` when ``gh`` is
     missing, unauthenticated, or errors.
     """
-    repo = _resolve_repo()
+    repo = resolve_repo()
     return _find_closing_issue(repo, pr_number)

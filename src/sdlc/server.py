@@ -56,6 +56,42 @@ def _target_branch_directive(target: str) -> str:
     )
 
 
+def _target_repo_directive(repo: pr_state._Repo) -> str:
+    """Render the target-repo directive for a resolved repository.
+
+    The wording is identical across every tool whose skill runs `gh` against
+    issues or PRs, so the skills consume it uniformly. When the current repo is
+    a fork, `repo.repo_flag` is the upstream `<owner>/<name>` and `gh` commands
+    that reference issues or PRs MUST pass `--repo <id>`; otherwise the current
+    repo applies and `--repo` MUST be omitted.
+    """
+    if repo.repo_flag is None:
+        return (
+            "Target repo: current repo — omit --repo on gh commands that "
+            "reference issues or PRs."
+        )
+    return (
+        f"Target repo: {repo.repo_flag}\n"
+        f"Pass --repo {repo.repo_flag} on gh commands that reference issues "
+        "or PRs — unless the user explicitly asked to target the fork, in "
+        "which case omit --repo and use the current repo."
+    )
+
+
+def _resolve_target_repo_directive() -> str | None:
+    """Resolve the target repo once and render its directive.
+
+    Returns the directive string, or ``None`` when `gh` is unavailable so the
+    caller degrades gracefully (the skill falls back to resolving the repo
+    itself via its user-prose fork-override note).
+    """
+    try:
+        repo = pr_state.resolve_repo()
+    except pr_state.GhUnavailable:
+        return None
+    return _target_repo_directive(repo)
+
+
 @mcp.tool()
 async def sdlc_issue(
     issue_number: int | None = None, context: str | None = None
@@ -75,6 +111,9 @@ async def sdlc_issue(
     """
     skill = _read_skill("issue")
     parts = [skill]
+    repo_directive = _resolve_target_repo_directive()
+    if repo_directive is not None:
+        parts.append(f"\n---\n\n{repo_directive}")
     if issue_number is not None:
         parts.append(
             f"\n---\n\nTarget issue to update: #{issue_number}\n\n"
@@ -107,7 +146,14 @@ async def sdlc_implement(number: int, target: str | None = None) -> str:
             which operate on an existing branch.
     """
     try:
-        state = pr_state.dispatch(number)
+        repo = pr_state.resolve_repo()
+    except pr_state.GhUnavailable:
+        repo = None
+    repo_suffix = (
+        f"\n\n{_target_repo_directive(repo)}" if repo is not None else ""
+    )
+    try:
+        state = pr_state.dispatch(number, repo=repo)
     except pr_state.GhUnavailable as exc:
         skill = _read_skill("implement")
         parts = [
@@ -117,21 +163,23 @@ async def sdlc_implement(number: int, target: str | None = None) -> str:
         ]
         if target:
             parts.append(f"\n{_target_branch_directive(target)}")
+        parts.append(repo_suffix)
         return "".join(parts)
     if state is None:
         skill = _read_skill("implement")
         parts = [f"{skill}\n---\n\nTarget issue: #{number}"]
         if target:
             parts.append(f"\n{_target_branch_directive(target)}")
+        parts.append(repo_suffix)
         return "".join(parts)
     if isinstance(state, pr_state.Findings):
         skill = _read_skill("implement-feedback")
-        return f"{skill}\n---\n\nTarget: #{number}\n{state.format()}"
+        return f"{skill}\n---\n\nTarget: #{number}\n{state.format()}{repo_suffix}"
     skill = _read_skill("implement-continue")
     return (
         f"{skill}\n---\n\n"
         f"Target PR: #{state.pr_number} ({state.url})\n"
-        f"Branch: {state.head_ref}"
+        f"Branch: {state.head_ref}{repo_suffix}"
     )
 
 
@@ -147,7 +195,11 @@ async def sdlc_test(issue_number: int) -> str:
         issue_number: The GitHub issue number to write tests for.
     """
     skill = _read_skill("test")
-    return f"{skill}\n---\n\nTarget issue: #{issue_number}"
+    parts = [f"{skill}\n---\n\nTarget issue: #{issue_number}"]
+    repo_directive = _resolve_target_repo_directive()
+    if repo_directive is not None:
+        parts.append(f"\n\n{repo_directive}")
+    return "".join(parts)
 
 
 @mcp.tool()
@@ -158,7 +210,11 @@ async def sdlc_commit() -> str:
     or similar. Analyzes the working tree diff, groups changes by logical kind,
     and creates disciplined atomic commits with conventional-commit messages.
     """
-    return _read_skill("commit")
+    skill = _read_skill("commit")
+    repo_directive = _resolve_target_repo_directive()
+    if repo_directive is None:
+        return skill
+    return f"{skill}\n---\n\n{repo_directive}"
 
 
 @mcp.tool()
@@ -178,6 +234,9 @@ async def sdlc_pr(issue_number: int, target: str | None = None) -> str:
     parts = [f"{skill}\n---\n\nTarget issue: #{issue_number}"]
     if target:
         parts.append(f"\n{_target_branch_directive(target)}")
+    repo_directive = _resolve_target_repo_directive()
+    if repo_directive is not None:
+        parts.append(f"\n\n{repo_directive}")
     return "".join(parts)
 
 
@@ -227,14 +286,18 @@ async def sdlc_review(
             "keyword; ask the user which issue it addresses before writing the "
             "review document."
         )
-    return (
+    parts = [
         f"{skill}\n---\n\n"
         f"Target PR: #{pr_number}\n"
         f"Roles: {roles_line}\n"
         f"Reviewers per role: {subagents}\n"
-        f"{issue_line}\n\n"
-        f"Review document template:\n\n{template}"
-    )
+        f"{issue_line}"
+    ]
+    repo_directive = _resolve_target_repo_directive()
+    if repo_directive is not None:
+        parts.append(f"\n\n{repo_directive}")
+    parts.append(f"\n\nReview document template:\n\n{template}")
+    return "".join(parts)
 
 
 @mcp.tool()
