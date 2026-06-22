@@ -669,6 +669,36 @@ def test_discover_guides_should_find_bundled_role_when_role_guides_present(tmp_p
     )
 
 
+def test_discover_guides_should_find_bundled_aie_role_when_role_guides_present(tmp_path):
+    """Test the bundled aie role is discovered alongside general-purpose.
+
+    Given:
+        A package dir bundling both role-guides/general-purpose.md and
+        role-guides/aie.md, and no user dir.
+    When:
+        discover_guides is called.
+    Then:
+        Both ('role', 'general-purpose') and ('role', 'aie') are discovered.
+    """
+    # Arrange
+    pkg = tmp_path / "pkg"
+    (pkg / "role-guides").mkdir(parents=True)
+    (pkg / "role-guides" / "general-purpose.md").write_text("# GP")
+    (pkg / "role-guides" / "aie.md").write_text("# AIE")
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    config = {"guide-map": {}}
+
+    # Act
+    result = discover_guides(config, pkg, cwd, None)
+
+    # Assert
+    assert result[("role", "general-purpose")] == (
+        pkg / "role-guides" / "general-purpose.md"
+    )
+    assert result[("role", "aie")] == pkg / "role-guides" / "aie.md"
+
+
 def test_discover_guides_should_merge_user_role_at_convention_path(tmp_path):
     """Test user role guides at .sdlc/guides/role/ are discovered.
 
@@ -1350,6 +1380,28 @@ def test_load_state_should_discover_bundled_general_purpose_role(tmp_path, monke
     state = load_state(cwd=tmp_path)
 
     # Assert
+    assert ("role", "general-purpose") in state.discovered
+
+
+def test_load_state_should_discover_bundled_aie_role(tmp_path, monkeypatch):
+    """Test the state's discovered map includes the bundled aie role.
+
+    Given:
+        A clean working directory with no user guides.
+    When:
+        load_state is called.
+    Then:
+        The bundled ('role', 'aie') guide is present in discovered, alongside
+        ('role', 'general-purpose').
+    """
+    # Arrange
+    monkeypatch.delenv("SDLC_CONFIG", raising=False)
+
+    # Act
+    state = load_state(cwd=tmp_path)
+
+    # Assert
+    assert ("role", "aie") in state.discovered
     assert ("role", "general-purpose") in state.discovered
 
 

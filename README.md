@@ -129,7 +129,8 @@ sdlc/
         ├── style-guides/           # Style conventions (served as MCP resources)
         │   └── markdown.md
         └── role-guides/            # Review roles (served as MCP resources)
-            └── general-purpose.md
+            ├── general-purpose.md
+            └── aie.md              # AI-engineering lens; scope set per-project in guide-map.role
 ```
 
 ### MCP Tools
@@ -154,6 +155,7 @@ sdlc/
 | `sdlc://guides/test/python` | Python testing conventions |
 | `sdlc://guides/style/markdown` | Markdown style conventions |
 | `sdlc://guides/role/general-purpose` | Default review role |
+| `sdlc://guides/role/aie` | AI-engineering review role (agent-facing prompt and skill content) |
 | `sdlc://role-template` | Role-document template |
 | `sdlc://review-template` | Consolidated-review-document template |
 | `sdlc://agents-md` | Project-level agent instructions |
