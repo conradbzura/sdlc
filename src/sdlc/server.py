@@ -1,5 +1,7 @@
 """SDLC MCP server — exposes pipeline skills as MCP tools and guides as resources."""
 
+import hashlib
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -90,6 +92,36 @@ def _resolve_target_repo_directive() -> str | None:
     except pr_state.GhUnavailable:
         return None
     return _target_repo_directive(repo)
+
+
+_GLOB_METACHARS = set("*?[]")
+
+
+def _paths_slug(paths: list[str]) -> str:
+    """Derive a stable directory slug from raw `sdlc_review` path arguments.
+
+    Pure and filesystem-free — the slug is computed from the path/glob STRINGS
+    so that successive `paths`-mode reviews of the same target accumulate their
+    `review-1/2/3…` rounds under one `.sdlc/reviews/<slug>/` directory.
+
+    A single literal file path (one element with no glob metacharacters
+    `*?[]`) yields that file's stem (e.g. ``src/sdlc/role-guides/aie.md`` →
+    ``aie``). A glob, or any multi-element list, yields a sanitized join of the
+    raw arguments (non-alphanumerics collapsed to ``-``, leading/trailing ``-``
+    stripped, truncated to ~40 chars) suffixed with ``-<hash8>``, where
+    ``<hash8>`` is the first 8 hex digits of the SHA-256 over the sorted,
+    newline-joined raw path strings. Both the label and the hash are taken over
+    the sorted paths, so the whole slug is stable and collision-resistant
+    regardless of argument order.
+    """
+    if len(paths) == 1 and not (_GLOB_METACHARS & set(paths[0])):
+        return Path(paths[0]).stem
+    ordered = sorted(paths)
+    digest = hashlib.sha256("\n".join(ordered).encode()).hexdigest()[:8]
+    sanitized = (
+        re.sub(r"[^a-zA-Z0-9]+", "-", "-".join(ordered)).strip("-")[:40].strip("-")
+    )
+    return f"{sanitized}-{digest}"
 
 
 @mcp.tool()
@@ -259,34 +291,68 @@ async def sdlc_pr(issue_number: int, target: str | None = None) -> str:
 
 @mcp.tool()
 async def sdlc_review(
-    pr_number: int,
+    pr_number: int | None = None,
+    paths: list[str] | None = None,
     roles: list[str] | None = None,
     subagents: int = 1,
 ) -> str:
-    """Review an open pull request and produce a local consolidated document.
+    """Review an open PR, or a set of local paths, into a consolidated document.
 
     Use when the user says "review", "review PR #N", "review this PR",
-    or similar. Spawns `subagents` reviewer(s) per role across `roles`
-    (`subagents × len(roles)` reviewer subagents total), each reviewing the
-    diff through its role's lens and confined to that role's `guide-map.role`
-    files. The main session agent consolidates their findings into a single
-    `.sdlc/reviews/issue-#<N>/review-<iteration>.md`. Nothing is posted to
-    GitHub. The linked issue `<N>` is resolved here via the
-    `closingIssuesReferences` relationship (with a PR-body fallback) and
-    supplied to the skill.
+    "review these files", or similar. Exactly one target MUST be supplied:
+
+    - **PR mode** (`pr_number`): review the PR diff. Spawns `subagents`
+      reviewer(s) per role across `roles` (`subagents × len(roles)` reviewer
+      subagents total), each reviewing the diff through its role's lens and
+      confined to that role's `guide-map.role` files. The main session agent
+      consolidates their findings into a single
+      `.sdlc/reviews/issue-#<N>/review-<iteration>.md`. The linked issue `<N>`
+      is resolved here via the `closingIssuesReferences` relationship (with a
+      PR-body fallback) and supplied to the skill.
+    - **PATHS mode** (`paths`): review the literal file paths and globs as they
+      stand in the working tree — no PR, no diff, no linked issue, and no `gh`.
+      The skill expands the globs and reviews each matched file's whole
+      contents. Reviewers and consolidation work the same way, but the document
+      lives at `.sdlc/reviews/<slug>/review-<iteration>.md`, where `<slug>` is
+      derived deterministically from the raw `paths` strings (see
+      `_paths_slug`) so successive runs of the same target accumulate together.
+
+    Nothing is posted to GitHub in either mode.
 
     Args:
-        pr_number: The PR number to review.
+        pr_number: The PR number to review. Mutually exclusive with `paths`.
+        paths: Literal file paths and/or globs to review in place. Mutually
+            exclusive with `pr_number`.
         roles: Review-role stems to run, one reviewer set per role. Defaults
-            to ["general-purpose"] when omitted.
+            to ["general-purpose"] when omitted (both modes).
         subagents: Number of independent reviewers to run per role. Defaults
             to 1.
     """
+    if (pr_number is None) == (paths is None):
+        raise ValueError(
+            "sdlc_review requires exactly one target: pass either pr_number "
+            "(PR mode) or paths (paths mode), not both and not neither."
+        )
     if roles is None:
         roles = ["general-purpose"]
     skill = _read_skill("review")
     template = _read_file(REVIEW_TEMPLATE_PATH)
     roles_line = ", ".join(roles)
+    if paths is not None:
+        slug = _paths_slug(paths)
+        paths_block = "\n".join(paths)
+        parts = [
+            f"{skill}\n---\n\n"
+            f"Roles: {roles_line}\n"
+            f"Reviewers per role: {subagents}\n"
+            f"Target paths:\n{paths_block}\n"
+            f"Review document directory: .sdlc/reviews/{slug}/\n"
+            "Paths mode: no PR, no diff, and no linked issue — expand the "
+            "literal paths and globs above against the working tree and review "
+            "each matched file's whole contents. Run no gh and post nothing.",
+            f"\n\nReview document template:\n\n{template}",
+        ]
+        return "".join(parts)
     try:
         issue_number = pr_state.closing_issue(pr_number)
     except pr_state.GhUnavailable:

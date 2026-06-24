@@ -12,6 +12,8 @@ from sdlc.pr_state import (
     ReviewFindings,
 )
 from sdlc.server import (
+    _paths_slug,
+    _read_skill,
     agents_md,
     get_default_config,
     get_role_guide,
@@ -72,6 +74,18 @@ def _patch_resolve_repo_unavailable(monkeypatch):
         raise GhUnavailable("gh executable not found on PATH")
 
     monkeypatch.setattr(pr_state, "resolve_repo", raise_unavailable)
+
+
+def _review_directive(result):
+    """Return the directive block sdlc_review appends after the skill prose.
+
+    The skill markdown documents both review modes, so substrings like
+    ``Target repo:`` or ``--repo`` legitimately appear in its body. The
+    mode-specific contract is about what the tool APPENDS, so isolate that
+    block by stripping the inlined skill prefix and the trailing template.
+    """
+    before_template = result.split("\n\nReview document template:", 1)[0]
+    return before_template[len(_read_skill("review")) :]
 
 
 @pytest.mark.asyncio
@@ -761,6 +775,267 @@ async def test_sdlc_review_should_degrade_when_issue_resolution_unavailable(
     # Assert
     assert "# Review Skill" in result
     assert "Resolved issue: unresolved" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_raise_when_no_target_given():
+    """Test sdlc_review rejects a call naming neither a PR nor paths.
+
+    Given:
+        Neither pr_number nor paths is supplied.
+    When:
+        sdlc_review() is called.
+    Then:
+        It should raise ValueError, before any skill read or gh call.
+    """
+    # Act / Assert
+    with pytest.raises(ValueError):
+        await sdlc_review()
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_raise_when_both_targets_given():
+    """Test sdlc_review rejects a call naming both a PR and paths.
+
+    Given:
+        Both pr_number and paths are supplied.
+    When:
+        sdlc_review(pr_number=10, paths=["src/sdlc/server.py"]) is called.
+    Then:
+        It should raise ValueError, before any skill read or gh call.
+    """
+    # Act / Assert
+    with pytest.raises(ValueError):
+        await sdlc_review(pr_number=10, paths=["src/sdlc/server.py"])
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_paths_mode_should_emit_target_paths_and_skill_header():
+    """Test sdlc_review in paths mode names the paths and inlines the skill.
+
+    Given:
+        A paths list with a single literal file.
+    When:
+        sdlc_review(paths=["src/sdlc/server.py"]) is called.
+    Then:
+        It should return the review skill and a Target paths directive naming
+        the path verbatim.
+    """
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    assert "# Review Skill" in result
+    assert "Target paths:" in result
+    assert "src/sdlc/server.py" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_paths_mode_should_omit_target_repo_even_for_fork(
+    monkeypatch,
+):
+    """Test sdlc_review in paths mode never injects a target-repo directive.
+
+    Given:
+        resolve_repo reports the current repo is a fork of upstream/sdlc.
+    When:
+        sdlc_review(paths=["src/sdlc/server.py"]) is called.
+    Then:
+        It should omit the Target repo directive and any --repo flag, because
+        paths mode runs no gh.
+    """
+    # Arrange
+    _patch_resolve_repo(monkeypatch, _fork_repo())
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Target repo:" not in directive
+    assert "--repo" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_paths_mode_should_omit_pr_and_issue_directives():
+    """Test sdlc_review in paths mode emits no PR or resolved-issue directives.
+
+    Given:
+        A paths list with a single literal file.
+    When:
+        sdlc_review(paths=["src/sdlc/server.py"]) is called.
+    Then:
+        It should omit both the Target PR directive and the Resolved issue
+        directive.
+    """
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Target PR:" not in directive
+    assert "Resolved issue:" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_paths_mode_should_default_to_general_purpose_role():
+    """Test sdlc_review in paths mode defaults the role to general-purpose.
+
+    Given:
+        A paths list and no roles argument.
+    When:
+        sdlc_review(paths=["src/sdlc/server.py"]) is called.
+    Then:
+        It should name the general-purpose role in the appended composition.
+    """
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    assert "Roles: general-purpose" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_paths_mode_should_render_explicit_roles():
+    """Test sdlc_review in paths mode renders an explicit role list.
+
+    Given:
+        A paths list and roles=["aie"].
+    When:
+        sdlc_review(paths=["src/sdlc/server.py"], roles=["aie"]) is called.
+    Then:
+        It should name the aie role in the appended composition.
+    """
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], roles=["aie"])
+
+    # Assert
+    assert "Roles: aie" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_paths_mode_should_report_subagent_count():
+    """Test sdlc_review in paths mode reports the per-role reviewer count.
+
+    Given:
+        A paths list and subagents=4.
+    When:
+        sdlc_review(paths=["src/sdlc/server.py"], subagents=4) is called.
+    Then:
+        It should report four reviewers per role.
+    """
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], subagents=4)
+
+    # Assert
+    assert "Reviewers per role: 4" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_paths_mode_should_inline_review_template():
+    """Test sdlc_review in paths mode inlines the review-document template.
+
+    Given:
+        A paths list with a single literal file.
+    When:
+        sdlc_review(paths=["src/sdlc/server.py"]) is called.
+    Then:
+        It should include the template's blocking and advisory tier headings.
+    """
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    assert "## Tier 1 — Blocking" in result
+    assert "## Tier 2 — Advisory" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_paths_mode_should_emit_stem_directory_for_single_literal():
+    """Test sdlc_review derives a stem-based document directory for one file.
+
+    Given:
+        A paths list with a single literal file path.
+    When:
+        sdlc_review(paths=["src/sdlc/role-guides/aie.md"]) is called.
+    Then:
+        It should emit a review document directory keyed by the file's stem.
+    """
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/role-guides/aie.md"])
+
+    # Assert
+    assert "Review document directory: .sdlc/reviews/aie/" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_paths_mode_should_emit_hashed_directory_for_glob():
+    """Test sdlc_review derives a sanitized, hashed directory for a glob.
+
+    Given:
+        A paths list whose single element is a glob.
+    When:
+        sdlc_review(paths=["src/sdlc/**/*.py"]) is called.
+    Then:
+        It should emit a review document directory whose slug is the sanitized
+        join of the args plus an 8-hex-char hash suffix.
+    """
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/**/*.py"])
+
+    # Assert
+    expected = _paths_slug(["src/sdlc/**/*.py"])
+    assert f"Review document directory: .sdlc/reviews/{expected}/" in result
+    assert "-" in expected
+    # The trailing hash is 8 lowercase hex characters.
+    suffix = expected.rsplit("-", 1)[1]
+    assert len(suffix) == 8
+    assert all(ch in "0123456789abcdef" for ch in suffix)
+
+
+def test_paths_slug_should_return_stem_for_single_literal_path():
+    """Test _paths_slug returns the file stem for one literal path.
+
+    Given:
+        A single literal file path with no glob metacharacters.
+    When:
+        _paths_slug(["src/sdlc/role-guides/aie.md"]) is called.
+    Then:
+        It should return the file's stem with no hash suffix.
+    """
+    # Act
+    slug = _paths_slug(["src/sdlc/role-guides/aie.md"])
+
+    # Assert
+    assert slug == "aie"
+
+
+def test_paths_slug_should_sanitize_and_hash_glob_or_multiple_paths():
+    """Test _paths_slug sanitizes and hashes a glob or multi-path input.
+
+    Given:
+        A glob path and, separately, a multi-element path list.
+    When:
+        _paths_slug is called on each.
+    Then:
+        It should return a sanitized slug ending in an 8-hex-char hash, stable
+        across calls and order-independent for the multi-path case.
+    """
+    # Act
+    glob_slug = _paths_slug(["src/sdlc/**/*.py"])
+    multi_a = _paths_slug(["src/a.py", "src/b.py"])
+    multi_b = _paths_slug(["src/b.py", "src/a.py"])
+
+    # Assert
+    glob_suffix = glob_slug.rsplit("-", 1)[1]
+    assert len(glob_suffix) == 8
+    assert all(ch in "0123456789abcdef" for ch in glob_suffix)
+    # No glob metacharacters survive sanitization.
+    assert "*" not in glob_slug
+    assert "/" not in glob_slug
+    # Stable and order-independent over the sorted, joined raw paths.
+    assert multi_a == multi_b
+    assert _paths_slug(["src/sdlc/**/*.py"]) == glob_slug
 
 
 @pytest.mark.asyncio
