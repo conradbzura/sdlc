@@ -94,15 +94,18 @@ class ReviewFindings:
     def format(self) -> str:
         """Render the review document as a human-readable feedback block.
 
-        The header carries the issue number, iteration, and source path so
-        the agent can re-read the document. Findings are emitted blocking
-        first, then advisory, each numbered with its id, severity, reference,
-        title, issue, and pre-selected remediation block.
+        The header carries the document's actual path (``self.path``), the
+        issue number, and iteration so the agent can re-read the document. The
+        path is emitted verbatim rather than reconstructed, so a paths-mode
+        ``<slug>/review-<#>.md`` document renders correctly (in the issue-keyed
+        case ``self.path`` already equals that reconstruction). Findings are
+        emitted blocking first, then advisory, each numbered with its id,
+        severity, reference, title, issue, and pre-selected remediation block.
         """
-        lines = [
-            f"Review document: .sdlc/reviews/issue-#{self.issue_number}/"
-            f"review-{self.iteration}.md",
-            f"Issue: #{self.issue_number}",
+        lines = [f"Review document: {self.path}"]
+        if self.issue_number:
+            lines.append(f"Issue: #{self.issue_number}")
+        lines += [
             f"Iteration: {self.iteration}",
             f"Path: {self.path}",
             f"Findings ({len(self.findings)}):",
@@ -239,14 +242,19 @@ def _reviews_dir(issue_number: int) -> Path:
     return Path(".sdlc/reviews") / f"issue-#{issue_number}"
 
 
-def _iterations(issue_number: int) -> list[int]:
-    """Return the sorted iteration numbers present for ``issue_number``.
+def _iterations(
+    issue_number: int, directory: Path | None = None
+) -> list[int]:
+    """Return the sorted iteration numbers present for the review directory.
 
-    Globs ``review-*.md`` in the issue's review directory and parses the
-    trailing integer from each filename. Returns an empty list when the
-    directory is absent or holds no parseable ``review-<int>.md`` file.
+    Globs ``review-*.md`` in the review directory and parses the trailing
+    integer from each filename. When ``directory`` is given, that explicit
+    directory is scanned; otherwise the issue-keyed ``_reviews_dir`` applies.
+    Returns an empty list when the directory is absent or holds no parseable
+    ``review-<int>.md`` file.
     """
-    directory = _reviews_dir(issue_number)
+    if directory is None:
+        directory = _reviews_dir(issue_number)
     if not directory.is_dir():
         return []
     iterations: list[int] = []
@@ -257,9 +265,11 @@ def _iterations(issue_number: int) -> list[int]:
     return sorted(iterations)
 
 
-def _latest_iteration(issue_number: int) -> int | None:
-    """Return the highest iteration for ``issue_number``, or ``None``."""
-    iterations = _iterations(issue_number)
+def _latest_iteration(
+    issue_number: int, directory: Path | None = None
+) -> int | None:
+    """Return the highest iteration for the review directory, or ``None``."""
+    iterations = _iterations(issue_number, directory)
     return iterations[-1] if iterations else None
 
 
@@ -454,38 +464,42 @@ def parse_review_document(
 
 
 def load_review_findings(
-    issue_number: int, iteration: int | None = None
+    issue_number: int,
+    iteration: int | None = None,
+    directory: Path | None = None,
 ) -> ReviewFindings:
-    """Load and parse a local review document for ``issue_number``.
+    """Load and parse a local review document.
 
-    With ``iteration=None`` the latest review round is loaded; with an explicit
-    integer that exact ``review-<iteration>.md`` is loaded. Raises
-    ``ValueError`` with a clear message when the review directory is absent,
-    holds no ``review-*.md``, or the requested explicit iteration's file does
-    not exist.
+    When ``directory`` is given, ``review-*.md`` is globbed and resolved under
+    that explicit directory (the slug-aware paths-mode and PR-mode location the
+    server supplies); when ``None``, behavior is exactly as the issue-keyed
+    ``_reviews_dir(issue_number)`` location. With ``iteration=None`` the latest
+    review round is loaded; with an explicit integer that exact
+    ``review-<iteration>.md`` is loaded. Raises ``ValueError`` with a clear
+    message naming the actual directory when it is absent, holds no
+    ``review-*.md``, or the requested explicit iteration's file does not exist.
     """
-    directory = _reviews_dir(issue_number)
+    if directory is None:
+        directory = _reviews_dir(issue_number)
     if not directory.is_dir():
         raise ValueError(
-            f"No review documents found for issue #{issue_number}: "
-            f"directory {directory} does not exist. Run sdlc_review on the "
-            "PR first."
+            f"No review documents found: directory {directory} does not "
+            "exist. Run sdlc_review on the target first."
         )
     if iteration is None:
-        latest = _latest_iteration(issue_number)
+        latest = _latest_iteration(issue_number, directory)
         if latest is None:
             raise ValueError(
-                f"No review documents found for issue #{issue_number}: "
-                f"{directory} contains no review-<iteration>.md file. Run "
-                "sdlc_review on the PR first."
+                f"No review documents found: {directory} contains no "
+                "review-<iteration>.md file. Run sdlc_review on the target "
+                "first."
             )
         iteration = latest
     path = directory / f"review-{iteration}.md"
     if not path.is_file():
-        available = _iterations(issue_number)
+        available = _iterations(issue_number, directory)
         raise ValueError(
-            f"Review iteration {iteration} not found for issue "
-            f"#{issue_number}: {path} does not exist. "
+            f"Review iteration {iteration} not found: {path} does not exist. "
             f"Available iterations: {available or 'none'}."
         )
     return parse_review_document(path, issue_number, iteration)

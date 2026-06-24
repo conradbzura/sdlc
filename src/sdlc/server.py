@@ -289,12 +289,78 @@ async def sdlc_pr(issue_number: int, target: str | None = None) -> str:
     return "".join(parts)
 
 
+def _render_verify(
+    pr_number: int | None,
+    paths: list[str] | None,
+    roles: list[str],
+    subagents: int,
+    verify: int,
+) -> str:
+    """Render the `sdlc_review` verify-mode directive block.
+
+    Loads the existing `review-<verify>.md` for the active target (an
+    issue-keyed directory in PR mode, a slug directory in paths mode), renders
+    its findings, and assembles the verify directive: the inlined review skill,
+    the composition lines, the `Verify mode` / `Verify document` write-target
+    lines, the pre-rendered findings, the mode's target directive, and the
+    inlined review-document template.
+
+    Raises ``ValueError`` when a PR target closes no issue, or when the target
+    has no `review-<verify>.md` (surfaced by `load_review_findings`).
+    """
+    skill = _read_skill("review")
+    template = _read_file(REVIEW_TEMPLATE_PATH)
+    roles_line = ", ".join(roles)
+    if paths is not None:
+        slug = _paths_slug(paths)
+        directory = Path(".sdlc/reviews") / slug
+        findings = pr_state.load_review_findings(
+            0, iteration=verify, directory=directory
+        )
+        paths_block = "\n".join(paths)
+        target_directive = (
+            f"Target paths:\n{paths_block}\n"
+            "Paths mode: no PR, no diff, and no linked issue — capture each "
+            "matched file's current contents and judge resolution against "
+            "them. Run no gh and post nothing."
+        )
+    else:
+        issue_number = pr_state.closing_issue(pr_number)
+        if issue_number is None:
+            raise ValueError(
+                f"--verify {verify} was requested for PR #{pr_number}, but the "
+                "PR closes no issue, so there is no .sdlc/reviews/issue-#<N>/ "
+                "directory to read the review document from."
+            )
+        directory = Path(".sdlc/reviews") / f"issue-#{issue_number}"
+        findings = pr_state.load_review_findings(
+            issue_number, iteration=verify, directory=directory
+        )
+        target_directive = f"Target PR: #{pr_number}"
+        repo_directive = _resolve_target_repo_directive()
+        if repo_directive is not None:
+            target_directive = f"{target_directive}\n\n{repo_directive}"
+    directory_str = directory.as_posix()
+    return (
+        f"{skill}\n---\n\n"
+        f"Roles: {roles_line}\n"
+        f"Reviewers per role: {subagents}\n"
+        f"Verify mode: review-{verify}\n"
+        f"Review document directory: {directory_str}/\n"
+        f"Verify document: {directory_str}/verify-{verify}.md\n"
+        f"{findings.format()}\n\n"
+        f"{target_directive}\n\n"
+        f"Review document template:\n\n{template}"
+    )
+
+
 @mcp.tool()
 async def sdlc_review(
     pr_number: int | None = None,
     paths: list[str] | None = None,
     roles: list[str] | None = None,
     subagents: int = 1,
+    verify: int | None = None,
 ) -> str:
     """Review an open PR, or a set of local paths, into a consolidated document.
 
@@ -317,16 +383,27 @@ async def sdlc_review(
       derived deterministically from the raw `paths` strings (see
       `_paths_slug`) so successive runs of the same target accumulate together.
 
-    Nothing is posted to GitHub in either mode.
+    `verify` layers a **verification pass** on top of the active target mode:
+    it loads the existing `review-<verify>.md` for that target, fans per-role
+    verifiers out to judge each finding Resolved/Unresolved against the current
+    files, and writes the verdicts to `verify-<verify>.md` beside the review
+    document. The unresolved set feeds the next `sdlc_implement`.
+
+    Nothing is posted to GitHub in any mode.
 
     Args:
         pr_number: The PR number to review. Mutually exclusive with `paths`.
         paths: Literal file paths and/or globs to review in place. Mutually
             exclusive with `pr_number`.
         roles: Review-role stems to run, one reviewer set per role. Defaults
-            to ["general-purpose"] when omitted (both modes).
+            to ["general-purpose"] when omitted (every mode).
         subagents: Number of independent reviewers to run per role. Defaults
             to 1.
+        verify: When set, verify the existing `review-<verify>.md` for the
+            active target instead of producing a new review. Raises
+            `ValueError` when no target is supplied (the exactly-one-target
+            guard), when a PR target closes no issue (no issue directory to
+            read from), or when the target has no `review-<verify>.md`.
     """
     if (pr_number is None) == (paths is None):
         raise ValueError(
@@ -335,6 +412,8 @@ async def sdlc_review(
         )
     if roles is None:
         roles = ["general-purpose"]
+    if verify is not None:
+        return _render_verify(pr_number, paths, roles, subagents, verify)
     skill = _read_skill("review")
     template = _read_file(REVIEW_TEMPLATE_PATH)
     roles_line = ", ".join(roles)
