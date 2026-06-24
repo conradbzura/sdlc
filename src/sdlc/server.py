@@ -125,18 +125,21 @@ async def sdlc_issue(
 
 
 @mcp.tool()
-async def sdlc_implement(number: int, target: str | None = None) -> str:
-    """Implement a GitHub issue or address feedback on an open PR.
+async def sdlc_implement(
+    number: int, target: str | None = None, review: int | str | None = None
+) -> str:
+    """Implement a GitHub issue or address local review feedback on a PR.
 
     Use when the user says "implement", "implement #N", or similar.
     Pass an issue number for a fresh start; pass a PR number to continue
-    work on an in-progress PR or to address unresolved review feedback.
+    work on an in-progress PR or to address review feedback.
 
-    The endpoint inspects the GitHub state for ``number`` and returns one
-    of three skill prompts: the fresh-implementation prompt, the
-    continue-on-existing-branch prompt, or the PR-feedback-remediation
-    prompt. If ``gh`` is unavailable, falls back to the fresh prompt with
-    a diagnostic note.
+    The endpoint inspects the GitHub state for ``number`` and the ``review``
+    selector, then returns one of three skill prompts: the fresh-implementation
+    prompt, the continue-on-existing-branch prompt, or the feedback-remediation
+    prompt sourced from a local review document under
+    ``.sdlc/reviews/issue-#<N>/``. If ``gh`` is unavailable, falls back to the
+    fresh prompt with a diagnostic note.
 
     Args:
         number: An issue number or an open PR number.
@@ -144,6 +147,15 @@ async def sdlc_implement(number: int, target: str | None = None) -> str:
             a fresh implementation creates its branch from this branch instead
             of the repo default. Ignored on the continue and feedback paths,
             which operate on an existing branch.
+        review: Polymorphic review-feedback selector.
+            * ``None`` (default) — load the latest local review document for
+              the closing issue when one exists; otherwise route to the
+              continue (linked PR) or fresh (bare issue) prompt.
+            * ``int`` — load that exact local review iteration. A missing
+              iteration returns a clear diagnostic string.
+            * ``str`` — a GitHub PR URL whose review feedback is converted into
+              a new local review document (next iteration) and consumed. A
+              non-PR-URL string returns a clear diagnostic string.
     """
     try:
         repo = pr_state.resolve_repo()
@@ -153,7 +165,7 @@ async def sdlc_implement(number: int, target: str | None = None) -> str:
         f"\n\n{_target_repo_directive(repo)}" if repo is not None else ""
     )
     try:
-        state = pr_state.dispatch(number, repo=repo)
+        state = pr_state.dispatch(number, repo=repo, review=review)
     except pr_state.GhUnavailable as exc:
         skill = _read_skill("implement")
         parts = [
@@ -165,6 +177,11 @@ async def sdlc_implement(number: int, target: str | None = None) -> str:
             parts.append(f"\n{_target_branch_directive(target)}")
         parts.append(repo_suffix)
         return "".join(parts)
+    except ValueError as exc:
+        return (
+            f"Could not load the requested review feedback for #{number}: "
+            f"{exc}"
+        )
     if state is None:
         skill = _read_skill("implement")
         parts = [f"{skill}\n---\n\nTarget issue: #{number}"]
@@ -172,7 +189,7 @@ async def sdlc_implement(number: int, target: str | None = None) -> str:
             parts.append(f"\n{_target_branch_directive(target)}")
         parts.append(repo_suffix)
         return "".join(parts)
-    if isinstance(state, pr_state.Findings):
+    if isinstance(state, pr_state.ReviewFindings):
         skill = _read_skill("implement-feedback")
         return f"{skill}\n---\n\nTarget: #{number}\n{state.format()}{repo_suffix}"
     skill = _read_skill("implement-continue")

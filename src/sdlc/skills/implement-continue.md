@@ -1,12 +1,12 @@
 ---
 name: implement-continue
 description: >
-  Continue an in-progress GitHub PR that has no review feedback yet.
-  Invoked by the `sdlc_implement` MCP endpoint when a PR is in scope and
-  has zero unresolved review threads and zero non-empty review-body
-  comments. Checks out the PR branch, identifies remaining work against
-  the linked issue, and enters planning phase to design the next slice
-  of execution.
+  Continue an in-progress GitHub PR that has no local review document yet.
+  Invoked by the `sdlc_implement` MCP endpoint when a PR is in scope and no
+  `.sdlc/reviews/issue-#<N>/review-<iteration>.md` exists for its closing
+  issue. Checks out the PR branch, identifies remaining work against the
+  linked issue, and enters planning phase to design the next slice of
+  execution.
 subagent:
   support: optional
   type: general-purpose
@@ -24,7 +24,7 @@ Pick up an in-progress PR that has no review feedback yet. Check out the PR bran
 
 ## Pipeline Context
 
-This skill is part of the development workflow pipeline: `issue` → `implement` → `test` → `commit` → `pr` → `review`. The `sdlc_implement` MCP endpoint dispatches between three sibling prompts based on PR state — this skill is returned when a PR is in scope but has zero unresolved review threads and zero non-empty review-body comments. Fresh-start work is routed to the `implement` skill; PR review feedback is routed to the `implement-feedback` skill.
+This skill is part of the development workflow pipeline: `issue` → `implement` → `test` → `commit` → `pr` → `review`. The `sdlc_implement` MCP endpoint dispatches between three sibling prompts based on PR state and the `--review` selector — this skill is returned when a PR is in scope but no local review document exists for its closing issue (and none was requested via `--review`). Fresh-start work is routed to the `implement` skill; a selected local review document's findings are routed to the `implement-feedback` skill.
 
 ## Implementation Notes
 

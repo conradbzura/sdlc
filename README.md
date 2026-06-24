@@ -91,11 +91,11 @@ If you have a PR template defined in your `.github` dir, the agent will follow t
 
 **6. Review the PR (Optional)**
 
-The agent calls `sdlc_review` with the PR number. It runs one or more reviewer roles (N reviewers per role) over the PR diff, each confined to the files its role is mapped to, then consolidates their findings — deduped, merged across roles, highest severity wins — into a single local document at `.sdlc/reviews/issue-#<N>/review-<iteration>.md`. The document groups findings by severity (blocking first), gives each a stable ID and a `Reference`, and pre-selects a recommended remediation per finding with alternatives and an `Other` slot. You review and approve the document; nothing is posted to GitHub. The document is a local artifact you (or the agent) read to drive fixups manually — `sdlc_implement` does not ingest it, so address the findings directly using each one's pre-selected remediation and fixup-mapping entry as the work list.
+The agent calls `sdlc_review` with the PR number. It runs one or more reviewer roles (N reviewers per role) over the PR diff, each confined to the files its role is mapped to, then consolidates their findings — deduped, merged across roles, highest severity wins — into a single local document at `.sdlc/reviews/issue-#<N>/review-<iteration>.md`. The document groups findings by severity (blocking first), gives each a stable ID and a `Reference`, and pre-selects a recommended remediation per finding with alternatives and an `Other` slot. You review and approve the document; nothing is posted to GitHub. This document is exactly what `sdlc_implement` consumes to drive fixups — see the next step.
 
 **7. Iterate or Merge**
 
-If review feedback requires changes, re-enter the implementation loop with `sdlc_implement`. Address the feedback, then re-run test, commit, and pr tools as needed. When you're satisfied, mark the PR ready for review and merge via GitHub.
+If review feedback requires changes, re-enter the implementation loop with `sdlc_implement`. By default it parses the latest review document for the closing issue, renders its findings, and walks you through each one's pre-selected remediation behind a per-finding approval gate; `--review <iteration>` selects an earlier round, and `--review <pr-url>` first converts that PR's GitHub review comments into a fresh local review document. Address the feedback, then re-run test, commit, and pr tools as needed. When you're satisfied, mark the PR ready for review and merge via GitHub.
 
 ## Project Structure
 
@@ -138,7 +138,7 @@ sdlc/
 | Tool | Purpose |
 |------|---------|
 | `sdlc_issue` | Draft and push a GitHub issue |
-| `sdlc_implement` | Implement a GitHub issue, continue an in-progress PR, or address PR review feedback |
+| `sdlc_implement` | Implement a GitHub issue, continue an in-progress PR, or address a local review document's findings (`--review` selects an iteration or a PR URL to convert) |
 | `sdlc_test` | Analyze coverage and write comprehensive tests |
 | `sdlc_commit` | Stage and commit changes with atomic commits |
 | `sdlc_pr` | Review changes and create a draft pull request |
@@ -163,7 +163,7 @@ sdlc/
 
 ## What You Get
 
-The pipeline enforces disciplined commits — atomic, well-structured, with conventional-commit messages that make your history readable. It emphasizes test-first planning, generating comprehensive test specs before implementation. Code quality is enforced through guide-based, role-driven review that produces a consolidated local review document — an actionable, option-per-finding remediation plan you keep under `.sdlc/reviews/`. Every action is presented for review before execution, so you never have unwanted surprises. When you get PR feedback, you loop back to implementation, refine, and iterate. The system is tool-agnostic — any MCP-compatible client can connect. For large codebases, you can generate lightweight knowledge graphs to give the agent architectural context without shipping megabytes of source code as context.
+The pipeline enforces disciplined commits — atomic, well-structured, with conventional-commit messages that make your history readable. It emphasizes test-first planning, generating comprehensive test specs before implementation. Code quality is enforced through guide-based, role-driven review that produces a consolidated local review document — an actionable, option-per-finding remediation plan you keep under `.sdlc/reviews/`, which `sdlc_implement` then consumes to walk you through the fixups one finding at a time. Every action is presented for review before execution, so you never have unwanted surprises. When you get review feedback, you loop back to implementation, refine, and iterate. The system is tool-agnostic — any MCP-compatible client can connect. For large codebases, you can generate lightweight knowledge graphs to give the agent architectural context without shipping megabytes of source code as context.
 
 ## Documentation
 

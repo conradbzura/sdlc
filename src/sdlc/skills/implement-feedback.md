@@ -1,11 +1,13 @@
 ---
 name: implement-feedback
 description: >
-  Address unresolved PR review feedback for an open pull request.
-  Invoked by the `sdlc_implement` MCP endpoint when an open PR has
-  unresolved review threads or non-empty review-body comments. Walks
-  through findings sequentially with per-finding evaluation, approval,
-  and fixup-commit guidance.
+  Address the findings recorded in a local review document for an open
+  pull request. Invoked by the `sdlc_implement` MCP endpoint when a local
+  `.sdlc/reviews/issue-#<N>/review-<iteration>.md` document is selected —
+  the latest iteration by default, an explicit `--review <int>` iteration,
+  or a document freshly converted from a `--review <pr-url>`. Walks through
+  findings sequentially with per-finding evaluation, approval, and
+  fixup-commit guidance.
 subagent:
   support: optional
   type: general-purpose
@@ -20,11 +22,11 @@ The key words MUST, MUST NOT, SHALL, SHALL NOT, SHOULD, SHOULD NOT, REQUIRED, RE
 
 # Implement Feedback Skill
 
-Walk through unresolved PR review feedback systematically, one finding at a time, with per-finding evaluation and approval gates. Generate ready-to-execute fixup-commit commands after each remediation; do not auto-commit.
+Walk through the findings in a local review document systematically, one finding at a time, with per-finding evaluation and approval gates. Generate ready-to-execute fixup-commit commands after each remediation; do not auto-commit.
 
 ## Pipeline Context
 
-This skill is part of the development workflow pipeline: `issue` → `implement` → `test` → `commit` → `pr` → `review`. The `sdlc_implement` MCP endpoint dispatches between three sibling prompts based on PR state — this skill is returned when an open PR has unresolved review threads or non-empty review-body comments. Fresh-start work is routed to the `implement` skill; mid-implementation continuation is routed to the `implement-continue` skill.
+This skill is part of the development workflow pipeline: `issue` → `implement` → `test` → `commit` → `pr` → `review`. The `sdlc_implement` MCP endpoint dispatches between three sibling prompts based on PR state and the `--review` selector — this skill is returned when a local review document is selected: the latest `.sdlc/reviews/issue-#<N>/review-<iteration>.md` for the closing issue (the default when one exists), an explicit `--review <int>` iteration, or a document just converted from a `--review <pr-url>`. Fresh-start work is routed to the `implement` skill; mid-implementation continuation with no local review document is routed to the `implement-continue` skill.
 
 ## Implementation Notes
 
@@ -32,10 +34,10 @@ This skill does **not** use the structured planning interface (`EnterPlanMode` f
 
 ## Invariants
 
-- MUST verify the server-supplied finding enumeration by re-querying both review threads AND review-body comments before walking through findings.
-- MUST order findings by the canonical severity sequence (correctness → code quality → integration tests → unit tests → style → docs).
+- MUST verify the server-supplied finding enumeration by re-reading the LOCAL review document the endpoint named before walking through findings.
+- MUST order findings by the canonical severity sequence (correctness → code quality → integration tests → unit tests → style → docs), within which the document's own blocking-before-advisory tiering is honored.
 - MUST track findings as a todo list, one task per finding, kept visible to the user.
-- MUST present findings sequentially. For each finding the agent MUST restate the finding with `file:line` citation, evaluate correctness/relevance, propose one or more solutions with their implications, recommend one option, and wait for explicit user approval before editing.
+- MUST present findings sequentially. For each finding the agent MUST restate the finding with its `Reference` (which may be `file:line`, a whole-file path, or an issue-level reference), evaluate correctness/relevance, present the document's pre-selected `[x]` remediation as the recommended option (alongside any alternatives), and wait for explicit user approval before editing.
 - MUST NOT auto-commit. After each approved remediation, MUST emit a copy-paste-able `git commit --fixup=<sha>` block mapping each touched file back to the commit on the branch that owns that surface. The agent MUST NOT execute these commands.
 - MUST prompt the user to run `sdlc_commit` when they are ready to commit the accumulated remediations.
 - MUST NOT proceed to the next pipeline step autonomously.
@@ -43,7 +45,7 @@ This skill does **not** use the structured planning interface (`EnterPlanMode` f
 
 ## Arguments
 
-The MCP endpoint supplies the PR number, branch name, PR URL, and an enumerated list of findings (review threads and review-body comments) appended below this skill prompt. The agent MUST treat that enumeration as a starting point and re-query (step 3) to confirm completeness before walking through findings. The endpoint also appends a `Target repo: <id>` directive identifying the repository for `gh` commands that reference issues or PRs (the upstream `<owner>/<name>` when the current repo is a fork, otherwise the current repo); consume it in step 1 rather than re-deriving the target repo.
+The MCP endpoint supplies a rendered review-document block appended below this skill prompt. The block carries the source document path (`.sdlc/reviews/issue-#<N>/review-<iteration>.md`), the issue number, the iteration, and the enumerated findings — each with its id, severity, `Reference`, title, issue, and pre-selected remediation, ordered blocking before advisory. The document was selected by the `--review` argument: the latest iteration by default, an explicit `--review <int>` iteration, or a document just converted from a `--review <pr-url>` (in which case each finding carries a generic pre-selected "address the reviewer's comment" remediation that the user disambiguates per finding). The agent MUST treat the rendered block as a starting point and re-read the named local document (step 3) to confirm completeness before walking through findings. The endpoint also appends a `Target repo: <id>` directive identifying the repository for `gh` commands that reference issues or PRs (the upstream `<owner>/<name>` when the current repo is a fork, otherwise the current repo); consume it in step 1 rather than re-deriving the target repo.
 
 ## Subagent Execution (Optional)
 
@@ -86,42 +88,38 @@ All `gh` commands in subsequent steps that reference issues or PRs MUST include 
 
 ### 2. Check out the PR branch
 
-The MCP endpoint supplied the branch name. Fetch and check it out:
+The appended block names the closing issue `#<N>` but not the PR branch, so resolve the PR that closes `#<N>` and check out its head branch. Find the linked PR and read its head ref:
+
+```bash
+gh pr list --repo <target> --search "Closes #<N>" --json number,headRefName --jq '.[0]'
+```
+
+(Omit `--repo <target>` when the target is the current repo, per step 1.)
+
+Then fetch and check out that branch:
 
 ```bash
 git fetch origin <branch> && git checkout <branch>
 ```
 
-If the working tree has uncommitted changes that would conflict with the checkout, stop and ask the user how to proceed.
+If the working tree has uncommitted changes that would conflict with the checkout, stop and ask the user how to proceed. If no open PR closes `#<N>` (the review document predates the PR being reopened, or the branch was deleted), stop and ask the user which branch to work on.
 
 ### 3. Verify findings
 
-The server-supplied enumeration is the starting point but MUST be verified. Re-query both surfaces:
+The server-supplied enumeration is the starting point but MUST be verified against its source — the LOCAL review document named in the appended block. Read it in full:
 
 ```bash
-gh api graphql -f query='
-  query($owner: String!, $repo: String!, $pr: Int!) {
-    repository(owner: $owner, name: $repo) {
-      pullRequest(number: $pr) {
-        reviewThreads(first: 100) {
-          nodes { isResolved comments(first: 1) { nodes { body path line author { login } } } }
-        }
-      }
-    }
-  }
-' -f owner='<owner>' -f repo='<repo>' -F pr=<pr-number>
-
-gh pr view <pr-number> --repo <target> --json reviews
+cat .sdlc/reviews/issue-#<N>/review-<iteration>.md
 ```
 
-**Definition of "unresolved review comment":** A review comment is unresolved when its thread is literally marked as unresolved in GitHub's review UI (i.e., the thread has not been clicked "Resolve conversation"). This is a binary GitHub state, not a judgment call. Use the `isResolved` field on review-thread nodes to determine this. An unresolved thread means the reviewer intentionally left it open — the skill MUST read each unresolved comment, understand what the reviewer is asking for, and plan changes to address it. Do not dismiss unresolved comments as already handled without verifying the reviewer's intent.
+This is a local artifact `sdlc_review` (or a `--review <pr-url>` conversion) wrote; nothing is re-queried from GitHub. The document is the authoritative finding set for this round — there is no GitHub `isResolved` state to consult, because the review was never posted to GitHub.
 
-Findings come from two surfaces and BOTH MUST be enumerated:
+The findings are recorded in the document under two severity tiers and BOTH MUST be enumerated:
 
-- **Review threads** — inline comments left on specific lines of the diff. The correctness review in particular often carries its findings here rather than in the PR-level review body.
-- **Review-body comments** — PR-level comments left as part of a review summary. Skip empty bodies (an APPROVED review with no body is not a finding).
+- **Tier 1 — Blocking** — defects that MUST be resolved before approval per the raising role's blocking policy.
+- **Tier 2 — Advisory** — clarity, consistency, or quality observations that do not gate approval; the user elects which to fix.
 
-If the verification surfaces findings the server's enumeration missed, add them to the working set. If it surfaces fewer (e.g., a reviewer resolved a thread between the server query and now), drop them.
+Each finding carries a stable id, a `Reference` (a `file:line` citation, a whole-file path, or an issue-level reference for line-less findings), an `Issue` section with evidence, and a `Remediation` checklist whose pre-selected `[x]` option is the consolidator's recommendation. If re-reading the document surfaces findings the rendered block abbreviated or omitted, work from the document — it is the source of truth.
 
 ### 4. Order findings by severity
 
@@ -138,14 +136,14 @@ Sort the verified findings by the canonical severity sequence so downstream reme
 
 ### 5. Track findings as a todo list
 
-Create one task per finding so the user can see progress. The task description SHOULD include the finding's `file:line` citation and a short summary so each task is self-contained when read out of context.
+Create one task per finding so the user can see progress. The task description SHOULD include the finding's id and `Reference` and a short summary so each task is self-contained when read out of context.
 
 ### 6. Gather context
 
 Before walking through findings, MUST read enough of the codebase to evaluate them confidently:
 
 - MUST check whether `.understand-anything/knowledge-graph.json` exists. If it does, MUST use the `understand-chat` skill with a query synthesized from the highest-severity finding to gather architectural context. If the graph does not exist, skip this bullet and continue.
-- MUST read source files referenced in any finding's `file:line` citation.
+- MUST read source files named in any finding's `Reference` (the file in a `file:line` or whole-file reference; the region the issue text points to for an issue-level reference).
 - MUST read existing tests for the affected modules.
 - MUST resolve applicable test guides by calling `sdlc_guides_for` with the candidate or referenced source-file paths and `kind="test"`, then read every returned URI to internalize the relevant testing conventions.
 - MUST read project-level instructions (`AGENTS.md`) for build tooling, documentation style, and architecture context.
@@ -154,10 +152,10 @@ Before walking through findings, MUST read enough of the codebase to evaluate th
 
 For each finding, in severity order:
 
-1. **Restate the finding** with its `file:line` citation, the reviewer's name, and the exact body text. Mark the corresponding todo as in-progress.
-2. **Evaluate correctness/relevance.** Reviewers can be wrong or out of date. Read the code at the cited location. State whether the finding is valid, partially valid, or stale, and explain why.
-3. **Propose one or more solutions** with their implications. Call out a recommended option grounded in the PR's objectives.
-4. **Wait for explicit user approval** before editing. Allow the user to push back, ask clarifying questions, or pick a different option. The agent MUST NOT edit any file before approval is given.
+1. **Restate the finding** with its `Reference` (which may be a `file:line` citation, a whole-file path, or an issue-level reference such as `issue acceptance criterion #3`), its id, and its `Issue` text. Mark the corresponding todo as in-progress.
+2. **Evaluate correctness/relevance.** The consolidated review can be wrong or out of date. Read the code at the cited reference (or, for an issue-level reference, the relevant region). State whether the finding is valid, partially valid, or stale, and explain why.
+3. **Present the document's pre-selected remediation** as the recommended option. The `[x]`-marked option in the finding's `Remediation` checklist is the consolidator's recommendation; surface it as such, list any `[ ]` alternatives and the `Other:` slot, and call out which you would pick grounded in the PR's objectives. For a document converted from a `--review <pr-url>`, the pre-selected remediation is a generic "address the reviewer's comment" — restate the underlying GitHub comment and propose a concrete fix for the user to confirm.
+4. **Wait for explicit user approval** before editing. Allow the user to push back, ask clarifying questions, or pick a different option (including `Other:`). The agent MUST NOT edit any file before approval is given.
 5. **Implement the approved option.** Edit only the files in scope of the approved option.
 6. **Mark the todo complete** after the user confirms the remediation looks right (or after step 8's fixup-command block has been emitted, whichever the user prefers).
 
@@ -194,5 +192,5 @@ DO NOT proceed on your own.
 - **Branch checkout fails (missing remote ref):** Stop and report the situation; the supplied branch name may be stale.
 - **Reviewer's intent is ambiguous:** Ask the user to clarify before proposing solutions; do not guess.
 - **Finding is already addressed by an earlier remediation in this session:** Mark the corresponding todo complete with a note (e.g., "obviated by remediation of finding #1") and move on.
-- **Finding has been resolved in GitHub between the server query and the verification re-query:** Drop the finding from the working set with a note.
+- **Finding is obviated by a newer review iteration:** If a later `review-<iteration>.md` exists that supersedes the selected one, surface the discrepancy and ask the user which iteration to work from; do not silently merge them.
 - **No file owns the touched surface (entirely new code):** A net-new commit is appropriate. Emit `git commit -m "<subject>"` instead of a fixup, with a recommended subject in the conventional-commit style.
