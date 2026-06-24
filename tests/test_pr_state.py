@@ -928,6 +928,33 @@ class TestReviewFindings:
         # Assert
         assert rendered.index("Blocking item") < rendered.index("Advisory item")
 
+    def test_format_should_emit_the_documents_actual_path(self):
+        """Test ReviewFindings.format emits self.path verbatim in the header.
+
+        Given:
+            ReviewFindings whose path is a paths-mode `<slug>/review-<#>.md`
+            that does not match the issue-keyed reconstruction.
+        When:
+            format() is called.
+        Then:
+            The header should carry the document's actual path verbatim, not a
+            reconstructed `.sdlc/reviews/issue-#<N>/review-<#>.md`.
+        """
+        # Arrange
+        review = ReviewFindings(
+            issue_number=7,
+            iteration=1,
+            path=".sdlc/reviews/server/review-1.md",
+            findings=[],
+        )
+
+        # Act
+        rendered = review.format()
+
+        # Assert
+        assert ".sdlc/reviews/server/review-1.md" in rendered
+        assert ".sdlc/reviews/issue-#7/review-1.md" not in rendered
+
 
 def test_parse_review_document_should_extract_a_blocking_finding(tmp_path):
     """Test parse_review_document extracts a blocking finding's fields.
@@ -1183,6 +1210,137 @@ def test_load_review_findings_should_raise_when_dir_has_no_reviews(
     # Act & assert
     with pytest.raises(ValueError, match="no review-<iteration>.md"):
         pr_state.load_review_findings(7)
+
+
+def test_load_review_findings_should_load_from_an_explicit_directory(
+    tmp_path, monkeypatch
+):
+    """Test load_review_findings reads from an explicit directory when given.
+
+    Given:
+        A slug directory `.sdlc/reviews/server/` holding review-1.md, with no
+        issue-#7 directory present.
+    When:
+        load_review_findings(7, directory=<slug dir>) is called.
+    Then:
+        It should load review-1.md from the explicit directory and carry that
+        directory's path in the result.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = tmp_path / ".sdlc" / "reviews" / "server"
+    directory.mkdir(parents=True)
+    (directory / "review-1.md").write_text(_review_document(blocking=_BLOCKING_FINDING))
+
+    # Act
+    result = pr_state.load_review_findings(7, directory=directory)
+
+    # Assert
+    assert result.findings[0].id == "B1"
+    assert result.path == str(directory / "review-1.md")
+
+
+def test_load_review_findings_should_load_an_explicit_iteration_from_directory(
+    tmp_path, monkeypatch
+):
+    """Test load_review_findings reads an explicit iteration from a directory.
+
+    Given:
+        A slug directory holding review-1.md and review-2.md.
+    When:
+        load_review_findings(7, iteration=1, directory=<slug dir>) is called.
+    Then:
+        It should load review-1.md from the explicit directory regardless of
+        the later iteration.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = tmp_path / ".sdlc" / "reviews" / "server"
+    directory.mkdir(parents=True)
+    (directory / "review-1.md").write_text(_review_document(blocking=_BLOCKING_FINDING))
+    second = _BLOCKING_FINDING.replace("### B1", "### B2")
+    (directory / "review-2.md").write_text(_review_document(blocking=second))
+
+    # Act
+    result = pr_state.load_review_findings(7, iteration=1, directory=directory)
+
+    # Assert
+    assert result.iteration == 1
+    assert result.findings[0].id == "B1"
+
+
+def test_load_review_findings_should_load_latest_from_directory(
+    tmp_path, monkeypatch
+):
+    """Test load_review_findings reads the latest iteration from a directory.
+
+    Given:
+        A slug directory holding review-1.md and review-2.md, the latter naming
+        finding B2.
+    When:
+        load_review_findings(7, directory=<slug dir>) is called with no explicit
+        iteration.
+    Then:
+        It should load review-2.md (the latest) and report iteration 2.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = tmp_path / ".sdlc" / "reviews" / "server"
+    directory.mkdir(parents=True)
+    (directory / "review-1.md").write_text(_review_document(blocking=_BLOCKING_FINDING))
+    second = _BLOCKING_FINDING.replace("### B1", "### B2")
+    (directory / "review-2.md").write_text(_review_document(blocking=second))
+
+    # Act
+    result = pr_state.load_review_findings(7, directory=directory)
+
+    # Assert
+    assert result.iteration == 2
+    assert result.findings[0].id == "B2"
+
+
+def test_load_review_findings_should_raise_when_directory_missing(
+    tmp_path, monkeypatch
+):
+    """Test load_review_findings raises when the explicit directory is absent.
+
+    Given:
+        A slug directory that does not exist on disk.
+    When:
+        load_review_findings(7, directory=<missing dir>) is called.
+    Then:
+        It should raise ValueError naming the missing directory.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = tmp_path / ".sdlc" / "reviews" / "server"
+
+    # Act & assert
+    with pytest.raises(ValueError, match="server"):
+        pr_state.load_review_findings(7, directory=directory)
+
+
+def test_load_review_findings_should_raise_when_iteration_missing_in_directory(
+    tmp_path, monkeypatch
+):
+    """Test load_review_findings raises when an iteration is absent in the dir.
+
+    Given:
+        A slug directory holding only review-1.md.
+    When:
+        load_review_findings(7, iteration=5, directory=<slug dir>) is called.
+    Then:
+        It should raise ValueError naming the missing iteration.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = tmp_path / ".sdlc" / "reviews" / "server"
+    directory.mkdir(parents=True)
+    (directory / "review-1.md").write_text(_review_document(blocking=_BLOCKING_FINDING))
+
+    # Act & assert
+    with pytest.raises(ValueError, match="iteration 5 not found"):
+        pr_state.load_review_findings(7, iteration=5, directory=directory)
 
 
 def test_convert_pr_review_to_document_should_write_and_round_trip(
