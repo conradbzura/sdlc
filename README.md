@@ -95,7 +95,9 @@ The agent calls `sdlc_review` with either the PR number or a set of local file p
 
 **7. Iterate or Merge**
 
-If review feedback requires changes, re-enter the implementation loop with `sdlc_implement`. By default it parses the latest review document for the closing issue, renders its findings, and walks you through each one's pre-selected remediation behind a per-finding approval gate; `--review <iteration>` selects an earlier round, and `--review <pr-url>` first converts that PR's GitHub review comments into a fresh local review document. Address the feedback, then re-run test, commit, and pr tools as needed. When you're satisfied, mark the PR ready for review and merge via GitHub.
+If review feedback requires changes, re-enter the implementation loop with `sdlc_implement`. By default it parses the latest review document for the closing issue, renders its findings, and walks you through each one's pre-selected remediation behind a per-finding approval gate; `--review <iteration>` selects an earlier round, and `--review <pr-url>` first converts that PR's GitHub review comments into a fresh local review document. Address the feedback, then re-run test, commit, and pr tools as needed.
+
+To confirm a round was actually addressed, run `sdlc_review --verify <review #>` against the same target. It re-reads that `review-<#>.md`, fans the same per-role reviewers out as verifiers, and judges each finding **Resolved** or **Unresolved** against your current files — writing a `verify-<#>.md` report with an unresolved count rather than a new review. If any findings remain unresolved, it points you back to `sdlc_implement <target> --review <#>`; when zero remain, the round is verified complete. When you're satisfied, mark the PR ready for review and merge via GitHub.
 
 ## Project Structure
 
@@ -142,7 +144,7 @@ sdlc/
 | `sdlc_test` | Analyze coverage and write comprehensive tests |
 | `sdlc_commit` | Stage and commit changes with atomic commits |
 | `sdlc_pr` | Review changes and create a draft pull request |
-| `sdlc_review` | Review an open PR (diff) or a set of local file paths/globs, writing a consolidated local review document under `.sdlc/reviews/` |
+| `sdlc_review` | Review an open PR (diff) or a set of local file paths/globs, writing a consolidated local review document under `.sdlc/reviews/`; `--verify <review #>` instead verifies an existing review, judging each finding resolved/unresolved against the current files |
 | `sdlc_understand_chat` | Query the codebase knowledge graph |
 | `sdlc_roles` | List the available review roles |
 | `sdlc_role_scope` | Reverse-lookup the changed files a role's findings are confined to |

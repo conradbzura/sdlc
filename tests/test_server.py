@@ -993,6 +993,275 @@ async def test_sdlc_review_paths_mode_should_emit_hashed_directory_for_glob():
     assert all(ch in "0123456789abcdef" for ch in suffix)
 
 
+def _write_review_doc(tmp_path, directory, iteration, finding_id="B1"):
+    """Write a minimal one-finding review document under ``directory``.
+
+    Returns the path written. ``directory`` is relative to ``tmp_path`` (the
+    cwd the test chdirs into); the document carries a single blocking finding
+    whose id is ``finding_id`` so the rendered output is identifiable.
+    """
+    target = tmp_path / directory
+    target.mkdir(parents=True, exist_ok=True)
+    document = (
+        "# PR #10 — Round 1 Review\n\n"
+        "Header prose.\n\n"
+        "---\n\n"
+        "## Tier 1 — Blocking\n\n"
+        f"### {finding_id} — Rename foo to bar **(BLOCKING)** — aie (1/1 aie)\n"
+        "**Reference:** `src/sdlc/server.py:64`\n\n"
+        "**Issue:** The symbol `foo` should be `bar`.\n\n"
+        "**Remediation:**\n"
+        "- [x] Rename `foo` to `bar`. *(Recommended.)*\n"
+        "- [ ] Other: ________________________________________________\n\n"
+        "**Touched commit:** `abc1234`\n\n"
+        "## Tier 2 — Advisory\n\n"
+        "## Cross-cutting decisions\n\nNone.\n"
+    )
+    path = target / f"review-{iteration}.md"
+    path.write_text(document)
+    return path
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_verify_should_raise_when_no_target_given():
+    """Test sdlc_review with verify but no target raises ValueError.
+
+    Given:
+        verify is set but neither pr_number nor paths is supplied.
+    When:
+        sdlc_review(verify=1) is called.
+    Then:
+        It should raise ValueError via the exactly-one-target guard.
+    """
+    # Act / Assert
+    with pytest.raises(ValueError):
+        await sdlc_review(verify=1)
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_verify_pr_mode_should_raise_when_no_closing_issue(
+    monkeypatch,
+):
+    """Test verify PR mode raises when the PR closes no issue.
+
+    Given:
+        closing_issue returns None for PR 10.
+    When:
+        sdlc_review(pr_number=10, verify=1) is called.
+    Then:
+        It should raise ValueError — there is no issue directory to read from.
+    """
+    # Arrange
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: None)
+
+    # Act / Assert
+    with pytest.raises(ValueError):
+        await sdlc_review(pr_number=10, verify=1)
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_verify_pr_mode_should_raise_when_gh_unavailable(
+    monkeypatch,
+):
+    """Test verify PR mode propagates GhUnavailable when gh is down.
+
+    Given:
+        closing_issue raises GhUnavailable for PR 10.
+    When:
+        sdlc_review(pr_number=10, verify=1) is called.
+    Then:
+        It should raise GhUnavailable — verify PR mode cannot resolve the
+        issue directory and does not degrade like the non-verify path.
+    """
+
+    # Arrange
+    def raise_unavailable(pr_number):
+        raise GhUnavailable("gh executable not found on PATH")
+
+    monkeypatch.setattr(pr_state, "closing_issue", raise_unavailable)
+
+    # Act / Assert
+    with pytest.raises(GhUnavailable):
+        await sdlc_review(pr_number=10, verify=1)
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_verify_pr_mode_should_raise_when_no_review_doc(
+    tmp_path, monkeypatch
+):
+    """Test verify PR mode raises when the target has no review document.
+
+    Given:
+        closing_issue resolves PR 10 to issue 7, but no issue-#7 review
+        directory exists on disk.
+    When:
+        sdlc_review(pr_number=10, verify=1) is called.
+    Then:
+        It should raise ValueError surfaced by load_review_findings.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+
+    # Act / Assert
+    with pytest.raises(ValueError):
+        await sdlc_review(pr_number=10, verify=1)
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_verify_pr_mode_should_raise_when_iteration_missing(
+    tmp_path, monkeypatch
+):
+    """Test verify PR mode raises when the requested iteration is absent.
+
+    Given:
+        Issue 7 has only review-1.md but verify=5 is requested.
+    When:
+        sdlc_review(pr_number=10, verify=5) is called.
+    Then:
+        It should raise ValueError naming the missing iteration.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+    _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 1)
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="iteration 5 not found"):
+        await sdlc_review(pr_number=10, verify=5)
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_verify_pr_mode_should_inject_findings_and_directives(
+    tmp_path, monkeypatch
+):
+    """Test verify PR mode injects findings, verify directives, and PR target.
+
+    Given:
+        Issue 7 has review-1.md with a blocking finding, and PR 10 closes it.
+    When:
+        sdlc_review(pr_number=10, verify=1) is called.
+    Then:
+        It should inject the verify-mode directives, the verify document write
+        path, the rendered finding, and the PR target.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+    _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 1)
+
+    # Act
+    result = await sdlc_review(pr_number=10, verify=1)
+
+    # Assert
+    assert "Verify mode: review-1" in result
+    assert "Verify document: .sdlc/reviews/issue-#7/verify-1.md" in result
+    assert "Rename foo to bar" in result
+    assert "Target PR: #10" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_verify_paths_mode_should_load_from_slug_directory(
+    tmp_path, monkeypatch
+):
+    """Test verify paths mode loads from the slug directory and injects findings.
+
+    Given:
+        A slug directory keyed by the single literal file's stem holds
+        review-1.md with a blocking finding.
+    When:
+        sdlc_review(paths=["src/sdlc/server.py"], verify=1) is called.
+    Then:
+        It should inject the slug verify document path, the rendered finding,
+        and a Target paths block, with no PR or resolved-issue directive.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    _write_review_doc(tmp_path, ".sdlc/reviews/server", 1)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Verify document: .sdlc/reviews/server/verify-1.md" in directive
+    assert "Rename foo to bar" in directive
+    assert "Target paths:" in directive
+    assert "Target PR:" not in directive
+    assert "Resolved issue:" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_verify_paths_mode_should_raise_when_no_doc(
+    tmp_path, monkeypatch
+):
+    """Test verify paths mode raises when no review doc exists for the slug.
+
+    Given:
+        No slug directory exists for the single literal file.
+    When:
+        sdlc_review(paths=["src/sdlc/server.py"], verify=1) is called.
+    Then:
+        It should raise ValueError surfaced by load_review_findings.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+
+    # Act / Assert
+    with pytest.raises(ValueError):
+        await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_verify_should_inline_review_template(
+    tmp_path, monkeypatch
+):
+    """Test verify mode still inlines the consolidated-review-document template.
+
+    Given:
+        Issue 7 has review-1.md and PR 10 closes it.
+    When:
+        sdlc_review(pr_number=10, verify=1) is called.
+    Then:
+        It should include the template's blocking and advisory tier headings.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+    _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 1)
+
+    # Act
+    result = await sdlc_review(pr_number=10, verify=1)
+
+    # Assert
+    assert "## Tier 1 — Blocking" in result
+    assert "## Tier 2 — Advisory" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_non_verify_pr_mode_should_omit_verify_directive(
+    monkeypatch,
+):
+    """Test sdlc_review without verify emits no verify-mode directive.
+
+    Given:
+        closing_issue resolves PR 10 to issue 7 and verify is omitted.
+    When:
+        sdlc_review(pr_number=10) is called.
+    Then:
+        It should not contain any Verify mode directive.
+    """
+    # Arrange
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+
+    # Act
+    result = await sdlc_review(pr_number=10)
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Verify mode" not in directive
+
+
 def test_paths_slug_should_return_stem_for_single_literal_path():
     """Test _paths_slug returns the file stem for one literal path.
 

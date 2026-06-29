@@ -15,6 +15,7 @@ subagent:
   type: general-purpose
   artifacts:
     - review_document_path
+    - verify_document_path
     - findings_count
     - pr_number
 ---
@@ -25,12 +26,16 @@ The key words MUST, MUST NOT, SHALL, SHALL NOT, SHOULD, SHOULD NOT, REQUIRED, RE
 
 Review either a pull request's diff or a set of local file paths through one or more role lenses (N reviewers per role), consolidate the findings into a single standardized local review document under `.sdlc/reviews/`, and present it for the user to drive fixups. This skill writes a local document; it does NOT post to GitHub.
 
-The arguments appended below select the mode by carrying **exactly one** of two target directives:
+The arguments appended below select the **base mode** by carrying **exactly one** of two target directives:
 
 - **PR mode** — a `Target PR: #<pr-number>` directive is present. Review the PR diff; the steps fetch metadata, the diff, and the branch commit map, and the document lands under `.sdlc/reviews/issue-#<N>/`.
 - **PATHS mode** — a `Target paths:` directive is present. There is no PR, no diff, no linked issue, and no `Target repo` directive. Expand the listed literal paths and globs against the working tree and review each matched file's whole contents. The endpoint computes the document directory and injects it as `Review document directory: .sdlc/reviews/<slug>/`. Run no `gh` and post nothing.
 
-Where a step below is marked **(PR mode)** or **(paths mode)** it applies only to that mode; unmarked steps apply to both.
+A third, orthogonal axis layers on top of whichever base mode is active:
+
+- **Verify mode** — a `Verify mode: review-<#>` directive is present (alongside the active PR-mode or paths-mode target). This is a **verification pass**, not a fresh review: the endpoint has already loaded the existing `review-<#>.md` for the target, rendered its findings into the appended block, and named the write target as `Verify document: <dir>/verify-<#>.md`. Instead of producing new findings, each reviewer judges each injected finding **Resolved** or **Unresolved** against the **current** file contents, and the document written is the verdict report. Verify mode keeps the base mode's target acquisition (PR head contents or paths-mode file contents), role lenses, and `guide-map.role` confinement; it changes steps 3, 7, 8, and 9–11 as marked **(verify mode)** below. When no `Verify mode` directive is present, ignore every **(verify mode)** marker and run the normal review.
+
+Where a step below is marked **(PR mode)** or **(paths mode)** it applies only to that base mode; **(verify mode)** applies only when the verify directive is present (layered on whichever base mode is active); unmarked steps apply to all.
 
 ## Pipeline Context
 
@@ -45,11 +50,13 @@ A review runs through one or more **roles**, with N **reviewers per role**. The 
 
 The total number of reviewer subagents is **N × (number of roles)**. Each reviewer reviews the same diff but through exactly one assigned role's lens, confined to the files that role is mapped to, and returns structured findings. The main session agent then consolidates all reviewers' findings into the single review document. A reviewer NEVER writes a file or posts anything — it only returns findings.
 
+**(verify mode)** The same fan-out applies, but each reviewer is a **verifier**: it receives the subset of the injected `review-<#>.md` findings whose `Reference` falls in its in-scope files, and for each returns a **Resolved**/**Unresolved** verdict with evidence quoted from the current file — not new findings. The consolidator turns the verdicts into a verdict report rather than a finding list.
+
 ## Invariants
 
 - MUST NOT post anything to GitHub. This skill produces a local document only — there is no `gh api .../reviews` call, no review event, and no inline comments. In **paths mode** the skill additionally runs no `gh` at all (no repo resolution, no PR fetch, no commit map).
-- When the review proceeds to completion, MUST write exactly one consolidated document per invocation, under the injected `Review document directory`, at `<dir>/review-<iteration>.md`. In PR mode `<dir>` is `.sdlc/reviews/issue-#<N>/` (`<N>` = the resolved linked issue); in paths mode `<dir>` is `.sdlc/reviews/<slug>/`, the endpoint-computed slug. `<iteration>` is the 1-based next iteration in both modes. In PR mode the unresolved-issue branch (the PR has no linked issue) and the declined-large-diff branch may end without writing a document — no document is written when the run does not reach completion on those paths. (Both of those branches are PR-mode only; paths mode has no linked-issue resolution and no remote diff to decline.)
-- MUST NOT write the document until the user has approved the consolidated findings, exactly as presented.
+- When the review proceeds to completion, MUST write exactly one consolidated document per invocation, under the injected `Review document directory`, at `<dir>/review-<iteration>.md`. In PR mode `<dir>` is `.sdlc/reviews/issue-#<N>/` (`<N>` = the resolved linked issue); in paths mode `<dir>` is `.sdlc/reviews/<slug>/`, the endpoint-computed slug. `<iteration>` is the 1-based next iteration in both modes. In PR mode the unresolved-issue branch (the PR has no linked issue) and the declined-large-diff branch may end without writing a document — no document is written when the run does not reach completion on those paths. (Both of those branches are PR-mode only; paths mode has no linked-issue resolution and no remote diff to decline.) **(verify mode)** The single document written is the verdict report at the injected `Verify document: <dir>/verify-<#>.md` instead — a verification pass never writes a `review-<iteration>.md`.
+- MUST NOT write the document (the review document, or the verify document in verify mode) until the user has approved the consolidated findings or verdicts, exactly as presented.
 - Each reviewer's findings MUST be confined to the files mapped to its role in `guide-map.role` (any file MAY be read for context). The default `general-purpose` role is mapped to `**/*`, so its findings span the whole diff.
 - When consolidating, each finding MUST be assigned the **highest** severity any role gives it; where roles disagree, the dissent MUST be noted on the finding.
 - For each finding, the consolidator MUST pre-select the recommended remediation option with `[x]`, list any alternatives with `[ ]`, and always include an `Other: ___` slot.
@@ -65,8 +72,11 @@ The MCP endpoint appends the following below this skill prompt. **Exactly one** 
 - `Roles: <role-a>, <role-b>, …` — the role stems to review through (defaults to `general-purpose`). Same meaning in both modes.
 - `Reviewers per role: <N>` — how many independent reviewers to run per role (defaults to 1). Same meaning in both modes.
 - `Resolved issue: #<N>` — *(PR mode only)* the linked issue resolved by the endpoint via the `closingIssuesReferences` relationship (or an `unresolved` notice when the PR has no linked issue). Defines the `.sdlc/reviews/issue-#<N>/` path. Absent in paths mode.
-- `Review document directory: .sdlc/reviews/<dir>/` — the directory holding this target's review rounds: `issue-#<N>/` in PR mode, or a slug derived deterministically from the raw `paths` strings in paths mode. In paths mode this line is always present (the endpoint computes the slug); in PR mode it is omitted on the `unresolved` branch.
-- The bundled review-document template (also available as the `sdlc://review-template` resource), which defines the exact structure of the document to write.
+- `Review document directory: .sdlc/reviews/<dir>/` — the directory holding this target's review rounds: `issue-#<N>/` in PR mode, or a slug derived deterministically from the raw `paths` strings in paths mode. In paths mode this line is always present (the endpoint computes the slug); in PR mode it is omitted on the `unresolved` branch. **(verify mode)** Always present (the endpoint resolved the directory to load `review-<#>.md` from it).
+- `Verify mode: review-<#>` — *(verify mode only)* marks the run as a verification pass of the existing `review-<#>.md`, present only when the user passed `--verify <#>`. Its presence is what switches the **(verify mode)** behavior on.
+- `Verify document: <dir>/verify-<#>.md` — *(verify mode only)* the write target for the verdict report. It pairs 1:1 with `review-<#>.md` (same `<#>`); do NOT compute a new iteration in verify mode.
+- The pre-rendered findings of `review-<#>.md` — *(verify mode only)* the endpoint appends the parsed findings of the review document being verified (a `Review document:` header line followed by the numbered findings). These are the findings each verifier judges Resolved/Unresolved; do NOT re-derive them from the file.
+- The bundled review-document template (also available as the `sdlc://review-template` resource), which defines the exact structure of the document to write. **(verify mode)** Repurpose it: each finding block becomes a verdict block (Resolved/Unresolved + evidence) and the header carries a `Verification summary — <N> unresolved` line.
 
 **(PR mode)** The tool output also carries a `Target repo: <id>` directive identifying the repository for `gh` commands that reference issues or PRs (the upstream `<owner>/<name>` when the current repo is a fork, otherwise the current repo). Consume it in step 1 rather than re-deriving the target repo. **In paths mode there is no `Target repo` directive** — paths mode runs no `gh`, so skip step 1 entirely.
 
@@ -80,7 +90,7 @@ This skill MAY itself be executed in an isolated orchestrator subagent to preser
   > 1. Read the project instructions in `AGENTS.md`
   > 2. Read and execute the complete workflow defined in this skill's markdown
   > 3. Follow every step faithfully, especially the Invariants section
-  > 4. Return a structured summary: accomplishments, key artifacts (review document path, findings count, PR number), and the next pipeline step prompt from the skill
+  > 4. Return a structured summary: accomplishments, key artifacts (review document path — or the verify document path in verify mode, findings count or unresolved count, PR number), and the next pipeline step prompt from the skill
 
 - When the subagent returns, reproduce its full output to the user exactly as written — do not summarize, condense, paraphrase, or omit sections. The user needs to review the complete output to give informed approval. Do not repeat work or add your own commentary.
 
@@ -120,7 +130,9 @@ All `gh` commands in subsequent steps that reference issues or PRs MUST include 
 
 ### 2. Acquire the review targets
 
-The two modes acquire different inputs for the reviewers. Follow the subsection for the mode the appended arguments selected.
+The two base modes acquire different inputs for the reviewers. Follow the subsection for the base mode the appended arguments selected.
+
+**(verify mode)** Acquire the **current** state exactly as the active base mode does — the PR head's changed-file contents in PR mode, or the matched files' whole contents in paths mode. Verifiers judge each finding's resolution against these current files, so this capture is mandatory; the injected `review-<#>.md` findings describe the *prior* state, not the state to read. (PR mode still verifies the local tree is at the PR head so the reviewers' reads line up with the recorded sha.)
 
 #### PR mode — fetch the PR metadata, diff, and commit map
 
@@ -164,6 +176,8 @@ Resolve every entry: a literal path contributes that file (warn if it does not e
 **Capture each matched file's WHOLE contents** (not a diff) — this exact text is interpolated into each reviewer's brief in step 7 (reviewers are spawned into fresh contexts and do NOT inherit your reads). Skip binary files (note them to the user). There is no `headRefOid`, no PR-head verification, and no commit map: the reviewers review the artifacts exactly as they stand in the working tree, and step 8 omits all commit-attribution.
 
 ### 3. Resolve the review-document path
+
+**(verify mode)** Skip the iteration computation entirely — the write target is the injected `Verify document: <dir>/verify-<#>.md` path, used verbatim. Verify pairs 1:1 with `review-<#>.md` (same `<#>`), so there is no new round to number; the endpoint already resolved the directory and named the file. (You still create the directory in step 10 if it does not exist.) The rest of this step — iteration globbing — applies only to a fresh (non-verify) review.
 
 **(PR mode)** The document lives at `.sdlc/reviews/issue-#<N>/review-<iteration>.md`.
 
@@ -237,9 +251,20 @@ For each role, spawn **N independent reviewer subagents** (N = reviewers per rol
 > - Investigate through your assigned lens: apply the focus areas your role's lens / blocking policy defines above. **Only** when your role is `general-purpose` (or its document does not enumerate its own focus) fall back to the generic checklist: guide compliance (cite the specific MUST / SHALL / SHOULD rule), naming and convention drift, coverage regressions (new public APIs without tests, removed tests without justification), correctness bugs (logic errors, race conditions, missing error handling at boundaries, incorrect API use), and code quality (unnecessary complexity, dead code, duplicated logic). Do not pull yourself off your lens to chase items the generic list names but your role does not.
 > - Return **structured findings only** — for each: a short title, severity, a reference, the issue with concrete evidence, a recommended remediation (and any alternatives), and optional tests-to-add. The reference is `file:line` when a single line applies; otherwise use a file-level reference (`<file>`) or a cross-cutting one (`(cross-cutting — no single line)`; in PR mode an issue-level `issue acceptance criterion #<n>` is also available). Omissions and file-spanning architectural concerns are first-class findings even without a line — raise them. **(PR mode only)** Do NOT attribute a commit sha — the orchestrator owns commit attribution in step 8. *(In paths mode there are no commits to attribute, so there is nothing to omit here.)* Do NOT write a file, do NOT post to GitHub, do NOT consolidate — return your raw findings to the orchestrator.
 
-**Other LLM assistants:** If subagents are unavailable, perform each role's review inline, one role at a time, holding each role's findings separately so they can be consolidated in step 8.
+**(verify mode)** Each reviewer is a **verifier** rather than a finder. It keeps its role lens and `guide-map.role` confinement, but instead of hunting for new defects it judges the resolution of the injected `review-<#>.md` findings. Replace the "Investigate through your assigned lens" and "Return structured findings only" bullets above with this verifier brief:
+
+> - You are **verifying** an earlier review, not producing a new one. You are assigned the **`<role-stem>`** role and confined to these in-scope files (matched from `guide-map.role`): `<the role's in-scope files>`.
+> - The findings to verify — the subset of `review-<#>.md` whose `Reference` falls in your in-scope files: `<the injected findings for this role's files>`. (Findings outside your in-scope files belong to other verifiers; ignore them.)
+> - For EACH assigned finding, read the **current** contents of the referenced file and judge it **Resolved** or **Unresolved** through your role lens:
+>   - **Resolved** — the remediation the finding calls for is present in the current file. Quote the concrete evidence (the changed text / the now-correct symbol) that shows it was addressed.
+>   - **Unresolved** — the defect is still present (the remediation is absent or only partially applied). Quote the concrete evidence in the current file that shows it remains.
+> - Return **per-finding verdicts only** — for each assigned finding: its id, the verdict (Resolved/Unresolved), and the quoted evidence from the current file. Do NOT raise new findings, do NOT write a file, do NOT post to GitHub, do NOT consolidate — return your verdicts to the orchestrator.
+
+**Other LLM assistants:** If subagents are unavailable, perform each role's review (or, in verify mode, each role's verification) inline, one role at a time, holding each role's findings or verdicts separately so they can be consolidated in step 8.
 
 ### 8. Consolidate the findings
+
+**(verify mode)** The main session agent consolidates **verdicts**, not new findings — one row per original `review-<#>.md` finding, in the original order. For each finding, fold in the verifier verdict(s) for it: when more than one verifier judged the same finding (N>1 reviewers on a role, or overlapping roles), any **Unresolved** verdict makes the consolidated verdict **Unresolved** (a single dissent that the defect remains gates resolution); record the per-verdict evidence. Compute the **unresolved count** — the number of findings whose consolidated verdict is Unresolved. Reuse the bundled `review-template.md`, repurposing each finding block into a verdict block (the finding's id / title / reference, its **Resolved**/**Unresolved** verdict, and the quoted evidence) and adding a `Verification summary — <N> unresolved` line to the header. There is no severity re-tiering, no remediation pre-selection, no commit attribution, and no fixup mapping in a verdict report — drop those template slots. Then skip the remaining (fresh-review) bullets in this step and go to step 9.
 
 The main session agent (NOT a reviewer) merges every reviewer's findings into one set:
 
@@ -269,6 +294,8 @@ Render the full consolidated document and present it to the user before writing 
 
 The document MUST NOT be written until the user explicitly approves the final consolidated set, exactly as it will be written.
 
+**(verify mode)** Present the verdict report instead — the per-finding Resolved/Unresolved verdicts with their evidence and the `Verification summary — <N> unresolved` line. The same approval gate applies: the user MAY override a verdict (flip Resolved/Unresolved), correct the evidence, or adjust the unresolved count before anything is written. Do NOT write `verify-<#>.md` until the user approves.
+
 ### 10. Write the review document
 
 After approval, create the directory (the injected `Review document directory` — `.sdlc/reviews/issue-#<N>/` in PR mode, `.sdlc/reviews/<slug>/` in paths mode) and write the document:
@@ -279,6 +306,8 @@ mkdir -p <Review document directory>
 
 Write the approved consolidated document to `<Review document directory>/review-<iteration>.md`, following the bundled template structure exactly: the header, the severity-tiered findings (blocking first) with stable IDs / titles / severities / `Reference` (`file:line`, or a file-level / issue-level reference for a line-less finding) / Issue + evidence / Remediation checklist (`[x]` recommended, `[ ]` alternatives, `Other: ___`) / optional Tests-to-add, plus the cross-cutting-decisions section. **(PR mode)** also include each finding's `Touched commit` and the fixup-mapping section; **(paths mode)** omit both (no commits exist to attribute or fold into). Do NOT post anything to GitHub.
 
+**(verify mode)** Create the directory if needed (`mkdir -p <Review document directory>`) and write the approved **verdict report** to the injected `Verify document: <dir>/verify-<#>.md` path — NOT a `review-<iteration>.md`. The report carries the `Verification summary — <N> unresolved` header line and one verdict block per original finding (id / title / reference, Resolved/Unresolved, quoted evidence), with the severity-tier / remediation / commit / fixup slots dropped as covered in step 8. Do NOT post anything to GitHub.
+
 ### 11. Prompt the user with next steps
 
 After the document is written, prompt the user. **(PR mode):**
@@ -288,6 +317,15 @@ After the document is written, prompt the user. **(PR mode):**
 **(PATHS mode):**
 
 > Review written to `<Review document directory>/review-<iteration>.md`. This document is a local artifact — nothing was posted to GitHub, and the `implement` skill does not read it automatically. Read it yourself (or with the user) and use each finding's pre-selected remediation as the work list, applying the fixups directly to the reviewed files; then re-run `review` over the same paths as needed. There is no PR or fixup mapping in this mode.
+
+**(verify mode):** After writing `verify-<#>.md`, prompt based on the unresolved count:
+
+> Verification of `review-<#>.md` written to `<dir>/verify-<#>.md` — `<N>` unresolved. Nothing was posted to GitHub.
+
+- When `<N>` > 0: 
+  > `<N>` finding(s) remain unresolved. Re-enter the implement loop to address them: `sdlc_implement <target> --review <#>` (the same target you verified, with the review iteration `<#>`). After fixing, re-run this verify pass to confirm.
+- When `<N>` == 0: 
+  > All findings are resolved — review round `<#>` is verified complete. In PR mode you may now mark the PR ready (`gh pr ready <number>`); in paths mode the reviewed artifacts are clean for this round.
 
 DO NOT proceed on your own.
 
@@ -300,6 +338,10 @@ DO NOT proceed on your own.
 **PR is already merged or closed (PR mode):** Inform the user that the PR is not open and stop.
 
 **No findings:** If every reviewer returns clean, present the empty-findings document (header plus empty severity tiers) for approval as in step 9, and only after the user approves, write it so the round is recorded; inform the user that no issues were found and the target looks clean. The approval gate still applies on the clean path — do not write before approval. Do not post anything.
+
+**Verify target has no review document (verify mode):** This is raised upstream by the tool before this skill runs — when the target has no `review-<#>.md` (the directory is absent or that iteration is missing), `sdlc_review --verify <#>` raises a `ValueError` and the skill is never dispatched. You will not reach this skill with a missing review document, so there is no in-skill fallback to handle; the user sees the tool's error and runs a fresh `review` first.
+
+**All findings resolved (verify mode):** If every verifier judges its findings Resolved, the verdict report has zero unresolved. Present it for approval as in step 9 and, after approval, write `verify-<#>.md` with the `Verification summary — 0 unresolved` line and the all-Resolved verdict blocks, then give the `<N>` == 0 next-step prompt (round verified complete). The report is still written so the verification is recorded.
 
 **No linked issue (PR mode — the endpoint reports `Resolved issue: unresolved`):** Ask the user which issue the PR addresses; do not guess the `.sdlc/reviews/issue-#<N>/` path. *(Paths mode has no linked issue and uses the injected `<slug>` directory, so this never arises there.)*
 
