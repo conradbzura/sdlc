@@ -117,7 +117,7 @@ The `implement`, `test`, and `review` skills do not hardcode guide URIs. Each ca
 
 ### The `.sdlc/reviews/` convention
 
-`sdlc_review` writes a standardized local review document — it posts nothing to GitHub. It takes **exactly one** target: a PR number (PR mode) or a list of file paths/globs (paths mode); supplying neither or both raises `ValueError`.
+`sdlc_review` writes a standardized local review document — it posts nothing to GitHub. It takes **exactly one** target: a PR number (PR mode) or a list of file paths/globs (paths mode); supplying neither or both raises `ValueError`. The review (produce) document is written autonomously as the final step: the skill presents the consolidated findings as informational, then writes the document without an approval gate. The write target is the next unused `review-<iteration>.md`, which the tool resolves deterministically (scanning the target directory for the highest existing round) and injects into the skill prompt as an exact `Review document: <dir>/review-<iteration>.md` path alongside the retained `Review document directory:` line — so the skill writes that path verbatim rather than globbing, and a run never overwrites an earlier round.
 
 In **PR mode**, each review round is written to `.sdlc/reviews/issue-#<N>/review-<iteration>.md`, where `<N>` is the first issue the PR closes when several are linked (resolved from `closingIssuesReferences`, falling back to parsing `Closes #N` in the PR body; the connection has no ordering guarantee, so `<N>` is one closing issue, not necessarily the only one) and `<iteration>` is 1-based, one greater than the highest existing `review-*.md` for that issue.
 
