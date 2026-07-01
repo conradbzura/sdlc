@@ -420,12 +420,15 @@ async def sdlc_review(
     if paths is not None:
         slug = _paths_slug(paths)
         paths_block = "\n".join(paths)
+        directory = Path(".sdlc/reviews") / slug
+        iteration = pr_state._next_iteration(0, directory=directory)
         parts = [
             f"{skill}\n---\n\n"
             f"Roles: {roles_line}\n"
             f"Reviewers per role: {subagents}\n"
             f"Target paths:\n{paths_block}\n"
             f"Review document directory: .sdlc/reviews/{slug}/\n"
+            f"Review document: .sdlc/reviews/{slug}/review-{iteration}.md\n"
             "Paths mode: no PR, no diff, and no linked issue — expand the "
             "literal paths and globs above against the working tree and review "
             "each matched file's whole contents. Run no gh and post nothing.",
@@ -437,9 +440,13 @@ async def sdlc_review(
     except pr_state.GhUnavailable:
         issue_number = None
     if issue_number is not None:
+        directory = Path(".sdlc/reviews") / f"issue-#{issue_number}"
+        iteration = pr_state._next_iteration(issue_number, directory=directory)
         issue_line = (
             f"Resolved issue: #{issue_number}\n"
-            f"Review document directory: .sdlc/reviews/issue-#{issue_number}/"
+            f"Review document directory: .sdlc/reviews/issue-#{issue_number}/\n"
+            f"Review document: "
+            f".sdlc/reviews/issue-#{issue_number}/review-{iteration}.md"
         )
     else:
         issue_line = (
