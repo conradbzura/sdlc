@@ -1431,6 +1431,100 @@ def test_convert_pr_review_to_document_should_use_the_next_iteration(
     assert (directory / "review-1.md").read_text() == "existing round one"
 
 
+def test_next_iteration_should_be_one_for_empty_issue_directory(tmp_path, monkeypatch):
+    """Test _next_iteration returns 1 when the issue directory has no rounds.
+
+    Given:
+        A working directory with no .sdlc/reviews/issue-#7 directory.
+    When:
+        _next_iteration(7) is called.
+    Then:
+        It should return 1 — the first, unused iteration.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    result = pr_state._next_iteration(7)
+
+    # Assert
+    assert result == 1
+
+
+def test_next_iteration_should_follow_the_highest_issue_round(tmp_path, monkeypatch):
+    """Test _next_iteration returns max + 1 over an issue directory's rounds.
+
+    Given:
+        Issue 7 already has review-1.md and review-2.md.
+    When:
+        _next_iteration(7) is called.
+    Then:
+        It should return 3 — one past the highest existing round.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = tmp_path / ".sdlc" / "reviews" / "issue-#7"
+    directory.mkdir(parents=True)
+    (directory / "review-1.md").write_text("round one")
+    (directory / "review-2.md").write_text("round two")
+
+    # Act
+    result = pr_state._next_iteration(7)
+
+    # Assert
+    assert result == 3
+
+
+def test_next_iteration_should_be_one_for_empty_explicit_directory(
+    tmp_path, monkeypatch
+):
+    """Test _next_iteration returns 1 for an empty explicit slug directory.
+
+    Given:
+        An explicit slug directory that does not yet exist.
+    When:
+        _next_iteration(0, directory=<slug dir>) is called.
+    Then:
+        It should return 1 — the first, unused iteration for that directory.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = tmp_path / ".sdlc" / "reviews" / "server"
+
+    # Act
+    result = pr_state._next_iteration(0, directory=directory)
+
+    # Assert
+    assert result == 1
+
+
+def test_next_iteration_should_follow_the_highest_explicit_directory_round(
+    tmp_path, monkeypatch
+):
+    """Test _next_iteration returns max + 1 over an explicit slug directory.
+
+    Given:
+        A slug directory that already holds review-1.md and review-2.md.
+    When:
+        _next_iteration(0, directory=<slug dir>) is called.
+    Then:
+        It should return 3, scanning the explicit directory rather than the
+        issue-keyed location for issue 0.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = tmp_path / ".sdlc" / "reviews" / "server"
+    directory.mkdir(parents=True)
+    (directory / "review-1.md").write_text("round one")
+    (directory / "review-2.md").write_text("round two")
+
+    # Act
+    result = pr_state._next_iteration(0, directory=directory)
+
+    # Assert
+    assert result == 3
+
+
 def test_convert_pr_review_to_document_should_raise_for_non_pr_url(monkeypatch):
     """Test convert_pr_review_to_document rejects a non-PR-URL argument.
 
