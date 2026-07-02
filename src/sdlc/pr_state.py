@@ -273,9 +273,17 @@ def _latest_iteration(
     return iterations[-1] if iterations else None
 
 
-def _next_iteration(issue_number: int) -> int:
-    """Return the next iteration to write for ``issue_number`` (``max + 1``)."""
-    iterations = _iterations(issue_number)
+def _next_iteration(
+    issue_number: int, directory: Path | None = None
+) -> int:
+    """Return the next iteration to write (``max + 1``).
+
+    When ``directory`` is given, the next unused iteration is computed over that
+    explicit directory (the slug-aware paths-mode and PR-mode location the
+    server supplies); when ``None``, behavior is keyed on the issue-keyed
+    ``_reviews_dir(issue_number)`` location.
+    """
+    iterations = _iterations(issue_number, directory)
     return (iterations[-1] if iterations else 0) + 1
 
 

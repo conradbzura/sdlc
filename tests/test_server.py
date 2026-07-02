@@ -1,6 +1,7 @@
 """Tests for sdlc.server — MCP tools and resources."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -991,6 +992,117 @@ async def test_sdlc_review_paths_mode_should_emit_hashed_directory_for_glob():
     suffix = expected.rsplit("-", 1)[1]
     assert len(suffix) == 8
     assert all(ch in "0123456789abcdef" for ch in suffix)
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_pr_mode_should_inject_first_iteration_review_path(
+    tmp_path, monkeypatch
+):
+    """Test sdlc_review injects the first review path for an empty issue dir.
+
+    Given:
+        closing_issue resolves PR 10 to issue 7 and the issue's review
+        directory does not yet exist.
+    When:
+        sdlc_review(pr_number=10) is called.
+    Then:
+        It should inject the exact next-unused review path at iteration 1
+        alongside the retained review document directory line.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+
+    # Act
+    result = await sdlc_review(pr_number=10)
+
+    # Assert
+    assert "Review document directory: .sdlc/reviews/issue-#7/" in result
+    assert "Review document: .sdlc/reviews/issue-#7/review-1.md" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_pr_mode_should_inject_next_iteration_without_overwrite(
+    tmp_path, monkeypatch
+):
+    """Test sdlc_review injects the next iteration and leaves prior rounds intact.
+
+    Given:
+        Issue 7 already has review-1.md and closing_issue resolves PR 10 to it.
+    When:
+        sdlc_review(pr_number=10) is called.
+    Then:
+        It should inject review-2.md as the write target and leave the seeded
+        review-1.md unmodified.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+    directory = tmp_path / ".sdlc" / "reviews" / "issue-#7"
+    directory.mkdir(parents=True)
+    seeded = directory / "review-1.md"
+    seeded.write_text("existing round one")
+
+    # Act
+    result = await sdlc_review(pr_number=10)
+
+    # Assert
+    assert "Review document: .sdlc/reviews/issue-#7/review-2.md" in result
+    assert seeded.read_text() == "existing round one"
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_paths_mode_should_inject_first_iteration_review_path(
+    tmp_path, monkeypatch
+):
+    """Test sdlc_review injects the first review path for an empty slug dir.
+
+    Given:
+        A single literal path whose slug directory does not yet exist.
+    When:
+        sdlc_review(paths=["src/sdlc/server.py"]) is called.
+    Then:
+        It should inject the exact next-unused review path at iteration 1 under
+        the slug directory.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    assert "Review document directory: .sdlc/reviews/server/" in result
+    assert "Review document: .sdlc/reviews/server/review-1.md" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_paths_mode_should_inject_next_iteration_without_overwrite(
+    tmp_path, monkeypatch
+):
+    """Test sdlc_review injects the next iteration for a seeded slug directory.
+
+    Given:
+        The slug directory for a single literal path already holds review-1.md.
+    When:
+        sdlc_review(paths=["src/sdlc/server.py"]) is called.
+    Then:
+        It should inject review-2.md as the write target and leave the seeded
+        review-1.md unmodified.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = tmp_path / ".sdlc" / "reviews" / "server"
+    directory.mkdir(parents=True)
+    seeded = directory / "review-1.md"
+    seeded.write_text("existing round one")
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    assert "Review document: .sdlc/reviews/server/review-2.md" in result
+    assert seeded.read_text() == "existing round one"
 
 
 def _write_review_doc(tmp_path, directory, iteration, finding_id="B1"):
