@@ -91,18 +91,22 @@ class ReviewFindings:
     path: str
     findings: list[ReviewFinding]
 
-    def format(self) -> str:
+    def format(self, label: str = "Review document") -> str:
         """Render the review document as a human-readable feedback block.
 
         The header carries the document's actual path (``self.path``), the
-        issue number, and iteration so the agent can re-read the document. The
+        issue number, and iteration so the agent can re-read the document.
+        ``label`` names that first header line: a re-review passes
+        ``"Seeded from"`` so this provenance line cannot be confused with the
+        ``Review document:`` write-target directive rendered above it. The
         path is emitted verbatim rather than reconstructed, so a paths-mode
-        ``<slug>/review-<#>.md`` document renders correctly (in the issue-keyed
-        case ``self.path`` already equals that reconstruction). Findings are
-        emitted blocking first, then advisory, each numbered with its id,
-        severity, reference, title, issue, and pre-selected remediation block.
+        ``<slug>/review-<#>.md`` document renders correctly (in the
+        issue-keyed case ``self.path`` already equals that reconstruction).
+        Findings are emitted blocking first, then advisory, each numbered
+        with its id, severity, reference, title, issue, and pre-selected
+        remediation block.
         """
-        lines = [f"Review document: {self.path}"]
+        lines = [f"{label}: {self.path}"]
         if self.issue_number:
             lines.append(f"Issue: #{self.issue_number}")
         lines += [
