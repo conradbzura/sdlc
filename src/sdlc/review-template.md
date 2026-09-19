@@ -1,6 +1,10 @@
 # PR #<N> — Round <iteration> Review
 
+**Pass <k>** — <B> blocking, <A> advisory open. Closed <c>, rejected <r>, added <a> this pass.
+
 Generated from a `<reviewers-per-role>`-reviewer review of PR #<N> (`<head-ref>` → `<base-ref>`, Closes #<issue>) at HEAD `<sha>`. Composition: `<reviewers-per-role>` reviewer(s) per role across role(s) `<role-a>`, `<role-b>`, … (`<reviewers-per-role> × <role-count>` reviewer subagents total). Findings are deduped within each role, merged across roles, and grouped by severity tier (blocking first). Each role's findings are confined to the files mapped to it in `guide-map.role`; any file may be read for context. Note for each role which globs scoped it and which files in this PR fell in scope.
+
+**Pass line** — `<k>` is how many review passes have run against this document (1 on the round that created it, incremented by each `--verify` re-review). The open counts describe the finding set below; the deltas describe what this pass changed. A closed or rejected finding leaves the document entirely — the reason it left is recorded in the commit that removed it, not here.
 
 **Dedup approach** — Within a role, the consolidator collapses findings that name the same defect at the same reference into one (recording the reviewer agreement count, e.g. `4/5 reviewers`). Across roles, findings about the same defect are merged into a single entry that records every role that raised it; the entry takes the **highest** severity any role assigned, and dissent (a role that rated it lower, or did not raise it) is noted inline.
 
