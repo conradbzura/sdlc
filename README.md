@@ -97,7 +97,9 @@ The agent calls `sdlc_review` with either the PR number or a set of local file p
 
 If review feedback requires changes, re-enter the implementation loop with `sdlc_implement`. By default it parses the latest review document for the closing issue, renders its findings, and walks you through each one's pre-selected remediation behind a per-finding approval gate; `--review <iteration>` selects an earlier round, and `--review <pr-url>` first converts that PR's GitHub review comments into a fresh local review document. Address the feedback, then re-run test, commit, and pr tools as needed.
 
-To confirm a round was actually addressed, run `sdlc_review --verify <review #>` against the same target. It re-reads that `review-<#>.md`, fans the same per-role reviewers out as verifiers, and judges each finding **Resolved** or **Unresolved** against your current files — writing a `verify-<#>.md` report with an unresolved count rather than a new review. If any findings remain unresolved, it points you back to `sdlc_implement <target> --review <#>`; when zero remain, the round is verified complete. When you're satisfied, mark the PR ready for review and merge via GitHub.
+To carry a round forward, run `sdlc_review --verify <review #>` against the same target. Everything is a review — this one is just seeded with the findings of `review-<#>.md`, which it rewrites **in place**. Each pass may **close** a finding whose remediation is now present, **reject** one that doesn't hold up (a guide rule that isn't actually in your guides, a wrong reference, a severity that was off), and **add** ones the current state newly exposes, including defects the last round of fixes introduced. Iteration ends on one condition: no blocking findings remain. Advisories carry forward and never gate.
+
+Each finding-set mutation lands as its own commit whose message says why — `review: Close B2 — nil guard now present at server.py:318` — so the document's git history is the record of how the review evolved. Those commits go to the repository you declare as `review-repo` in `.sdlc/config.json`, resolved relative to that file just like `guides-dir`. Leave it unset and `.sdlc` is used when it is already a repository; when it isn't, the agent asks you whether to name one or run `git init .sdlc`, then records your answer so it only asks once. It never goes hunting up the filesystem for a repository you didn't name. Pass `target` (or set `review-branch` in `.sdlc/config.json`) to land the commits on a specific branch; the agent uses a temporary worktree so the tree under review is never touched. While blocking findings remain, address them with `sdlc_implement <target> --review <#>` and run another pass. When you're satisfied, mark the PR ready for review and merge via GitHub.
 
 ## Project Structure
 
@@ -112,6 +114,7 @@ sdlc/
         ├── __main__.py             # python -m sdlc support
         ├── server.py               # FastMCP server, tool & resource registrations
         ├── pr_state.py             # gh wrappers and PR-state dispatch for sdlc_implement
+        ├── git_state.py            # Resolves the repository review documents are committed to
         ├── AGENTS.md               # Technical reference for agent implementations
         ├── skills/                 # Canonical skill definitions (read by server)
         │   ├── issue.md
@@ -144,7 +147,7 @@ sdlc/
 | `sdlc_test` | Analyze coverage and write comprehensive tests |
 | `sdlc_commit` | Stage and commit changes with atomic commits |
 | `sdlc_pr` | Review changes and create a draft pull request |
-| `sdlc_review` | Review an open PR (diff) or a set of local file paths/globs, writing a consolidated local review document under `.sdlc/reviews/`; `--verify <review #>` instead verifies an existing review, judging each finding resolved/unresolved against the current files |
+| `sdlc_review` | Review an open PR (diff) or a set of local file paths/globs, writing a consolidated local review document under `.sdlc/reviews/`; `--verify <review #>` instead re-reviews an existing review, rewriting it in place with findings closed, rejected, or added and each mutation committed separately |
 | `sdlc_understand_chat` | Query the codebase knowledge graph |
 | `sdlc_roles` | List the available review roles |
 | `sdlc_role_scope` | Reverse-lookup the changed files a role's findings are confined to |
