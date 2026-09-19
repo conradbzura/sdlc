@@ -7,7 +7,7 @@ from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from sdlc import guides, pr_state
+from sdlc import git_state, guides, pr_state
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 SKILLS_DIR = PACKAGE_DIR / "skills"
@@ -56,6 +56,116 @@ def _target_branch_directive(target: str) -> str:
         "Branch from / base against this branch instead of the resolved "
         "default branch."
     )
+
+
+def reload_state() -> guides.GuidesState:
+    """Re-read the user config and rebind the module state.
+
+    The state is bound once at import, so a `.sdlc/config.json` edit would
+    otherwise need a server restart to take effect. Exposed publicly so the
+    config-to-directive path can be exercised without reaching into module
+    internals.
+    """
+    global _state
+    _state = guides.load_state(cwd=Path.cwd(), package_dir=PACKAGE_DIR)
+    return _state
+
+
+def _review_repo_directive(repo: git_state.ReviewRepo, configured: str | None) -> str:
+    """Render the repository directive for `sdlc_review` document commits.
+
+    The repository is declared, never inferred — see `git_state`. An
+    unresolved repository is reported as such, with the instruction to ask the
+    user, mirroring how PR mode reports an unresolved linked issue rather than
+    guessing a path.
+    """
+    if repo.root is not None:
+        return f"Review repository: {repo.root.as_posix()}"
+    if configured is not None:
+        return (
+            "Review repository: unresolved\n"
+            f"The configured review-repo ({configured!r}) is not a git "
+            "repository. Tell the user, and ask them to correct review-repo in "
+            ".sdlc/config.json or initialize that path as a repository. Do not "
+            "commit anywhere else."
+        )
+    return (
+        "Review repository: unresolved\n"
+        "No review-repo is configured and .sdlc is not a repository. Before "
+        "writing, ask the user either to name an existing repository or to "
+        "create one with `git init .sdlc`, then record their answer as "
+        '"review-repo" in .sdlc/config.json so this is asked once. Do not guess.'
+    )
+
+
+def _review_document_directive(repo: git_state.ReviewRepo, document: str) -> str | None:
+    """Render the document's path relative to the review repository, if known.
+
+    The `Review document:` directive is relative to the working directory,
+    which is where the skill writes. Staging it needs the same file addressed
+    from the repository root instead — the two differ whenever the repository
+    is not the working directory, which is the normal case when `.sdlc` is its
+    own repository.
+    """
+    if repo.root is None:
+        return None
+    resolved = (Path.cwd() / document).resolve()
+    try:
+        relative = resolved.relative_to(repo.root)
+    except ValueError:
+        return (
+            f"Review document in repository: unresolved\n"
+            f"{document} does not lie inside {repo.root.as_posix()}, so it "
+            "cannot be committed there. Tell the user their review-repo does "
+            "not contain the review documents."
+        )
+    return f"Review document in repository: {relative.as_posix()}"
+
+
+def _review_branch_directive(target: str | None, configured: str | None) -> str | None:
+    """Render the commit-destination branch directive, or ``None``.
+
+    Resolution order is the explicit `target` argument, then the
+    `review-branch` config key. When neither is set the result is ``None`` and
+    no directive is emitted — the skill commits to whatever branch is checked
+    out, which is the documented default. An empty `target` is a malformed
+    override, not a request to fall back, so it is rejected rather than
+    ignored.
+
+    Deliberately distinct from `_target_branch_directive`: that one names a
+    branch to branch FROM or base AGAINST, while this one names the branch
+    commits land ON.
+    """
+    branch = target if target is not None else configured
+    if branch is None:
+        return None
+    git_state.validate_branch_name(branch)
+    return (
+        f"Review commit branch: {branch}\n"
+        "Commit the review document to this branch instead of the checked-out "
+        "one. Use a temporary worktree so the tree under review is never "
+        "disturbed."
+    )
+
+
+def _review_commit_directives(target: str | None, document: str) -> list[str]:
+    """Render the commit-destination directives shared by every review mode.
+
+    Fresh and re-review rounds, in PR and paths mode alike, all write a
+    document and commit it, so they all carry the same tail. Assembling it once
+    keeps the four paths from drifting apart.
+    """
+    repo = git_state.resolve_review_repo(
+        _state.review_repo, _state.config_dir, Path.cwd()
+    )
+    parts = [f"\n\n{_review_repo_directive(repo, _state.review_repo)}"]
+    document_directive = _review_document_directive(repo, document)
+    if document_directive is not None:
+        parts.append(f"\n\n{document_directive}")
+    branch_directive = _review_branch_directive(target, _state.review_branch)
+    if branch_directive is not None:
+        parts.append(f"\n\n{branch_directive}")
+    return parts
 
 
 def _target_repo_directive(repo: pr_state._Repo) -> str:
@@ -289,21 +399,22 @@ async def sdlc_pr(issue_number: int, target: str | None = None) -> str:
     return "".join(parts)
 
 
-def _render_verify(
+def _render_rereview(
     pr_number: int | None,
     paths: list[str] | None,
     roles: list[str],
     subagents: int,
     verify: int,
+    target: str | None,
 ) -> str:
-    """Render the `sdlc_review` verify-mode directive block.
+    """Render the `sdlc_review` re-review directive block.
 
-    Loads the existing `review-<verify>.md` for the active target (an
-    issue-keyed directory in PR mode, a slug directory in paths mode), renders
-    its findings, and assembles the verify directive: the inlined review skill,
-    the composition lines, the `Verify mode` / `Verify document` write-target
-    lines, the pre-rendered findings, the mode's target directive, and the
-    inlined review-document template.
+    A re-review is an ordinary review seeded with an existing round's findings.
+    It loads `review-<verify>.md` for the active target (an issue-keyed
+    directory in PR mode, a slug directory in paths mode) and renders the same
+    directive set a fresh review does, with two differences: the write target is
+    that existing document rather than a new iteration, and its findings are
+    appended for the reviewers to close, reject, or carry.
 
     Raises ``ValueError`` when a PR target closes no issue, or when the target
     has no `review-<verify>.md` (surfaced by `load_review_findings`).
@@ -320,9 +431,9 @@ def _render_verify(
         paths_block = "\n".join(paths)
         target_directive = (
             f"Target paths:\n{paths_block}\n"
-            "Paths mode: no PR, no diff, and no linked issue — capture each "
-            "matched file's current contents and judge resolution against "
-            "them. Run no gh and post nothing."
+            "Paths mode: no PR, no diff, and no linked issue — expand the "
+            "literal paths and globs above against the working tree and review "
+            "each matched file's whole contents. Run no gh and post nothing."
         )
     else:
         issue_number = pr_state.closing_issue(pr_number)
@@ -336,22 +447,29 @@ def _render_verify(
         findings = pr_state.load_review_findings(
             issue_number, iteration=verify, directory=directory
         )
-        target_directive = f"Target PR: #{pr_number}"
+        target_directive = (
+            f"Target PR: #{pr_number}\n"
+            f"Resolved issue: #{issue_number}"
+        )
         repo_directive = _resolve_target_repo_directive()
         if repo_directive is not None:
             target_directive = f"{target_directive}\n\n{repo_directive}"
     directory_str = directory.as_posix()
-    return (
+    document = f"{directory_str}/review-{verify}.md"
+    parts = [
         f"{skill}\n---\n\n"
         f"Roles: {roles_line}\n"
         f"Reviewers per role: {subagents}\n"
-        f"Verify mode: review-{verify}\n"
+        f"Re-review: review-{verify}\n"
         f"Review document directory: {directory_str}/\n"
-        f"Verify document: {directory_str}/verify-{verify}.md\n"
-        f"{findings.format()}\n\n"
-        f"{target_directive}\n\n"
-        f"Review document template:\n\n{template}"
-    )
+        f"Review document: {document}\n"
+        "Seeded findings — the state to disposition, not to read from disk:\n"
+        f"{findings.format(label='Seeded from')}\n\n"
+        f"{target_directive}"
+    ]
+    parts.extend(_review_commit_directives(target, document))
+    parts.append(f"\n\nReview document template:\n\n{template}")
+    return "".join(parts)
 
 
 @mcp.tool()
@@ -361,6 +479,7 @@ async def sdlc_review(
     roles: list[str] | None = None,
     subagents: int = 1,
     verify: int | None = None,
+    target: str | None = None,
 ) -> str:
     """Review an open PR, or a set of local paths, into a consolidated document.
 
@@ -383,11 +502,17 @@ async def sdlc_review(
       derived deterministically from the raw `paths` strings (see
       `_paths_slug`) so successive runs of the same target accumulate together.
 
-    `verify` layers a **verification pass** on top of the active target mode:
-    it loads the existing `review-<verify>.md` for that target, fans per-role
-    verifiers out to judge each finding Resolved/Unresolved against the current
-    files, and writes the verdicts to `verify-<verify>.md` beside the review
-    document. The unresolved set feeds the next `sdlc_implement`.
+    `verify` makes the run a **re-review** rather than a fresh one: it loads
+    the existing `review-<verify>.md` for the active target, seeds the
+    reviewers with its findings, and rewrites that same document in place. Each
+    pass may close a finding whose remediation is present, reject one that does
+    not hold up, or add one the current state newly exposes. The chain
+    terminates when no blocking findings remain; advisories carry forward and
+    never gate.
+
+    Every finding-set mutation is committed separately, with a message
+    justifying the state change, to the repository resolved from the root of
+    `.sdlc` (see `git_state.resolve_review_repo`).
 
     Nothing is posted to GitHub in any mode.
 
@@ -399,11 +524,17 @@ async def sdlc_review(
             to ["general-purpose"] when omitted (every mode).
         subagents: Number of independent reviewers to run per role. Defaults
             to 1.
-        verify: When set, verify the existing `review-<verify>.md` for the
-            active target instead of producing a new review. Raises
-            `ValueError` when no target is supplied (the exactly-one-target
-            guard), when a PR target closes no issue (no issue directory to
-            read from), or when the target has no `review-<verify>.md`.
+        verify: When set, re-review the existing `review-<verify>.md` for the
+            active target instead of starting a fresh chain, rewriting it in
+            place. Raises `ValueError` when no target is supplied (the
+            exactly-one-target guard), when a PR target closes no issue (no
+            issue directory to read from), or when the target has no
+            `review-<verify>.md`.
+        target: Optional branch the review-document commits land on, overriding
+            the `review-branch` config key. When neither is set, commits go to
+            the checked-out branch. Note this is a commit destination, unlike
+            the `target` of `sdlc_implement` and `sdlc_pr`, which names a
+            branch to branch from or base against.
     """
     if (pr_number is None) == (paths is None):
         raise ValueError(
@@ -413,7 +544,9 @@ async def sdlc_review(
     if roles is None:
         roles = ["general-purpose"]
     if verify is not None:
-        return _render_verify(pr_number, paths, roles, subagents, verify)
+        return _render_rereview(
+            pr_number, paths, roles, subagents, verify, target
+        )
     skill = _read_skill("review")
     template = _read_file(REVIEW_TEMPLATE_PATH)
     roles_line = ", ".join(roles)
@@ -422,18 +555,20 @@ async def sdlc_review(
         paths_block = "\n".join(paths)
         directory = Path(".sdlc/reviews") / slug
         iteration = pr_state._next_iteration(0, directory=directory)
+        document = f".sdlc/reviews/{slug}/review-{iteration}.md"
         parts = [
             f"{skill}\n---\n\n"
             f"Roles: {roles_line}\n"
             f"Reviewers per role: {subagents}\n"
             f"Target paths:\n{paths_block}\n"
             f"Review document directory: .sdlc/reviews/{slug}/\n"
-            f"Review document: .sdlc/reviews/{slug}/review-{iteration}.md\n"
+            f"Review document: {document}\n"
             "Paths mode: no PR, no diff, and no linked issue — expand the "
             "literal paths and globs above against the working tree and review "
             "each matched file's whole contents. Run no gh and post nothing.",
-            f"\n\nReview document template:\n\n{template}",
         ]
+        parts.extend(_review_commit_directives(target, document))
+        parts.append(f"\n\nReview document template:\n\n{template}")
         return "".join(parts)
     try:
         issue_number = pr_state.closing_issue(pr_number)
@@ -442,13 +577,16 @@ async def sdlc_review(
     if issue_number is not None:
         directory = Path(".sdlc/reviews") / f"issue-#{issue_number}"
         iteration = pr_state._next_iteration(issue_number, directory=directory)
+        document = (
+            f".sdlc/reviews/issue-#{issue_number}/review-{iteration}.md"
+        )
         issue_line = (
             f"Resolved issue: #{issue_number}\n"
             f"Review document directory: .sdlc/reviews/issue-#{issue_number}/\n"
-            f"Review document: "
-            f".sdlc/reviews/issue-#{issue_number}/review-{iteration}.md"
+            f"Review document: {document}"
         )
     else:
+        document = None
         issue_line = (
             "Resolved issue: unresolved -- the PR has no linked issue via the "
             "closingIssuesReferences relationship or a Closes/Fixes/Resolves "
@@ -465,6 +603,8 @@ async def sdlc_review(
     repo_directive = _resolve_target_repo_directive()
     if repo_directive is not None:
         parts.append(f"\n\n{repo_directive}")
+    if document is not None:
+        parts.extend(_review_commit_directives(target, document))
     parts.append(f"\n\nReview document template:\n\n{template}")
     return "".join(parts)
 
