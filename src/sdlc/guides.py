@@ -19,12 +19,24 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 
+from sdlc import git_state
+
 PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = PACKAGE_DIR / "config.json"
 
 KINDS = ("test", "style", "role")
-ALLOWED_TOP_LEVEL_KEYS = {"guides-dir", "guide-map"}
-CAMEL_CASE_HINTS = {"guidesDir": "guides-dir", "guideMap": "guide-map"}
+ALLOWED_TOP_LEVEL_KEYS = {
+    "guides-dir",
+    "guide-map",
+    "review-branch",
+    "review-repo",
+}
+CAMEL_CASE_HINTS = {
+    "guidesDir": "guides-dir",
+    "guideMap": "guide-map",
+    "reviewBranch": "review-branch",
+    "reviewRepo": "review-repo",
+}
 
 
 @dataclass(frozen=True)
@@ -32,13 +44,22 @@ class GuidesState:
     """Effective state needed to serve guides at runtime.
 
     ``discovered`` maps ``(kind, stem)`` to the absolute path of each guide
-    file. ``guide_map`` is the merged glob-to-stems map keyed by kind. ``config``
-    is the full merged config (default + user) for inspection.
+    file. ``guide_map`` is the merged glob-to-stems map keyed by kind.
+    ``review_branch`` is the configured branch `sdlc_review` commits review
+    documents to, or ``None`` when the checked-out branch applies.
+    ``review_repo`` is the configured path to the repository those commits
+    land in, resolved relative to ``config_dir``, or ``None`` when unset.
+    ``config_dir`` is the user config file's parent, which ``review_repo``
+    and ``guides-dir`` are both resolved against. ``config`` is the full
+    merged config (default + user) for inspection.
     """
 
     discovered: dict[tuple[str, str], Path]
     guide_map: dict[str, dict[str, list[str]]]
     config: dict
+    review_branch: str | None = None
+    review_repo: str | None = None
+    config_dir: Path | None = None
 
 
 def load_package_default(package_dir: Path | None = None) -> dict:
@@ -70,7 +91,8 @@ def load_user_config(cwd: Path) -> tuple[dict, Path] | None:
 def merge_configs(default: dict, user: dict | None) -> dict:
     """Deep-merge user config onto default through ``guide-map.{test,style}``.
 
-    Top level: ``guides-dir`` from user replaces default if present.
+    Top level: ``guides-dir``, ``review-branch`` and ``review-repo`` from user
+    replace default if present.
     ``guide-map``: per-namespace deep merge — user's namespace dict updates
     default's. Inside a namespace, pattern keys are merged shallowly so a user
     pattern key replaces the default's same-pattern entry while disjoint keys
@@ -81,6 +103,10 @@ def merge_configs(default: dict, user: dict | None) -> dict:
         return merged
     if "guides-dir" in user:
         merged["guides-dir"] = user["guides-dir"]
+    if "review-branch" in user:
+        merged["review-branch"] = user["review-branch"]
+    if "review-repo" in user:
+        merged["review-repo"] = user["review-repo"]
     if "guide-map" in user:
         merged_map = merged.setdefault("guide-map", {})
         for kind, user_patterns in user["guide-map"].items():
@@ -234,6 +260,9 @@ def load_state(
         discovered=discovered,
         guide_map=merged.get("guide-map", {}),
         config=merged,
+        review_branch=merged.get("review-branch"),
+        review_repo=merged.get("review-repo"),
+        config_dir=user_config_dir,
     )
 
 
@@ -277,6 +306,22 @@ def _validate_schema(data: object, path: Path) -> None:
         )
     if "guides-dir" in data and not isinstance(data["guides-dir"], str):
         raise ValueError(f"{path}: 'guides-dir' must be a string")
+    if "review-branch" in data:
+        branch = data["review-branch"]
+        if not isinstance(branch, str):
+            raise ValueError(f"{path}: 'review-branch' must be a string")
+        try:
+            git_state.validate_branch_name(branch)
+        except ValueError as exc:
+            raise ValueError(f"{path}: 'review-branch' {exc}") from exc
+    if "review-repo" in data:
+        repo = data["review-repo"]
+        if not isinstance(repo, str):
+            raise ValueError(f"{path}: 'review-repo' must be a string")
+        try:
+            git_state.validate_repo_path(repo)
+        except ValueError as exc:
+            raise ValueError(f"{path}: 'review-repo' {exc}") from exc
     if "guide-map" in data:
         guide_map = data["guide-map"]
         if not isinstance(guide_map, dict):
