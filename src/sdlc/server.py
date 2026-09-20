@@ -420,7 +420,7 @@ async def sdlc_pr(issue_number: int, target: str | None = None) -> str:
 def _render_rereview(
     pr_number: int | None,
     paths: list[str] | None,
-    roles: list[str],
+    roles: list[str] | None,
     subagents: int,
     verify: int,
     target: str | None,
@@ -439,7 +439,6 @@ def _render_rereview(
     """
     skill = _read_skill("review")
     template = _read_file(REVIEW_TEMPLATE_PATH)
-    roles_line = ", ".join(roles)
     if paths is not None:
         slug = _paths_slug(paths)
         directory = Path(".sdlc/reviews") / slug
@@ -475,6 +474,30 @@ def _render_rereview(
     directory_str = directory.as_posix()
     document = f"{directory_str}/review-{verify}.md"
     snapshot = f"{directory_str}/snapshot-{verify}/"
+    # Inherit the seeded document's roles. A seeded finding whose originating
+    # role is absent from this pass has no reviewer at all and carries
+    # unexamined, so a re-review that silently fell back to `general-purpose`
+    # would carry EVERY finding of a round run under another role, forever,
+    # while still reporting progress. The document is already parsed here, so
+    # the list is free.
+    seeded_roles = pr_state.parse_composition_roles(
+        directory / f"review-{verify}.md"
+    )
+    coverage_note = None
+    if roles is None:
+        roles = seeded_roles or ["general-purpose"]
+    elif seeded_roles:
+        uncovered = [role for role in seeded_roles if role not in roles]
+        if uncovered:
+            coverage_note = (
+                "Seeded-role coverage warning: this pass runs "
+                f"{', '.join(roles)}, but the seeded findings were raised by "
+                f"{', '.join(uncovered)}, which no reviewer in this pass "
+                "carries. Every finding from those roles will carry "
+                "unexamined — record that in the pass header, or re-run with "
+                f"--roles {' '.join(seeded_roles)}."
+            )
+    roles_line = ", ".join(roles)
     # The target directive selects the mode, and in paths mode a miss means
     # running `gh` in a mode that forbids it. It therefore leads, as on a fresh
     # round, rather than trailing the seeded block — a rendered dump of an
@@ -491,14 +514,23 @@ def _render_rereview(
     ]
     if mode_note is not None:
         parts.append(f"\n{mode_note}")
+    if coverage_note is not None:
+        parts.append(f"\n\n{coverage_note}")
     if repo_directive is not None:
         parts.append(f"\n\n{repo_directive}")
+    parts.extend(_review_commit_directives(target, document, snapshot))
+    parts.append(f"\n\nReview document template:\n\n{template}")
+    # The seeded block goes LAST. It is a rendered dump of an entire prior
+    # review document — routinely thousands of tokens — and it is bulk context
+    # rather than a directive: nothing above it depends on it, while the
+    # commit-destination directives above ARE consumed by step 2 and by step
+    # 10's validation gate, and their failure mode is a quiet commit to the
+    # wrong place. Keeping every directive in the leading span and the largest
+    # distractor in the trailing one is the whole point of the ordering.
     parts.append(
         "\n\nSeeded findings — the state to disposition, not to read from "
         f"disk:\n{findings.format(label='Seeded from')}"
     )
-    parts.extend(_review_commit_directives(target, document, snapshot))
-    parts.append(f"\n\nReview document template:\n\n{template}")
     return "".join(parts)
 
 
@@ -571,12 +603,15 @@ async def sdlc_review(
             "sdlc_review requires exactly one target: pass either pr_number "
             "(PR mode) or paths (paths mode), not both and not neither."
         )
-    if roles is None:
-        roles = ["general-purpose"]
     if verify is not None:
+        # `roles` stays None here on purpose: a re-review inherits the roles the
+        # seeded document was produced under, and only an explicit list overrides
+        # that. Defaulting to `general-purpose` first would erase the distinction.
         return _render_rereview(
             pr_number, paths, roles, subagents, verify, target
         )
+    if roles is None:
+        roles = ["general-purpose"]
     skill = _read_skill("review")
     template = _read_file(REVIEW_TEMPLATE_PATH)
     roles_line = ", ".join(roles)

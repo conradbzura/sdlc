@@ -120,8 +120,16 @@ def _review_directive(result):
     mode-specific contract is about what the tool APPENDS, so isolate that
     block by stripping the inlined skill prefix and the trailing template.
     """
-    before_template = result.split("\n\nReview document template:", 1)[0]
-    return before_template[len(_read_skill("review")) :]
+    body = result[len(_read_skill("review")) :]
+    head, separator, tail = body.partition("\n\nReview document template:")
+    if not separator:
+        return body
+    # On a re-review the template sits BETWEEN the directives and the trailing
+    # seeded block, which is deliberately last: it is bulk context, not a
+    # directive, and burying the commit-destination directives behind it is
+    # what the ordering exists to prevent. Drop the template, keep both spans.
+    seeded = tail.find("\n\nSeeded findings —")
+    return head + (tail[seeded:] if seeded != -1 else "")
 
 
 @pytest.mark.asyncio
@@ -3273,3 +3281,103 @@ async def test_sdlc_review_should_pick_up_a_review_repo_recorded_mid_session(
     # Assert
     assert "Review repository: unresolved" in first
     assert f"Review repository: {store.resolve().as_posix()}" in second
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_inherit_the_seeded_roles_when_rereviewing(
+    tmp_path, monkeypatch
+):
+    """Test a re-review runs the roles the seeded document was produced under.
+
+    Given:
+        A review document whose Composition line names a non-default role.
+    When:
+        sdlc_review is re-run with --verify and no explicit roles.
+    Then:
+        It should dispatch that role rather than falling back to
+        general-purpose, which would carry every seeded finding unexamined.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = ".sdlc/reviews/server"
+    path = _write_review_doc(tmp_path, directory, 1)
+    path.write_text(
+        path.read_text().replace(
+            "Header prose.",
+            "Composition: 5 reviewer(s) per role across role(s) `aie` "
+            "(5 × 1 = 5 reviewer subagents total).",
+        )
+    )
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Roles: aie" in directive
+    assert "Roles: general-purpose" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_warn_when_roles_miss_the_seeded_set(
+    tmp_path, monkeypatch
+):
+    """Test an explicit role list that cannot cover the seeded set is flagged.
+
+    Given:
+        A seeded document raised by `aie`, re-reviewed with a different role.
+    When:
+        sdlc_review is called with that explicit role list.
+    Then:
+        It should warn that the uncovered role's findings will carry without
+        re-examination, naming the roles to re-run with.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = ".sdlc/reviews/server"
+    path = _write_review_doc(tmp_path, directory, 1)
+    path.write_text(
+        path.read_text().replace(
+            "Header prose.",
+            "Composition: 1 reviewer(s) per role across role(s) `aie` "
+            "(1 × 1 = 1 reviewer subagents total).",
+        )
+    )
+
+    # Act
+    result = await sdlc_review(
+        paths=["src/sdlc/server.py"], verify=1, roles=["general-purpose"]
+    )
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Seeded-role coverage warning" in directive
+    assert "--roles aie" in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_place_the_seeded_block_after_the_template(
+    tmp_path, monkeypatch
+):
+    """Test the largest distractor trails every directive it could bury.
+
+    Given:
+        A re-review, whose seeded block is a dump of a whole prior document.
+    When:
+        The prompt is rendered.
+    Then:
+        Every commit-destination directive should precede the template, and
+        the seeded block should follow it.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    _write_review_doc(tmp_path, ".sdlc/reviews/server", 1)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+
+    # Assert
+    template = result.index("\n\nReview document template:")
+    assert result.index("Review snapshot directory:") < template
+    assert result.index("Review document:") < template
+    assert template < result.index("\n\nSeeded findings —")
