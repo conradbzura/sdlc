@@ -66,10 +66,10 @@ The total number of reviewer subagents is **N × (number of roles)**. Each revie
 ## Invariants
 
 - MUST NOT post anything to GitHub. This skill produces a local document only — there is no `gh api .../reviews` call, no review event, and no inline comments. In **paths mode** the skill additionally runs no `gh` at all (no repo resolution, no PR fetch, no commit map).
-- When the review proceeds to completion, MUST write exactly one consolidated document per invocation, at the endpoint-injected `Review document: <dir>/review-<iteration>.md` path (used verbatim), under the retained `Review document directory`. In PR mode `<dir>` is `.sdlc/reviews/issue-#<N>/` (`<N>` = the resolved linked issue); in paths mode `<dir>` is `.sdlc/reviews/<slug>/`, the endpoint-computed slug. The endpoint resolves `<iteration>` as the 1-based next unused iteration in both modes and injects the exact path, so the write never overwrites an earlier round. In PR mode the unresolved-issue branch (the PR has no linked issue) and the declined-large-diff branch may end without writing a document — no document is written when the run does not reach completion on those paths. (Both of those branches are PR-mode only; paths mode has no linked-issue resolution and no remote diff to decline.) **(re-review)** The injected `Review document:` path is the existing `review-<#>.md` rather than a new iteration, so the round is rewritten in place; a re-review never creates a new `review-<iteration>.md`.
+- When the review proceeds to completion, MUST write exactly one consolidated document per invocation, at the endpoint-injected `Review document: <dir>/review-<iteration>.md` path (used verbatim), under the retained `Review document directory`. In PR mode `<dir>` is `.sdlc/reviews/issue-#<N>/` (`<N>` = the resolved linked issue); in paths mode `<dir>` is `.sdlc/reviews/<slug>/`, the endpoint-computed slug. The endpoint resolves `<iteration>` as the 1-based next unused iteration in both modes and injects the exact path, so the write never overwrites an earlier round. In PR mode the unresolved-issue branch (the PR has no linked issue) and the declined-large-diff branch may end without writing a document — no document is written when the run does not reach completion on those paths. (Both of those branches are PR-mode only; paths mode has no linked-issue resolution and no remote diff to decline.) **(re-review)** The injected `Review document:` path is the existing `review-<#>.md` rather than a new iteration, so the round is rewritten in place; a re-review never creates a new `review-<iteration>.md`. An unresolved review repository is not one of those non-writing branches: the document IS written, because `Review document:` is working-directory relative and needs no repository, and only the commit stops for the user (step 10a).
 - MUST write AND commit the document autonomously as the final step (step 10). Neither has an approval gate, on a fresh round or a re-review — except an unresolved review repository, which stops for the user (step 10a).
 - **(re-review)** MUST commit each finding-set mutation separately, with a message that justifies that specific state change, and MUST leave the document internally consistent — header counts included — at every commit.
-- MUST NOT force-add a path the target repository ignores. When the resolved repository ignores `.sdlc`, initialize `.sdlc` as its own repository instead (step 10).
+- MUST NOT force-add a path the target repository ignores, and MUST NOT create a repository on its own initiative. When the resolved repository ignores the review documents, or no repository resolves at all, STOP and ask the user to unignore the path, name a different repository, or authorize `git init .sdlc` (step 10a).
 - Each reviewer's findings MUST be confined to the files mapped to its role in `guide-map.role` (any file MAY be read for context). The default `general-purpose` role is mapped to `**/*`, so its findings span the whole diff.
 - When consolidating, each finding MUST be assigned the **highest** severity any role gives it; where roles disagree, the dissent MUST be noted on the finding.
 - For each finding, the consolidator MUST pre-select the recommended remediation option with `[x]`, list any alternatives with `[ ]`, and always include an `Other: ___` slot.
@@ -91,9 +91,9 @@ The MCP endpoint appends the following below this skill prompt. **Exactly one** 
 - `Seeded findings —` followed by the pre-rendered findings of `review-<#>.md` — *(re-review only)* the endpoint appends the parsed findings of the document being re-reviewed, under that header line. These are the findings each reviewer dispositions; do NOT re-parse the finding set from the file — the block is the authoritative enumeration, and a finding absent from it is absent from this pass. The block opens with its own `Seeded from:` provenance line, deliberately labelled differently from the `Review document:` write target above it so the two cannot be confused.
 
   The block is **lossy**, and the document is rewritten in place, so anything it drops is destroyed on every pass unless you read it back. Each finding carries only its id, title, severity, `Reference`, issue, remediation and touched commit. You MUST read the existing `review-<#>.md` for the fields the block does not carry, and preserve them verbatim on every finding you carry: the **role / agreement attribution** stripped off each title (which step 7 routes the seeded subset by, and step 8 folds this pass's agreement into), each finding's **`Tests to add`** line, the whole **cross-cutting decisions** section, and the header's **pass counter `<k>`**, which step 2's `meta.json` and the new pass line both increment from. Reading the file for these is not re-deriving the finding set; the two are different jobs.
-- `Review repository: <absolute path>` — the repository review-document commits belong in, declared via the `review-repo` config key (never inferred from the filesystem). Present whenever a document will be written. The value `unresolved` means no repository could be determined; step 10 covers the question to ask the user in that case.
+- `Review repository: <absolute path>` — the repository review-document commits belong in, declared via the `review-repo` config key (never inferred from the filesystem). Present whenever a document will be written. The value `unresolved` means no repository could be determined; step 10 covers the question to ask the user in that case. The repository MUST contain the `Review document:` path, which is hardcoded under `.sdlc/reviews/` — one that does not reports `Review document in repository: unresolved` on every call and can never commit, so a reviews repository elsewhere is not a usable value.
 - `Review document in repository: <path>` — the same file the `Review document:` line names, addressed from the review repository's root instead of the working directory. Every `git` command in step 10 takes THIS path; `Review document:` is where the file is written. They differ whenever the repository is not the working directory, which is the normal case when `.sdlc` is its own repository. This directive and `Review snapshot in repository:` below are **omitted entirely** when `Review repository:` is `unresolved`, and each instead reads `<label>: unresolved` followed by an explanation when the path lies outside the resolved repository. Neither absence nor the literal `unresolved` is a path — step 10(a) stops on either, and the string is never passed to `git`.
-- `Review snapshot directory: <dir>/snapshot-<#>/` — where this pass's capture of the reviewed code state is written, paired 1:1 with the document of the same number. Step 2 writes the contents directly here, at acquisition; step 10 commits them from here. Unlike the two repository-relative directives, this line is emitted whether or not a repository resolved, so the three do not appear and disappear together.
+- `Review snapshot directory: <dir>/snapshot-<#>/` — where this pass's capture of the reviewed code state is written, paired 1:1 with the document of the same number. Step 2 captures into a staging directory at acquisition and step 10 promotes the result here once every gate has cleared, then commits from here. This line is emitted whenever a document will be written — it does not depend on whether a *repository* resolved, so it does not come and go with the two repository-relative directives, but it IS absent alongside `Review document:` on the PR-mode unresolved-issue branch. Step 2's capture checks for it before running.
 - `Review snapshot in repository: <path>/` — the snapshot directory addressed from the review repository's root, on the same terms as the document's repository-relative path. This is what `git add` takes.
 - `Review commit branch: <branch>` — *(optional)* the branch review-document commits land on, from the `target` argument or the `review-branch` config key. When the line is absent, commit to the branch already checked out. Note this is a commit destination, unlike the target-branch override of `implement` and `pr`, which names a branch to branch from or base against.
 - The bundled review-document template (also available as the `sdlc://review-template` resource), which defines the exact structure of the document to write. It is the same template on a fresh round and a re-review — one document shape for the whole chain.
@@ -171,7 +171,7 @@ If the PR does not exist, inform the user and stop. Parse the PR title, body, br
 git rev-parse HEAD
 ```
 
-If `HEAD` does not equal `headRefOid`, the local tree is not on the PR head (stale branch, different worktree, or dirty tree) and the `file:line` references would be off. Fetch and check out the PR head (`gh pr checkout <number> --repo <target>`, or `git fetch` + checkout of `headRefOid`), or — if you cannot or the user declines — warn the user that the recorded `<sha>` assumes the working tree is at the PR head and that references may drift.
+If `HEAD` does not equal `headRefOid`, the local tree is not on the PR head (a stale branch, or a different worktree) and the `file:line` references would be off. Note what this check does *not* catch: `git rev-parse HEAD` returns the same sha however dirty the tree is, so a matching sha is not by itself evidence that the working tree is the PR head's content. The capture below tests cleanliness separately and folds it into `head_matches_target`. Fetch and check out the PR head (`gh pr checkout <number> --repo <target>`, or `git fetch` + checkout of `headRefOid`), or — if you cannot or the user declines — warn the user that the recorded `<sha>` assumes the working tree is at the PR head and that references may drift.
 
 **Build the branch commit map.** The header commit map, each finding's `Touched commit`, and the fixup mapping all need each commit's sha, conventional-commit subject, and touched files. No earlier step supplies these, so enumerate them now from the PR's commit range:
 
@@ -199,78 +199,122 @@ Resolve every entry: a literal path contributes that file (warn if it does not e
 
 The findings reference `file:line` in a repository whose history is routinely rewritten before merge, so the commits a review was performed against do not survive. Anchor the pass to a point that does. Run this **here**, at acquisition, so the captured state matches what the reviewers read — not later, when the tree may have moved. That correspondence is *proved* only on the branch where the PR-head verification above succeeded; when you continued past a `HEAD != headRefOid` mismatch, the capture records the mismatch rather than claiming a correspondence it cannot support.
 
+**First, confirm a snapshot directory was injected.** Despite the "(all modes)" heading, `Review snapshot directory:` is emitted only when a document will be written — so it is absent on the PR-mode unresolved-issue branch, which this subsection runs *before* step 3 resolves, and on the declined-large-diff branch, which writes no document at all. If the directive is absent, do NOT invent a path: skip the capture, settle the issue with the user in step 3, and run this subsection once the directory is known. Guessing it is forbidden for the same reason step 3 forbids it.
+
 The anchor is the merge-base with the upstream default branch, which by assumption never changes. Everything above it is collapsed into one synthetic commit whose tree is the reviewed state and whose parent is that merge-base. It descends from no branch commit, so rebasing, squashing, and fixups cannot invalidate it.
 
-The three blocks below are ONE sequence — run them in a single shell invocation. `$ref`, `$base` and `$tree` flow between them, and shell state does not survive between tool calls; splitting them would leave `GIT_INDEX_FILE` unset and stage the user's real index.
+The three blocks below are ONE sequence — run them in a single shell invocation. `$vcs`, `$ref`, `$base`, `$tree` and `$staging` flow between them, and shell state does not survive between tool calls, so a split leaves `git commit-tree` with an empty parent or tree argument and the heredoc with empty fields. (`GIT_INDEX_FILE` is a separate matter: block 2 both exports and unsets it within itself, so a split cannot leave it dangling. `export` rather than a `VAR=value` prefix is still required there, for the reason the restore recipe in step 10 spells out.)
 
-Resolve the anchor ref explicitly, and fail loudly when it cannot be resolved — an unresolvable ref otherwise leaves `base` empty and `git commit-tree -p ""` errors in the middle of the block:
+The capture is written to a **staging directory**, not straight into `Review snapshot directory`. Step 10 promotes it once every gate has cleared. Writing in place here would destroy the previous pass's capture before step 5's role-validation halt, before the declined-large-diff branch, and before step 10(a)'s "STOP before committing" — which would make that promise false the moment it is reached.
 
-```bash
-# `origin` is the FORK when working from a fork, which is the case step 1 exists
-# for, so prefer a distinct `upstream` remote when one is configured. The DEFAULT
-# branch is the ref that never moves; the PR's base branch is not the same thing
-# and may be deleted once a stacked PR merges.
-remote=$(git remote | grep -qx upstream && echo upstream || echo origin)
-git remote set-head "$remote" -a >/dev/null 2>&1 || true
-ref=$(git symbolic-ref -q "refs/remotes/$remote/HEAD") || ref=
-[ -n "$ref" ] || { echo "review: no default-branch ref on '$remote' — cannot anchor the snapshot" >&2; exit 1; }
-base=$(git merge-base HEAD "$ref") || { echo "review: no merge-base between HEAD and $ref" >&2; exit 1; }
-```
-
-Record `$ref` as `anchor_ref` in `meta.json` so a reader can tell which branch the base was taken from. Reviewing the default branch itself yields `base == HEAD` and an empty patch, which is the correct representation of "the reviewed state is the base".
-
-Then capture the tree. The index is built from **empty**, not from `HEAD`: seeding it from `HEAD` stages every path `HEAD` tracks — including a tracked review repository — and the exclusion pathspec below only declines to *update* those entries, it never removes them. The reviewed state IS the working tree, so the `HEAD` baseline buys nothing, and worktree deletions are naturally absent.
+Resolve the anchor ref explicitly, preferring a cheap local read. `git remote set-head -a` is a **network call that writes `refs/remotes/<remote>/HEAD` in the user's repository**, so it is a fallback, not the opening move:
 
 ```bash
-export GIT_INDEX_FILE=$(mktemp -u)
-git read-tree --empty
-git add -A -- ':!.sdlc'          # or the configured review-repo path inside this tree
-tree=$(git write-tree)
-unset GIT_INDEX_FILE
+staging="${TMPDIR:-/tmp}/sdlc-review-$(printf '%s' "<Review snapshot directory>" | shasum | cut -c1-12).snapshot"
+rm -rf "$staging" && mkdir -p "$staging"
 
-# An all-excluding pathspec silently yields the empty tree, which would pass its
-# own integrity check on every pass while capturing nothing.
-[ "$tree" = 4b825dc642cb6eb9a060e54bf8d69288fbee4904 ] \
-  && { echo "review: snapshot tree is empty — the exclusion pathspec covers the whole tree" >&2; exit 1; }
+vcs=git; ref=; base=; tree=; remote=
+dirty=false
+
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    vcs=none                                 # not a repository — meta only, null base, no patch
+else
+    [ -n "$(git status --porcelain)" ] && dirty=true
+
+    # `origin` is the FORK when working from a fork, which is the case step 1 exists
+    # for, so prefer a distinct `upstream` remote when one is configured. The DEFAULT
+    # branch is the ref that never moves; the PR's base branch is not the same thing
+    # and may be deleted once a stacked PR merges.
+    remote=$(git remote | grep -qx upstream && echo upstream || echo origin)
+    ref=$(git symbolic-ref -q "refs/remotes/$remote/HEAD") || ref=
+    if [ -z "$ref" ]; then
+        git remote set-head "$remote" -a >/dev/null 2>&1 || true    # NETWORK; writes a ref
+        ref=$(git symbolic-ref -q "refs/remotes/$remote/HEAD") || ref=
+    fi
+    [ -n "$ref" ] && base=$(git merge-base HEAD "$ref" 2>/dev/null)
+    if [ -z "$base" ]; then
+        vcs=unanchored                       # meta only, null base, no patch
+        echo "review: no default-branch ref on '$remote' — capturing provenance only." >&2
+        echo "review: run 'git remote set-head $remote -a' when online to fix this." >&2
+    fi
+fi
 ```
 
-Write the artifacts straight into the injected `Review snapshot directory`, clearing it first. Nothing is held for a later step: the directory is a directive, so every step addresses it identically without carrying shell state across tool calls. The directory is overwritten each pass, so a stale `review.patch` must not be left to survive beside a `meta.json` that no longer describes it.
+**An unresolvable anchor aborts the CAPTURE, not the review.** `refs/remotes/origin/HEAD` is absent after `clone --single-branch`, after `git init` plus `git remote add`, and in most CI checkouts, and `set-head -a` cannot recover it offline, behind an auth prompt, or on a sandboxed runner. Tell the user the provenance could not be anchored, then carry on to step 3: the reviewers' findings are the round's deliverable, and losing provenance is no reason to lose them. Step 10 stages whatever the capture produced, so a missing patch cannot suppress the document commit.
+
+Then capture the tree. The index is built from **empty**, not from `HEAD`: seeding it from `HEAD` stages every path `HEAD` tracks — including a tracked review repository — and the exclusion pathspec below only declines to *update* those entries, it never removes them. The reviewed state IS the working tree, so the `HEAD` baseline buys nothing, and worktree deletions are naturally absent. The pathspec is anchored with `top` because git resolves pathspecs against the **current working directory**: a bare `':!.sdlc'` run from a subdirectory excludes nothing, and the capture then embeds a gitlink to the review repository and changes its tree SHA on every pass.
 
 ```bash
-mkdir -p <Review snapshot directory>
-rm -f <Review snapshot directory>/review.patch <Review snapshot directory>/meta.json
+if [ "$vcs" = git ]; then
+    idx=$(mktemp -u)
+    export GIT_INDEX_FILE="$idx"
+    trap 'rm -f "$idx"' EXIT
+    git read-tree --empty
+    # ':(exclude,top)<review-repo path relative to the repository root>' when the
+    # resolved review repository is not `.sdlc`. Derive that relative path from the
+    # absolute `Review repository:` value against `git rev-parse --show-toplevel`;
+    # an absolute `:(exclude)/abs/path` pathspec matches nothing.
+    if ! git add -A -- ':(exclude,top).sdlc'; then
+        echo "review: git add staged nothing — check the exclusion pathspec" >&2
+        exit 1
+    fi
+    tree=$(git write-tree)
+    unset GIT_INDEX_FILE
 
-snap=$(git commit-tree "$tree" -p "$base" -m "review snapshot")
-git diff --binary --full-index "$base" "$snap" > <Review snapshot directory>/review.patch
+    # An all-excluding pathspec silently yields the empty tree, which would pass its
+    # own integrity check on every pass while capturing nothing. Derive the sentinel
+    # rather than hard-coding it: a `--object-format=sha256` repository has a
+    # different empty tree, and a hard-coded SHA-1 value never fires there.
+    if [ "$tree" = "$(git hash-object -t tree /dev/null)" ]; then
+        echo "review: snapshot tree is empty — git add staged nothing (check the exclusion pathspec and the working directory)" >&2
+        exit 1
+    fi
+fi
 ```
 
-`git add -A` honours `.gitignore`, so ignored files stay out of the snapshot. They are not part of the reviewed state. The review repository is excluded by pathspec rather than left to `.gitignore`, since a project that tracks `.sdlc` would otherwise capture it — and starting the index empty is what makes the exclusion actually hold in that case. When `Review repository:` names a path inside the reviewed tree other than `.sdlc`, exclude that path instead. A review repository that resolves to `.` or to the reviewed repository's own root is a configuration error rather than an exclusion — `':!.'` excludes everything — so refuse it and tell the user to move the review repository to a subdirectory or outside the tree.
+Then write both artifacts into the staging directory. `meta.json` is written **by this block**, not transcribed afterwards: `$remote`, `$ref`, `$base` and `$tree` do not survive the end of the invocation, and `$tree` in particular cannot be recovered without redoing the whole empty-index sequence, by which time the tree may have moved — destroying the exact correspondence this capture exists to guarantee.
+
+```bash
+if [ "$vcs" = git ]; then
+    snap=$(git commit-tree "$tree" -p "$base" -m "review snapshot")
+    # The same exclusion the index used. Without it the diff reports the excluded
+    # review repository as DELETED whenever the project tracks it, so the restore
+    # loses it and the merged-tree comparison can never succeed.
+    git diff --binary --full-index "$base" "$snap" -- ':(exclude,top).sdlc' > "$staging/review.patch"
+fi
+
+cat > "$staging/meta.json" <<EOF
+{
+  "mode": "<pr|paths>",
+  "pr": <PR number — PR mode only, omit in paths mode>,
+  "pass": <k>,
+  "vcs": "$vcs",
+  "excluded": [".sdlc"],
+  "upstream": "$(git remote get-url "$remote" 2>/dev/null)",
+  "anchor_ref": "$ref",
+  "base": "$base",
+  "tree": "$tree",
+  "head": "$(git rev-parse HEAD 2>/dev/null)",
+  "worktree_dirty": $dirty,
+  "head_matches_target": <true|false — see below>,
+  "captured_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+```
+
+Only the `<…>` placeholders are yours to substitute; every `$` field is filled by the shell. On the `none` and `unanchored` paths `base` and `tree` are empty strings and no `review.patch` is written — that is the documented outcome, not a failure to retry.
+
+`pass` is `<k>`, how many passes have run against this document — `1` on a fresh round, and on a re-review the `<k>` carried in the existing document's pass line, incremented by one. You read that pass line as part of the mandatory read-back of the fields the seeded block does not carry.
+
+`excluded` records the pathspec the index and the diff both used, so a later restore cannot drift from the capture. `worktree_dirty` is `true` when `git status --porcelain` was non-empty.
+
+`head_matches_target` records whether the reviewed state corresponds to the PR head. **(PR mode)** Set it `true` only when `HEAD == headRefOid` **and** `worktree_dirty` is `false`. The sha check alone is not enough: `git rev-parse HEAD` returns the same sha however dirty the tree is, while the capture is `git add -A` over the **working tree** and deliberately includes uncommitted and untracked work — so a dirty tree yields a `tree` that is not the PR head's tree while the sha check passes. When either condition fails, write `false` and record `"target_head": "<headRefOid>"` beside it: `tree` still states what was captured, but it is NOT a claim about the PR head, and step 10's restore comparison cannot answer whether what merged is what was reviewed. **(paths mode)** There is no PR head, so omit `head_matches_target` and `target_head` entirely.
 
 The synthetic commit is a construction device, not a durable artifact — nothing references it, so it is subject to garbage collection. What travels is `base`, the patch, and `tree`; those three reconstruct the state in any clone that can reach `base`.
 
-Write `meta.json` beside the patch, at `<Review snapshot directory>/meta.json`:
+`git add -A` honours `.gitignore`, so ignored files stay out of the snapshot. Note that a path which is both **tracked and ignored** — force-added at some point, or ignored after the fact — is dropped too, although it is genuinely part of the reviewed state; the integrity check cannot surface this, because the restore mirrors the same empty index and pathspec and still reproduces `tree`. The review repository is excluded by pathspec rather than left to `.gitignore`, since a project that tracks `.sdlc` would otherwise capture it — and starting the index empty is what makes the exclusion actually hold in that case. A review repository that resolves to `.` or to the reviewed repository's own root is a configuration error rather than an exclusion — `':!.'` excludes everything — so refuse it and tell the user to move the review repository to a subdirectory or outside the tree.
 
-```json
-{
-  "mode": "pr",
-  "pr": 33,
-  "pass": 1,
-  "upstream": "<git remote get-url $remote>",
-  "anchor_ref": "<the $ref resolved above>",
-  "base": "<base sha>",
-  "tree": "<tree sha>",
-  "head": "<HEAD sha, for context only — expected to be rewritten>",
-  "head_matches_target": true,
-  "captured_at": "<ISO-8601 UTC>"
-}
-```
-
-`pass` is `<k>`, how many passes have run against this document — `1` on a fresh round, and on a re-review the `<k>` carried in the existing document's pass line, incremented by one. (Step 10 reads that header anyway, for the fields the seeded block does not carry.) It is the only thing distinguishing one capture from another, since the directory is overwritten.
-
-`head_matches_target` records whether the PR-head verification above succeeded. **(PR mode)** When `HEAD != headRefOid` and you continued anyway, write `false` and record `"target_head": "<headRefOid>"` beside it: `tree` still states what was captured, but with the flag `false` it is NOT a claim about the PR head, and the restore comparison in step 10 cannot answer whether what merged is what was reviewed. **(paths mode)** There is no PR head, so omit the field entirely.
-
-In paths mode `pr` is omitted and `mode` is `paths`. When the reviewed tree is **not** a git repository, write `meta.json` alone with `"vcs": "none"`, a null `base`, no `anchor_ref`, and no patch; there is nothing to anchor to and that is worth recording explicitly. The `rm -f` above is what keeps a prior pass's patch from surviving into this case.
-
+Reviewing the default branch itself yields `base == HEAD`, so the patch contains exactly the uncommitted and untracked work — empty only when the tree is clean. Record `$ref` as `anchor_ref` so a reader can tell which branch the base was taken from.
 
 ### 3. Resolve the review-document path
 
@@ -409,6 +453,14 @@ Fold any such adjustments into the document, then proceed straight to writing it
 
 **(re-review)** Present the updated document the same way, and additionally summarize what moved this pass — which findings closed, which were rejected and why, and which are new — so the user can see the round's progress before it is written and committed. The absence of an approval gate is the same: fold in any adjustment the user offers, then go to step 10.
 
+Then write the consolidated result — the exact target state, every disposition applied — to a scratch file, and leave `review-<#>.md` itself untouched:
+
+```bash
+target="${TMPDIR:-/tmp}/sdlc-review-$(printf '%s' "<repo>/<Review document in repository>" | shasum | cut -c1-12).target.md"
+```
+
+Step 10(d) walks the real document toward this file one commit at a time and diffs against it at the end, so the target must survive every intervening tool call as a file rather than as remembered text. It is deliberately NOT written under `<Review snapshot directory>`: 10(c) mirrors that directory wholesale into the worktree, which would commit the target alongside the snapshot artifacts.
+
 ### 10. Write and commit the review document
 
 The document is written AND committed autonomously — neither has an approval gate. The one exception is an unresolved review repository, which is a question only the user can answer.
@@ -416,7 +468,7 @@ The document is written AND committed autonomously — neither has an approval g
 **(a) Resolve the repository.** The `Review repository:` directive names where review-document commits belong. It is **declared, never inferred** — the endpoint reads it from the `review-repo` config key, falling back to `.sdlc` only when that is already a repository.
 
 - `Review repository: <absolute path>` — commit there. Call it `<repo>` below.
-- `Review repository: unresolved` — STOP before writing anything and ask the user, exactly as an unresolved linked issue is handled. Offer the two options the directive names: point `review-repo` at an existing repository, or create one with `git init .sdlc`. Once they choose, record it:
+- `Review repository: unresolved` — **write the document first**, at the working-directory-relative `Review document:` path, which needs no repository; a round's reviewer work is not discarded because its commit destination is unknown. Then STOP before **committing** and ask the user, exactly as an unresolved linked issue is handled. Offer the two options the directive names: point `review-repo` at an existing repository, or create one with `git init .sdlc`. Once they choose, record it:
 
   ```bash
   git init .sdlc      # only when they chose to create one
@@ -424,42 +476,55 @@ The document is written AND committed autonomously — neither has an approval g
 
   Then write their choice into `.sdlc/config.json` as `"review-repo"` (creating the file if absent, preserving any existing keys). The server re-reads its config at the start of each review, so from the next call on the question is not asked again. MUST NOT guess a repository, and MUST NOT commit until one is resolved.
 
+  **The repository MUST contain the document.** `Review document:` is hardcoded under `.sdlc/reviews/`, so a repository that does not contain that path reports `Review document in repository: unresolved` on every call and can never commit. A reviews repository somewhere else is therefore not a workable answer to this question — the practical choices are `.sdlc` itself or an ancestor of it.
+
 **Validate the resolved repository before committing.** Two checks. Both are cheap, and both are silent failures when skipped.
 
 First, the repository-relative directives may themselves be unresolved. `Review document in repository:` and `Review snapshot in repository:` are omitted entirely when no repository resolved, and each carries the literal value `unresolved`, followed by an explanation, when the path lies outside `<repo>`. Note that `Review snapshot directory:` is emitted either way, so the three do not appear and disappear together. If either repository-relative directive is absent or reads `unresolved`, STOP and relay the explanation to the user — never pass the string `unresolved` to `git add`.
 
-Second, the repository may ignore the review documents, in which case the commit would silently do nothing:
+**Exception — a repository created during this run.** Directives are injected at tool-call time and cannot appear mid-run, so immediately after the user authorizes `git init .sdlc` above, both repository-relative directives are still absent. Do NOT stop a second time on that absence — it is the expected state, not a new failure. Derive the two paths instead, by re-expressing `Review document:` and `Review snapshot directory:` relative to `<repo>` (with `<repo>` = `.sdlc`, the document `.sdlc/reviews/issue-#<N>/review-<#>.md` addresses as `reviews/issue-#<N>/review-<#>.md`), and commit this round. The recorded `review-repo` makes the directives correct from the next call on.
+
+Second, the repository may ignore the review artifacts. Check BOTH paths — invariant "MUST NOT force-add a path the target repository ignores" covers every path this step adds, and a `<repo>/.gitignore` carrying `*.patch`, `*.json` or `snapshot-*/` leaves the snapshot ignored while the document is clean:
 
 ```bash
-git -C <repo> check-ignore -q <Review document in repository>
+git -C "<repo>" check-ignore "<Review document in repository>" "<Review snapshot in repository>"
 ```
 
-A zero exit means the path is ignored. Do NOT force-add it — tell the user their `review-repo` ignores the review documents, and ask them to unignore the path or name a different repository.
+Note the absence of `-q`. With more than one pathname `--quiet` is **fatal** — `fatal: --quiet is only valid with a single pathname`, exit 128 — which this step would misread as "not ignored". The non-quiet form is the one with the needed semantics: it exits **0** when *any* argument is ignored and prints which, and exits **1** when none is.
+
+- **Exit 0** — at least one path is ignored, and stdout names it. Do NOT force-add it; tell the user their `review-repo` ignores that path and ask them to unignore it or name a different repository.
+- **Exit 1** — neither path is ignored. Proceed.
+- **Any other exit** — `check-ignore` itself failed (128 for a path outside the repository, for instance). Surface the error; do NOT read it as "not ignored".
+
+An ignored path is not a silent no-op at commit time: `git add` errors with "The following paths are ignored" and takes the whole multi-pathspec add down with it, so on a re-review the snapshot commit fails before any finding mutation is applied. This check exists to give the user an actionable message instead of that failure.
 
 **(b) Resolve the branch.** When a `Review commit branch: <branch>` directive is present AND `<branch>` differs from the branch checked out in `<repo>`, do every write and commit below inside a temporary worktree, so the tree under review is never disturbed.
 
-A freshly initialized repository has no commits, and `git worktree add` cannot attach to a branch that does not exist yet — the first-run state for every project that sets `review-branch`. Give `HEAD` a commit first, then create the branch if needed. The worktree path is **deterministic**, derived from this round's document number, so (b), (c) and (d) each re-derive it identically instead of carrying a shell variable across tool calls:
+A freshly initialized repository has no commits, and `git worktree add` cannot attach to a branch that does not exist yet — the first-run state for every project that sets `review-branch`. Give `HEAD` a commit first, then create the branch if needed.
+
+The worktree path is **deterministic**, so (b), (c) and (d) each re-derive it identically instead of carrying a shell variable across tool calls. It is keyed on the repository AND the document rather than on the round number alone: `$TMPDIR` is per-user, not per-project, so a bare `sdlc-review-1` names the same directory for every project and every issue on the machine.
 
 ```bash
-worktree="${TMPDIR:-/tmp}/sdlc-review-<#>"     # <#> — this round's document number
+worktree="${TMPDIR:-/tmp}/sdlc-review-$(printf '%s' "<repo>/<Review document in repository>" | shasum | cut -c1-12)"
 
-git -C <repo> rev-parse --verify -q HEAD >/dev/null \
-  || git -C <repo> commit -q --allow-empty -m "review: Initialize the review document repository"
+git -C "<repo>" rev-parse --verify -q HEAD >/dev/null \
+  || git -C "<repo>" commit -q --allow-empty -m "review: Initialize the review document repository"
 
-if [ ! -d "$worktree" ]; then
-    if git -C <repo> show-ref --verify --quiet refs/heads/<branch>; then
-        git -C <repo> worktree add -q "$worktree" <branch>
-    else
-        git -C <repo> worktree add -q -b <branch> "$worktree"
-    fi
+if git -C "<repo>" worktree list --porcelain | grep -qx "worktree $worktree"; then
+    :                                   # already registered to THIS repository — reuse it
+elif [ -e "$worktree" ]; then
+    echo "worktree path $worktree exists but is not registered to <repo>" >&2
+    exit 1                              # stale or foreign — never adopt it
+elif git -C "<repo>" show-ref --verify --quiet refs/heads/<branch>; then
+    git -C "<repo>" worktree add -q "$worktree" <branch>
+else
+    git -C "<repo>" worktree add -q -b <branch> "$worktree"
 fi
 ```
 
-Remove it only after the LAST commit of (d) — on a re-review that is several commits later, not at the end of this sub-step:
+Testing *registration* rather than mere existence is what makes a collision loud. A bare `[ ! -d "$worktree" ]` skips creation for a directory belonging to some other repository — or left behind by a crashed earlier run — and every commit below then lands somewhere other than where this round belongs.
 
-```bash
-git -C <repo> worktree remove "${TMPDIR:-/tmp}/sdlc-review-<#>"
-```
+The worktree is removed at the END of (d), after the last commit; on a re-review that is several commits later, not at the end of this sub-step. The removal command lives there.
 
 When the directive is absent, or names the branch already checked out, write and commit in place and ignore every `"$worktree"` mention below.
 
@@ -468,12 +533,22 @@ When the directive is absent, or names the branch already checked out, write and
 - `Review document: <path>` — relative to the working directory. This is where the document is WRITTEN, so the reviewed tree, `sdlc_implement --review` and the next `sdlc_review --verify` all find it where they expect.
 - `Review document in repository: <path>` — the same file addressed from `<repo>`'s root. This is what every `git` command below takes.
 
-The snapshot is already on disk: step 2 wrote `review.patch` and `meta.json` into `<Review snapshot directory>` at acquisition. Do NOT regenerate them here — recapturing at this point would record the tree as it stands now rather than as the reviewers read it, and the two can differ.
+**Promote the staged snapshot.** Step 2 captured into a staging directory rather than writing `<Review snapshot directory>` directly, so that an abandoned run — a role-validation halt, a declined large diff, an unresolved repository — cannot destroy the previous pass's capture. Every gate has now cleared, so move it into place. Clear the destination wholesale rather than removing two named files, so no third artifact from an earlier pass survives into a capture that no longer describes it:
+
+```bash
+staging="${TMPDIR:-/tmp}/sdlc-review-$(printf '%s' "<Review snapshot directory>" | shasum | cut -c1-12).snapshot"
+rm -rf "<Review snapshot directory>"
+mkdir -p "<Review snapshot directory>"
+cp "$staging"/* "<Review snapshot directory>/"
+rm -rf "$staging"
+```
+
+Do NOT regenerate the capture here — recapturing at this point would record the tree as it stands now rather than as the reviewers read it, and the two can differ. If the capture was skipped (step 2 found no snapshot directive) or aborted unanchored, the staging directory holds `meta.json` alone or nothing at all; promote what is there and continue.
 
 **What is written depends on the round.**
 
 - **(fresh round)** Write the full document at `Review document:`, following the bundled template structure exactly: the header — including the pass line carrying the open counts and this pass's deltas — the severity-tiered findings (blocking first) with stable IDs / titles / severities / `Reference` (`file:line`, or a file-level / issue-level reference for a line-less finding) / Issue + evidence / Remediation checklist (`[x]` recommended, `[ ]` alternatives, `Other: ___`) / optional Tests-to-add, plus the cross-cutting-decisions section. **(PR mode)** also include each finding's `Touched commit` and the fixup-mapping section; **(paths mode)** omit both — there are no commits to attribute or fold into.
-- **(re-review)** Write NOTHING to `review-<#>.md` here. Leave it on disk at the seeded content this pass found, because (d) walks it forward one finding-set mutation at a time and each of those mutations is its own commit. Writing the reconciled document now would leave (d) with no residual change to apply, collapsing the pass into a single commit and defeating the per-mutation history. Step 9's consolidated document is the **target state** (d) walks toward, not something to write here.
+- **(re-review)** Write NOTHING to `review-<#>.md` here. Leave it on disk at the seeded content this pass found, because (d) walks it forward one finding-set mutation at a time and each of those mutations is its own commit. Writing the reconciled document now would leave (d) with no residual change to apply, collapsing the pass into a single commit and defeating the per-mutation history. Step 9's consolidated document is the **target state** (d) walks toward — it is already on disk at the scratch path step 9 wrote it to, and is not something to write here.
 
 **Where it is written depends on the branch resolved in (b).**
 
@@ -481,32 +556,48 @@ The snapshot is already on disk: step 2 wrote `review.patch` and `meta.json` int
 - **Worktree** — write to the working-directory paths **in addition to** the copies inside `"$worktree"`, never instead of them. The working-directory copies are what the reviewed tree and the rest of the pipeline read; the copies inside the worktree are what gets committed. Mirror both artifacts:
 
   ```bash
-  worktree="${TMPDIR:-/tmp}/sdlc-review-<#>"
-  mkdir -p "$worktree/$(dirname <Review document in repository>)" "$worktree/<Review snapshot in repository>"
-  cp <Review document> "$worktree/<Review document in repository>"
-  cp <Review snapshot directory>/* "$worktree/<Review snapshot in repository>"
+  worktree="${TMPDIR:-/tmp}/sdlc-review-$(printf '%s' "<repo>/<Review document in repository>" | shasum | cut -c1-12)"
+  mkdir -p "$worktree/$(dirname "<Review document in repository>")" "$worktree/<Review snapshot in repository>"
+  cp "<Review document>" "$worktree/<Review document in repository>"
+  cp "<Review snapshot directory>"/* "$worktree/<Review snapshot in repository>"
   ```
 
   On a re-review, repeat the document `cp` after each mutation in (d), so the committed copy tracks the working-directory copy commit by commit.
 
 Do NOT post anything to GitHub.
 
-**(d) Commit.** On a **fresh round** the document and its snapshot are a single commit:
+**(d) Commit.** Every `git` command in this sub-step has two variants. When (b) created a worktree, use the `-C "$worktree"` form — the worktree is where (c) put the copies that get committed, and `-C <repo>` would commit from the repository's main worktree, still on whatever branch it had checked out. Otherwise use the `-C <repo>` form. Each block below re-derives `$worktree` for itself: shell state does not survive between tool calls, so a block that reads the handle must also assign it.
+
+**Stage the snapshot only when there is one.** Step 2 skips the capture when no snapshot directive was injected, and writes `meta.json` alone when the anchor could not be resolved. Omit `<Review snapshot in repository>` from the `add` when the promote above produced nothing — `git add` on a pathspec matching no file exits 128 and stages *nothing*, taking the document down with it, so a missing capture would otherwise convert a provenance gap into an unrecorded round.
+
+On a **fresh round** the document and its snapshot are a single commit:
 
 ```bash
-git -C <repo> add <Review document in repository> <Review snapshot in repository>
-git -C <repo> commit -F <message-file>
+# in place
+git -C "<repo>" add "<Review document in repository>" "<Review snapshot in repository>"
+git -C "<repo>" commit -F "<message-file>"
+
+# worktree
+worktree="${TMPDIR:-/tmp}/sdlc-review-$(printf '%s' "<repo>/<Review document in repository>" | shasum | cut -c1-12)"
+git -C "$worktree" add "<Review document in repository>" "<Review snapshot in repository>"
+git -C "$worktree" commit -F "<message-file>"
 ```
 
 ```
 review: Add review-1 with 3 blocking and 2 advisory findings
 ```
 
-**(re-review)** The snapshot is committed FIRST, before any finding mutation, because the dispositions in this pass were derived from it:
+**(re-review)** The snapshot is committed FIRST, before any finding mutation, because the dispositions in this pass were derived from it. This commit also carries the **pass-header bump**: `<k>` counts passes, not finding changes, so it belongs to no mutation below — editing the pass line here gives it a home, and gives a pass in which nothing changed a coherent round of its own.
 
 ```bash
-git -C <repo> add <Review snapshot in repository>
-git -C <repo> commit -F <message-file>
+# in place
+git -C "<repo>" add "<Review snapshot in repository>" "<Review document in repository>"
+git -C "<repo>" commit -F "<message-file>"
+
+# worktree
+worktree="${TMPDIR:-/tmp}/sdlc-review-$(printf '%s' "<repo>/<Review document in repository>" | shasum | cut -c1-12)"
+git -C "$worktree" add "<Review snapshot in repository>" "<Review document in repository>"
+git -C "$worktree" commit -F "<message-file>"
 ```
 
 ```
@@ -516,11 +607,38 @@ review: Capture the reviewed state at <short-base>..<short-tree>
 Each finding-set mutation is then its OWN commit, walking `review-<#>.md` from its seeded content toward step 9's consolidated result. Apply the mutations in the order **close → reject → add**, so the history reads as what got fixed, what was wrong, and what is newly broken. For each mutation in turn: edit the document to apply ONLY that change — updating the header's counts along with it, so every commit leaves the document internally consistent — then stage and commit just that change:
 
 ```bash
-git -C <repo> add <Review document in repository>
-git -C <repo> commit -F <message-file>
+# in place
+git -C "<repo>" add "<Review document in repository>"
+git -C "<repo>" commit -F "<message-file>"
+
+# worktree — repeat (c)'s copy first, so the committed file tracks the working one
+worktree="${TMPDIR:-/tmp}/sdlc-review-$(printf '%s' "<repo>/<Review document in repository>" | shasum | cut -c1-12)"
+cp "<Review document>" "$worktree/<Review document in repository>"
+git -C "$worktree" add "<Review document in repository>"
+git -C "$worktree" commit -F "<message-file>"
 ```
 
-After the last mutation, the file on disk MUST equal step 9's consolidated document. If it does not, a mutation was missed — apply the remainder as one further commit rather than amending the history.
+When every seeded finding carries, there is no finding-set mutation to commit and the snapshot-and-header commit above is the entire round. Do NOT manufacture an empty commit to fill the gap.
+
+After the last mutation, verify the document against step 9's target. Step 9 wrote that target to disk precisely so this check reads ground truth from the filesystem rather than comparing the file against the orchestrator's recollection of a document it rendered many tool calls earlier:
+
+```bash
+target="${TMPDIR:-/tmp}/sdlc-review-$(printf '%s' "<repo>/<Review document in repository>" | shasum | cut -c1-12).target.md"
+diff -u "$target" "<Review document>"      # MUST produce no output
+rm -f "$target"
+```
+
+If `diff` reports a difference, a mutation was missed — apply the remainder as one further commit rather than amending the history, then run the check again.
+
+Finally, when (b) created a worktree, remove it — after the LAST commit above, never earlier:
+
+```bash
+worktree="${TMPDIR:-/tmp}/sdlc-review-$(printf '%s' "<repo>/<Review document in repository>" | shasum | cut -c1-12)"
+git -C "<repo>" worktree remove --force "$worktree"
+git -C "<repo>" worktree prune
+```
+
+`--force` is required: (c) mirrors copies into the worktree that git sees as untracked, and a plain `worktree remove` refuses with exit 128 ("contains modified or untracked files"), leaving the directory behind for the next run to trip over.
 
 Commit messages follow the `commit` skill's subject rules — 72 characters maximum, imperative mood, first word capitalized, no trailing period, plain text with no markup — with one addition: review-document commits take a `review:` type prefix, which exists for this purpose and is never used for code commits. The subject names the disposition and the finding id, and carries the justification when it fits; longer reasoning goes in the body.
 
@@ -536,22 +654,31 @@ A rejection that withdraws a finding outright and one that corrects it are both 
 
 ```bash
 restore="${TMPDIR:-/tmp}/sdlc-restore-$$"
-git worktree add -q --detach "$restore" <meta.base>
+git worktree add -q --detach "$restore" "<meta.base>"
 cd "$restore"
-git apply <path to review.patch>
+
+# A clean tree at `base == HEAD` captures an EMPTY patch, which this document
+# blesses as correct. A bare `git apply` refuses it with "No valid patches in
+# input" and exit 128, so the one recovery procedure the snapshot exists for
+# would abort on a state the capture calls valid.
+[ -s "<path to review.patch>" ] && git apply "<path to review.patch>"
 
 # Mirror the capture exactly — same empty index, same exclusion pathspec.
 # `export` is required: a `VAR=value cmd` prefix scopes to the single command it
 # prefixes, so `git add` would use the throwaway index while `git write-tree`
 # read the REAL one and returned base's tree on every non-empty patch.
-export GIT_INDEX_FILE=$(mktemp -u)
+idx=$(mktemp -u)
+export GIT_INDEX_FILE="$idx"
+trap 'rm -f "$idx"' EXIT
 git read-tree --empty
-git add -A -- ':!.sdlc'        # the same pathspec the capture excluded
-git write-tree                 # MUST equal meta.tree
+git add -A -- ':(exclude,top).sdlc'   # exactly meta.excluded, anchored to the top
+git write-tree                        # MUST equal meta.tree
 unset GIT_INDEX_FILE
 ```
 
-The recomputed tree SHA is content-addressed, so equality with `meta.tree` proves the restoration is byte-identical to what was captured. When `meta.head_matches_target` is `true`, comparing `meta.tree` against the tree of whatever eventually landed on the default branch answers a further and useful question — whether what merged is what was reviewed. When it is `false`, the capture was not taken at the PR head and cannot answer that.
+Use exactly the pathspec `meta.excluded` records; capture and restore must not drift, which is why the capture writes it down rather than leaving both ends to repeat a literal.
+
+The recomputed tree SHA is content-addressed, so equality with `meta.tree` proves the restoration is byte-identical to what was captured. When `meta.head_matches_target` is `true`, comparing `meta.tree` against the tree that eventually landed on the default branch — **with `meta.excluded` applied to that tree too** — answers a further and useful question: whether what merged is what was reviewed. The exclusion has to be applied to both sides, because `meta.tree` can never contain the excluded review-repository path while the merged tree will whenever the project tracks it. When `head_matches_target` is `false`, the capture was not taken at the PR head — a different sha, or a dirty working tree — and cannot answer that question at all.
 
 
 ### 11. Prompt the user with next steps
@@ -560,6 +687,10 @@ After the document is written, prompt the user. **(PR mode):**
 
 > Review written to `.sdlc/reviews/issue-#<N>/review-<iteration>.md` and committed to the review repository. Nothing was posted to GitHub. A later `sdlc_implement <N>` picks this document up automatically — it reads the latest round off disk and walks each finding's pre-selected remediation through a per-finding approval gate, emitting the fixup commands from the mapping section. Read it yourself first if you want to drop or re-tier anything. When the findings are resolved and you are satisfied, run `gh pr ready <number>` to mark the PR ready for merge.
 
+When the review repository was unresolved and the user has not yet answered the step-10(a) question, the document exists but the round is not recorded. Say that instead of claiming a commit:
+
+> Review written to `.sdlc/reviews/issue-#<N>/review-<iteration>.md`. It is **not committed** — no review repository is resolved. Answer the question above and this round will be committed; nothing was posted to GitHub.
+
 **(PATHS mode):**
 
 > Review written to `<Review document directory>/review-<iteration>.md`. This document is a local artifact — nothing was posted to GitHub, and the `implement` skill does not read it automatically. Read it yourself (or with the user) and use each finding's pre-selected remediation as the work list, applying the fixups directly to the reviewed files; then re-run `review` over the same paths as needed. There is no PR or fixup mapping in this mode.
@@ -567,6 +698,10 @@ After the document is written, prompt the user. **(PR mode):**
 **(re-review):** After the document is written and committed, prompt based on the remaining blocking count:
 
 > `review-<#>.md` rewritten in place — `<B>` blocking, `<A>` advisory remaining. Closed `<c>`, rejected `<r>`, added `<a>` this pass, each as its own commit in `<repo>`. Nothing was posted to GitHub.
+
+When `<c>`, `<r>` and `<a>` are all zero, no finding changed and there are no per-mutation commits to report. Use this instead, then continue with the blocking/non-blocking branch below:
+
+> `review-<#>.md` unchanged this pass — `<B>` blocking, `<A>` advisory still open. Every seeded finding carried, so only the reviewed-state capture and the pass header were committed. Nothing was posted to GitHub.
 
 - When `<B>` > 0:
   > `<B>` blocking finding(s) remain. Re-enter the implement loop to address them: `sdlc_implement <target> --review <#>` (the same target, with the review iteration `<#>`). After fixing, re-run `sdlc_review --verify <#>` for the next pass.
@@ -588,6 +723,8 @@ DO NOT proceed on your own.
 **Re-review target has no review document:** This is raised upstream by the tool before this skill runs — when the target has no `review-<#>.md` (the directory is absent or that iteration is missing), `sdlc_review --verify <#>` raises a `ValueError` and the skill is never dispatched. You will not reach this skill with a missing review document, so there is no in-skill fallback to handle; the user sees the tool's error and runs a fresh `review` first.
 
 **Every seeded finding closes (re-review):** When every seeded finding is closed and no new one is raised, the document is rewritten with empty severity tiers and a pass header recording the closures. Write and commit it exactly as usual — one commit per closure — so the chain's completion is recorded in the history, then give the `<B>` == 0 next-step prompt.
+
+**Every seeded finding carries (re-review):** The opposite extreme, and the common one early in a fix loop. When nothing closes, is rejected, or is added, there is no finding-set mutation and therefore no per-mutation commit. The snapshot-and-header commit of 10(d) is the whole round — it carries the pass-counter bump, so the document does change and `git add` has something to stage — and the finding set is byte-identical to the pass before. Do NOT manufacture an empty commit, and give the zero-delta variant of step 11's prompt.
 
 **No linked issue (PR mode — the endpoint reports `Resolved issue: unresolved`):** Ask the user which issue the PR addresses; do not guess the `.sdlc/reviews/issue-#<N>/` path. *(Paths mode has no linked issue and uses the injected `<slug>` directory, so this never arises there.)*
 
