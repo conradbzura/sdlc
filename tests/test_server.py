@@ -2698,6 +2698,11 @@ async def test_sdlc_review_should_emit_one_commit_directive_set_in_every_mode(
     lines = directive.splitlines()
     assert sum(1 for line in lines if line.startswith("Review repository:")) == 1
     assert sum(1 for line in lines if line.startswith("Review commit branch:")) == 1
+    assert sum(1 for line in lines if line.startswith("Review snapshot directory:")) == 1
+    assert (
+        sum(1 for line in lines if line.startswith("Review snapshot in repository:"))
+        == 1
+    )
 
 
 @pytest.mark.asyncio
@@ -3058,3 +3063,213 @@ async def test_sdlc_review_should_omit_the_issue_line_when_rereviewing_paths(
     directive = _review_directive(result)
     assert "Issue: #0" not in directive
     assert "Resolved issue:" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_pair_the_snapshot_directory_with_the_document(
+    tmp_path, monkeypatch
+):
+    """Test the snapshot directory carries the same round number as the document.
+
+    Given:
+        A slug directory holding review-1.md and review-2.md.
+    When:
+        sdlc_review is called with verify=1.
+    Then:
+        It should name snapshot-1 beside review-1.md, never the round the
+        document is not being rewritten at.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc" / ".git").mkdir(parents=True)
+    _write_review_doc(tmp_path, ".sdlc/reviews/server", 1)
+    _write_review_doc(tmp_path, ".sdlc/reviews/server", 2, finding_id="B9")
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review document: .sdlc/reviews/server/review-1.md" in directive
+    assert "Review snapshot directory: .sdlc/reviews/server/snapshot-1/" in directive
+    assert "snapshot-2" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_rebase_the_snapshot_onto_the_review_repository(
+    tmp_path, monkeypatch
+):
+    """Test the snapshot's staging path is relative to the review repository.
+
+    Given:
+        .sdlc is the review repository, so the snapshot lies below it.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        It should emit the snapshot directory relative to .sdlc for staging,
+        alongside the working-directory path it is written to.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc" / ".git").mkdir(parents=True)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review snapshot directory: .sdlc/reviews/server/snapshot-1/" in directive
+    assert "Review snapshot in repository: reviews/server/snapshot-1/" in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_rebase_the_snapshot_onto_a_parent_repository(
+    tmp_path, monkeypatch
+):
+    """Test the snapshot staging path keeps its prefix under a parent repository.
+
+    Given:
+        review-repo names the working directory itself, which is a repository.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        The repository-relative snapshot path should retain the .sdlc prefix.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".git").mkdir()
+    _configure(monkeypatch, tmp_path, repo=".")
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    assert (
+        "Review snapshot in repository: .sdlc/reviews/server/snapshot-1/" in directive
+    )
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_omit_the_snapshot_staging_path_when_unresolved(
+    tmp_path, monkeypatch
+):
+    """Test no staging path is offered when there is no repository to stage into.
+
+    Given:
+        No review-repo and a .sdlc that is not a repository.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        It should still name where the snapshot is written, but offer no
+        repository-relative path, since no repository is resolved.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review snapshot directory: .sdlc/reviews/server/snapshot-1/" in directive
+    assert "Review snapshot in repository:" not in directive
+    assert "Review document in repository:" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_lead_with_the_target_directive_when_rereviewing_a_pr(
+    tmp_path, monkeypatch
+):
+    """Test the mode-selecting directive precedes the seeded findings block.
+
+    Given:
+        Issue 7 has review-1.md and PR 10 closes it.
+    When:
+        sdlc_review(pr_number=10, verify=1) is called.
+    Then:
+        Target PR should appear before the seeded-findings header, so the
+        directive deciding whether gh runs is not buried behind a rendered
+        dump of an entire prior review document.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+    _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 1)
+
+    # Act
+    directive = _review_directive(await sdlc_review(pr_number=10, verify=1))
+
+    # Assert
+    assert directive.index("Target PR: #10") < directive.index("Seeded findings —")
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_lead_with_the_target_directive_when_rereviewing_paths(
+    tmp_path, monkeypatch
+):
+    """Test paths mode also puts its target directive ahead of the seeding.
+
+    Given:
+        A slug directory holding review-1.md for the requested paths.
+    When:
+        sdlc_review(paths=[...], verify=1) is called.
+    Then:
+        Target paths and its paths-mode note should both precede the
+        seeded-findings header, since a missed note means running gh in the
+        one mode that forbids it.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    slug = server._paths_slug(["src/sdlc/server.py"])
+    _write_review_doc(tmp_path, f".sdlc/reviews/{slug}", 1)
+
+    # Act
+    directive = _review_directive(
+        await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+    )
+
+    # Assert
+    seeded = directive.index("Seeded findings —")
+    assert directive.index("Target paths:") < seeded
+    assert directive.index("Paths mode: no PR") < seeded
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_pick_up_a_review_repo_recorded_mid_session(
+    tmp_path, monkeypatch
+):
+    """Test a review-repo written after an unresolved round is honored next call.
+
+    Given:
+        A working directory with no review repository, reviewed once, after
+        which a repository OUTSIDE .sdlc is recorded as review-repo. The
+        repository is deliberately somewhere the bare .sdlc fallback could
+        never produce, so only a genuine config re-read can name it.
+    When:
+        sdlc_review is called a second time.
+    Then:
+        The first round should report unresolved and the second should name
+        the recorded repository, without the server being restarted.
+    """
+    # Arrange
+    monkeypatch.delenv("SDLC_CONFIG", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(server, "reload_state", _REAL_RELOAD_STATE)
+    store = tmp_path / "review-store"
+    (store / ".git").mkdir(parents=True)
+    original = server._state
+
+    # Act
+    try:
+        first = _review_directive(await sdlc_review(paths=["src/sdlc/server.py"]))
+        config = tmp_path / ".sdlc" / "config.json"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(json.dumps({"review-repo": "../review-store"}))
+        second = _review_directive(await sdlc_review(paths=["src/sdlc/server.py"]))
+    finally:
+        server._state = original
+
+    # Assert
+    assert "Review repository: unresolved" in first
+    assert f"Review repository: {store.resolve().as_posix()}" in second
