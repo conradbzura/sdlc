@@ -21,6 +21,7 @@ from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 SKILL = Path(__file__).resolve().parents[1] / "src/sdlc/skills/review.md"
+AGENTS = Path(__file__).resolve().parents[1] / "src/sdlc/AGENTS.md"
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 GIT_ENV = {
@@ -46,8 +47,16 @@ def _section(text: str, heading: str) -> str:
 
 
 def _bash_blocks(text: str) -> list[str]:
-    """Return every ```bash fenced block in `text`, in order."""
-    return re.findall(r"```bash\n(.*?)```", text, flags=re.DOTALL)
+    """Return every ```bash fenced block in `text`, in order.
+
+    The closing fence is anchored to the start of a line. A block whose body
+    legitimately contains a backtick run — an awk program matching Markdown
+    fences, say — would otherwise be truncated at that run, and the tests that
+    EXECUTE these blocks would then run a fragment.
+    """
+    return re.findall(
+        r"^[ \t]*```bash\n(.*?)^[ \t]*```", text, flags=re.DOTALL | re.MULTILINE
+    )
 
 
 def _run(script: str, cwd: Path) -> subprocess.CompletedProcess:
@@ -103,8 +112,19 @@ def tracked_sdlc_repo(tmp_path):
 
 
 def _fill_meta(script: str, pass_number: int = 1) -> str:
-    """Substitute the `meta.json` placeholders the agent is meant to fill in."""
-    script = re.sub(r'^\s*"pr": <[^>]*>,\n', "", script, flags=re.MULTILINE)
+    """Fill the `meta.json` placeholders as a PATHS-mode agent is told to.
+
+    Every field whose placeholder says to omit the whole line is dropped,
+    rather than named one by one — that is the instruction the block carries
+    inline, so following it generically keeps this helper from silently
+    diverging when a field is added.
+    """
+    script = re.sub(
+        r'^\s*"[a-z_]+": <[^>]*omit this WHOLE LINE[^>]*>,?\n',
+        "",
+        script,
+        flags=re.MULTILINE,
+    )
     script = script.replace("<pr|paths>", "paths")
     script = script.replace("<k>", str(pass_number))
     return re.sub(r"<true\|false[^>]*>", "false", script)
@@ -118,8 +138,10 @@ def _capture_script(snapshot_dir: str) -> str:
     script = "set -e\n" + "".join(blocks)
     # Fail loudly if the extraction drifted off the block the prose describes.
     assert "git read-tree --empty" in script
-    assert "':(exclude,top).sdlc'" in script
+    assert '":(exclude,top)$excl"' in script
     assert "git commit-tree" in script
+    script = re.sub(r"excl='<[^']*>'", "excl='.sdlc'", script)
+    assert "excl='.sdlc'" in script, "the exclusion placeholder moved"
     script = _fill_meta(script.replace("<Review snapshot directory>", snapshot_dir))
     return script + '\necho "TREE=$tree"\necho "BASE=$base"\necho "STAGING=$staging"\n'
 
@@ -145,7 +167,10 @@ def _restore_script(patch: str, base: str) -> str:
     script = "set -e\n" + blocks[0]
     assert "export GIT_INDEX_FILE" in script
     assert "git read-tree --empty" in script
-    assert "':(exclude,top).sdlc'" in script
+    script = re.sub(
+        r"':\(exclude,top\)<meta\.excluded[^']*>'", "':(exclude,top).sdlc'", script
+    )
+    assert "':(exclude,top).sdlc'" in script, "the meta.excluded placeholder moved"
     script = script.replace('"<path to review.patch>"', f'"{patch}"')
     script = script.replace('"<meta.base>"', f'"{base}"')
     return script
@@ -291,7 +316,7 @@ def test_skill_should_not_carry_shell_state_between_steps():
     unassigned = [
         block
         for block in blocks
-        if "$worktree" in block and 'worktree="${TMPDIR' not in block
+        if "$worktree" in block and "worktree=" not in block
     ]
 
     # Assert
@@ -309,8 +334,12 @@ def test_rereview_brief_should_withhold_the_seeded_findings_from_phase_one():
     When:
         Its phase-1 instruction is read.
     Then:
-        It should require the fresh-round brief alone, and defer the seeded
-        set to a second message.
+        It should withhold every seeded-finding slot and the disposition
+        vocabulary, keep the `.sdlc/reviews/` prohibition, tell the reviewer a
+        second turn follows, and defer the seeded set to a second message.
+        The prohibition is on seeded CONTENT — operational scaffolding is
+        explicitly allowed, because phase 2 needs the reviewer to still hold
+        its phase-1 findings individually.
     """
     # Arrange
     section = _section(_skill_text(), "### 7. Dispatch reviewer subagents (N per role)")
@@ -318,10 +347,14 @@ def test_rereview_brief_should_withhold_the_seeded_findings_from_phase_one():
     # Act
     phase_one = section[section.index("1. **Phase 1"): section.index("2. Collect")]
 
-    # Assert
-    assert "NOTHING else" in phase_one
-    assert "no seeded finding" in phase_one
+    # Assert — no seeded content reaches phase 1
     assert "<the seeded findings" not in phase_one
+    assert "<the Rejected in earlier passes ledger>" not in phase_one
+    for vocabulary in ("**close**", "**reject**", "**carry**"):
+        assert vocabulary not in phase_one
+    # ...and the two things phase 1 must carry
+    assert ".sdlc/reviews/" in phase_one
+    assert "follow-up message" in phase_one
     assert "SendMessage" in section
 
 
@@ -344,12 +377,23 @@ def _step10_block(*needles: str) -> str:
 
 
 def _variant(block: str, label: str) -> str:
-    """Return the `# <label>` half of a block showing two commit variants."""
-    marker = f"# {label}\n"
-    assert marker in block, f"{marker!r} missing from:\n{block}"
-    body = block[block.index(marker) + len(marker) :]
-    nxt = body.find("\n# ")
-    return body[:nxt] if nxt != -1 else body
+    """Return the `# <label>` half of a block showing two commit variants.
+
+    The header may carry a trailing comment, and may wrap onto further comment
+    lines, so the variant runs until the OTHER variant's header rather than
+    until the next comment.
+    """
+    other = "# in place" if label == "worktree" else "# worktree"
+    lines = block.splitlines(keepends=True)
+    start = next(
+        (i for i, line in enumerate(lines) if line.startswith(f"# {label}")), None
+    )
+    assert start is not None, f"'# {label}' missing from:\n{block}"
+    rest = lines[start:]
+    end = next(
+        (i for i, line in enumerate(rest[1:], 1) if line.startswith(other)), len(rest)
+    )
+    return "".join(rest[:end])
 
 
 def _make_review_repo(base: Path) -> Path:
@@ -421,7 +465,7 @@ def test_commit_should_land_on_the_named_branch_when_it_differs_from_head(review
     """
     # Arrange
     resolve = _step10_block("worktree list --porcelain")
-    mirror = _step10_block("$worktree/$(dirname")
+    mirror = _step10_block("$worktree/$(dirname", "<Review snapshot directory>")
     fresh = _step10_block(
         'add "<Review document in repository>" "<Review snapshot in repository>"'
     )
@@ -465,8 +509,198 @@ def test_worktree_should_not_be_shared_between_repositories(tmp_path):
     left_path = _derive(str(first / ".sdlc"), "reviews/issue-#1/review-1.md", first)
     right_path = _derive(str(second / ".sdlc"), "reviews/issue-#1/review-1.md", second)
     assert left_path != right_path
-    assert left_path in _git(first / ".sdlc", "worktree", "list", "--porcelain")
-    assert left_path not in _git(second / ".sdlc", "worktree", "list", "--porcelain")
+    # The documented check is `grep -Fqx "worktree $worktree"`, which is line
+    # anchored. A Python `in` is not: it is satisfied by /tmp/x against
+    # /private/tmp/x, which is exactly the mismatch that made the real
+    # predicate fail while this test passed.
+    left_lines = _git(first / ".sdlc", "worktree", "list", "--porcelain").splitlines()
+    right_lines = _git(second / ".sdlc", "worktree", "list", "--porcelain").splitlines()
+    assert f"worktree {left_path}" in left_lines
+    assert f"worktree {left_path}" not in right_lines
+
+
+def test_snapshot_commit_should_mirror_the_bumped_document_into_the_worktree(
+    review_repo,
+):
+    """Test the pass-header bump reaches the committed document on a re-review.
+
+    Given:
+        A re-review whose snapshot-and-header commit carries the pass bump, run
+        on the worktree path a `review-branch` project takes.
+    When:
+        10(b), 10(c)'s mirror and the snapshot-and-header commit are run, with
+        the working-directory document bumped to pass 2 beforehand.
+    Then:
+        The COMMITTED document should carry the bump. Without a `cp` in that
+        block the worktree copy still holds the seeded content, so the commit
+        that exists to record the bump records the state before it — and on a
+        pass where every finding carries there is no later commit to fix it.
+    """
+    # Arrange
+    document = review_repo / ".sdlc" / "reviews" / "issue-#1" / "review-1.md"
+    resolve = _step10_block("worktree list --porcelain")
+    mirror = _step10_block("$worktree/$(dirname", "<Review snapshot directory>")
+    snapshot = _step10_block(
+        'add "<Review snapshot in repository>" "<Review document in repository>"'
+    )
+    script = "set -e\n" + resolve + mirror
+    setup = _run(_substitute(script, review_repo), review_repo)
+    assert setup.returncode == 0, setup.stderr
+    document.write_text("# pass 2\n")
+
+    # Act
+    result = _run(
+        _substitute("set -e\n" + resolve + _variant(snapshot, "worktree"), review_repo),
+        review_repo,
+    )
+
+    # Assert
+    assert result.returncode == 0, result.stderr
+    committed = _git(
+        review_repo / ".sdlc",
+        "show",
+        "refs/heads/reviews:reviews/issue-#1/review-1.md",
+    )
+    assert committed.strip() == "# pass 2"
+
+
+def test_rereview_worktree_commits_should_copy_the_document_first():
+    """Test both re-review commit blocks re-mirror the document before staging.
+
+    Given:
+        The snapshot-and-header block and the per-mutation block, the two that
+        commit a document which changed since 10(c) mirrored it.
+    When:
+        Their worktree variants are inspected.
+    Then:
+        Each should copy the working-directory document into the worktree in
+        the same fence. Shell state does not survive between tool calls, so a
+        block that stages without copying commits the previous content under a
+        message justifying a change it does not carry.
+    """
+    # Arrange
+    snapshot = _step10_block(
+        'add "<Review snapshot in repository>" "<Review document in repository>"'
+    )
+    mutation = _step10_block('add "<Review document in repository>"\n')
+
+    # Act
+    variants = [_variant(snapshot, "worktree"), _variant(mutation, "worktree")]
+
+    # Assert
+    for variant in variants:
+        assert 'git -C "$worktree" add' in variant
+        assert (
+            'cp "<Review document>" "$worktree/<Review document in repository>"'
+            in variant
+        ), variant
+
+
+def test_target_path_should_be_keyed_on_the_working_directory_document():
+    """Test the scratch target is derivable when no review repository resolves.
+
+    Given:
+        The two blocks that derive the step-9 target — step 9 itself and the
+        terminal check at the end of 10(d).
+    When:
+        Their derivation keys are compared.
+    Then:
+        Both should key on `<Review document>` and neither on the
+        repository-relative directives, which are omitted entirely when the
+        review repository is unresolved — a branch on which the document is
+        still written and the target is still needed.
+    """
+    # Arrange
+    derivations = [
+        line
+        for block in _bash_blocks(_skill_text())
+        for line in block.splitlines()
+        if line.startswith("target=")
+    ]
+
+    # Act & assert
+    assert len(derivations) == 2, derivations
+    assert len(set(derivations)) == 1, "the two derivations disagree"
+    assert '"<Review document>"' in derivations[0]
+    assert "<repo>" not in derivations[0]
+    assert "<Review document in repository>" not in derivations[0]
+
+
+def test_commit_destinations_should_be_transcribed_before_step_ten():
+    """Test every directive step 10 interpolates is written down beforehand.
+
+    Given:
+        The step-10 command blocks, which interpolate injected directive
+        values many tool calls after the directive block was read.
+    When:
+        The transcription block earlier in the skill is compared against them.
+    Then:
+        Every directive-backed placeholder step 10 uses should be named there,
+        and step 10 should READ the file back from the same derived path. A
+        transcription nothing reads is not ground truth, it is a second copy
+        of the value the orchestrator was already recalling.
+    """
+    # Arrange
+    labels = {
+        "<repo>": "Review repository:",
+        "<Review document in repository>": "Review document in repository:",
+        "<Review snapshot in repository>": "Review snapshot in repository:",
+        "<Review snapshot directory>": "Review snapshot directory:",
+        "<branch>": "Review commit branch:",
+    }
+    step_ten = "".join(_step10_blocks())
+    blocks = [b for b in _bash_blocks(_skill_text()) if ".directives" in b]
+    derivation = 'sdlc-review-$(printf \'%s\' "<Review document>" | shasum | cut -c1-12).directives'
+
+    # Act
+    writes = [b for b in blocks if b.lstrip().startswith("cat >")]
+    reads = [b for b in blocks if b.lstrip().startswith("cat ") and b not in writes]
+    used = [ph for ph in labels if ph in step_ten]
+
+    # Assert
+    assert len(writes) == 1, f"expected 1 transcription block, found {len(writes)}"
+    assert reads, "nothing reads the transcribed directives back"
+    assert used, "step 10 interpolates no directive placeholders"
+    for placeholder in used:
+        assert labels[placeholder] in writes[0], labels[placeholder]
+    # The read must resolve to the file the write produced.
+    for block in writes + reads:
+        assert derivation in block, block
+
+
+def test_worktree_resolution_should_reuse_a_registered_worktree(review_repo):
+    """Test a second run adopts the worktree the first one registered.
+
+    Given:
+        Step 10(b) already run once, leaving a worktree registered to this
+        repository — the state any interrupted pass leaves behind, since the
+        worktree is removed only after the last commit of 10(d).
+    When:
+        10(b) is run again.
+    Then:
+        It should exit 0 and reuse it. The derivation must name the path the
+        way `git worktree list --porcelain` prints it — normalized — or this
+        branch is unreachable and the run aborts on its own worktree.
+    """
+    # Arrange
+    block = _step10_block("worktree list --porcelain")
+    script = _substitute("set -e\n" + block, review_repo)
+    first = _run(script, review_repo)
+    assert first.returncode == 0, first.stderr
+
+    # Act
+    second = _run(script, review_repo)
+
+    # Assert
+    assert second.returncode == 0, second.stderr
+    assert "not registered" not in second.stderr
+    derived = _derive(
+        str(review_repo / ".sdlc"), "reviews/issue-#1/review-1.md", review_repo
+    )
+    registered = _git(
+        review_repo / ".sdlc", "worktree", "list", "--porcelain"
+    ).splitlines()
+    assert f"worktree {derived}" in registered
 
 
 def test_worktree_resolution_should_refuse_an_unregistered_directory(review_repo):
@@ -964,9 +1198,7 @@ def test_empty_tree_guard_should_hold_under_sha256(tmp_path):
     _git(work, "commit", "-m", "Add app")
     _git(work, "remote", "add", "origin", str(bare))
     _git(work, "push", "-q", "-u", "origin", "main")
-    script = _capture_script(str(work / "snap")).replace(
-        "':(exclude,top).sdlc'", "':(exclude,top)*'"
-    )
+    script = _capture_script(str(work / "snap")).replace("excl='.sdlc'", "excl='*'")
 
     # Act
     result = _run(script, work)
@@ -974,6 +1206,93 @@ def test_empty_tree_guard_should_hold_under_sha256(tmp_path):
     # Assert
     assert result.returncode != 0
     assert "snapshot tree is empty" in result.stderr
+
+
+@pytest.fixture
+def ignored_sdlc_repo(tmp_path):
+    """A repository whose .gitignore matches the review repository.
+
+    This is the common case and the one this project is in: a leading `.*`
+    rule makes `.sdlc` ignored, so `git add` names it in an "ignored by one of
+    your .gitignore files" message and exits non-zero while staging the rest
+    of the tree correctly.
+    """
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "init", "--bare", "-b", "main", str(bare))
+    work = tmp_path / "ignored"
+    work.mkdir()
+    _git(work, "init", "-b", "main")
+    (work / ".gitignore").write_text(".*\n!.gitignore\n")
+    (work / "app.py").write_text("value = 1\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-m", "Add app")
+    _git(work, "remote", "add", "origin", str(bare))
+    _git(work, "push", "-q", "-u", "origin", "main")
+    (work / ".sdlc" / "reviews").mkdir(parents=True)
+    (work / ".sdlc" / "config.json").write_text('{"review-repo": "."}\n')
+    (work / "feature.py").write_text("value = 2\n")
+    return work
+
+
+def test_capture_should_succeed_when_the_review_repo_is_gitignored(
+    ignored_sdlc_repo,
+):
+    """Test a gitignored review repository does not abort the capture.
+
+    Given:
+        A repository whose .gitignore matches .sdlc, so `git add` exits
+        non-zero while staging the whole tree correctly.
+    When:
+        The step-2 capture is run as the single invocation it documents.
+    Then:
+        It should exit 0 and write both artifacts, with the review repository
+        absent from the captured tree. An exit-status guard here would abort
+        the sequence before meta.json was written and the feature would
+        silently never run on any project that ignores its review repository.
+    """
+    # Arrange
+    snapshot = ignored_sdlc_repo / ".sdlc" / "reviews" / "snapshot-1"
+
+    # Act
+    result = _run(_capture_script(str(snapshot)), ignored_sdlc_repo)
+
+    # Assert
+    assert result.returncode == 0, result.stderr
+    staging = Path(_field(result.stdout, "STAGING"))
+    assert (staging / "meta.json").is_file()
+    assert (staging / "review.patch").is_file()
+    tree = _field(result.stdout, "TREE")
+    listing = _git(ignored_sdlc_repo, "ls-tree", "-r", "--name-only", tree)
+    assert "app.py" in listing
+    assert "feature.py" in listing
+    assert ".sdlc" not in listing
+
+
+def test_capture_should_refuse_an_exclusion_that_excludes_nothing(
+    tracked_sdlc_repo,
+):
+    """Test a review repository at the reviewed root is refused at step 2.
+
+    Given:
+        An exclusion pathspec whose relative path is `.`, which is what a
+        review repository resolving to the reviewed tree's root produces.
+    When:
+        The step-2 capture is run.
+    Then:
+        It should abort before capturing. Anchored to the top, `.` excludes
+        NOTHING, so the empty-tree sentinel never fires and the review
+        repository would be captured into the snapshot of the code it reviews.
+    """
+    # Arrange
+    snapshot = tracked_sdlc_repo / ".sdlc" / "reviews" / "snapshot-1"
+    script = _capture_script(str(snapshot)).replace("excl='.sdlc'", "excl='.'")
+
+    # Act
+    result = _run(script, tracked_sdlc_repo)
+
+    # Assert
+    assert result.returncode != 0
+    assert "excludes nothing" in result.stderr
 
 
 def test_directive_placeholders_should_be_quoted_in_command_blocks():
@@ -1011,3 +1330,907 @@ def test_directive_placeholders_should_be_quoted_in_command_blocks():
 
     # Assert
     assert unquoted == []
+
+
+# --- Steps 7-8: the re-review reconciliation ----------------------------------
+
+
+TEMPLATE = Path(__file__).resolve().parents[1] / "src/sdlc/review-template.md"
+
+
+def _step7() -> str:
+    return _section(_skill_text(), "### 7. Dispatch reviewer subagents (N per role)")
+
+
+def _step8() -> str:
+    return _section(_skill_text(), "### 8. Consolidate the findings")
+
+
+def test_rereview_should_read_the_document_back_before_dispatching():
+    """Test the lossy-block read-back is wired into an actual step.
+
+    Given:
+        Step 7, which the checklist presents as the agent's plan skeleton.
+    When:
+        The re-review path is read.
+    Then:
+        It should require reading the seeded document back, name the fields
+        the block drops, and do so before any reviewer is dispatched.
+    """
+    # Arrange
+    section = _step7()
+
+    # Act
+    readback = section.index("Read the seeded document back")
+    dispatch = section.index("Phase 1 — review.")
+
+    # Assert
+    assert readback < dispatch
+    for field in ("attribution", "Tests to add", "Cross-cutting", "pass counter"):
+        assert field in section[readback:dispatch], field
+    assert "**(re-review)** read the seeded document back" in _skill_text()
+
+
+def test_rereview_should_reconcile_the_seeded_count_against_the_file():
+    """Test a finding the parser dropped is detected rather than deleted.
+
+    Given:
+        Step 7's read-back.
+    When:
+        Its reconciliation instruction is read.
+    Then:
+        It should compare id SETS against the block's, computed the way the
+        parser computes them — outside fences, inside the tiers — and stop on
+        a mismatch. A raw heading count is fence-blind where the parser is
+        not, so it reports a mismatch on a document that parsed perfectly.
+    """
+    # Arrange
+    section = _step7()
+
+    # Act & assert
+    assert "Findings (N):" in section
+    assert "STOP and name the ids present in the file but missing" in section
+    assert "id sets" in section
+    awk = next(b for b in _bash_blocks(section) if b.lstrip().startswith("awk"))
+    assert "fence" in awk
+    assert "Tier" in awk
+
+
+def test_phase_one_brief_should_forbid_reading_review_artifacts():
+    """Test phase-1 blindness is enforced, not merely asserted.
+
+    Given:
+        The reviewer brief, which otherwise permits reading any file.
+    When:
+        Its file-access rules are read.
+    Then:
+        It should prohibit `.sdlc/reviews/`, where the seeded document sits
+        at a guessable path inside the tree under review.
+    """
+    # Arrange
+    section = _step7()
+
+    # Act & assert
+    assert "Do NOT read anything under `.sdlc/reviews/`" in section
+    assert "the phase-1 brief forbids reading `.sdlc/reviews/`" in section
+    assert "phase 1 never saw the seeded set" not in _skill_text()
+
+
+def test_reviewer_brief_should_not_assert_the_pr_head_unconditionally():
+    """Test the brief does not claim a verification that may not have run.
+
+    Given:
+        Step 2 permits continuing past a `HEAD != headRefOid` mismatch.
+    When:
+        The brief's PR-head wording is read.
+    Then:
+        It should offer a verified and an unverified variant rather than
+        asserting the checkout is at the PR head.
+    """
+    # Arrange
+    section = _step7()
+
+    # Act & assert
+    assert "the orchestrator verified this in step 2" not in section
+    assert "**(verified)**" in section
+    assert "**(not verified)**" in section
+
+
+def test_rejected_findings_should_be_recorded_in_a_ledger():
+    """Test a rejection survives the pass that made it.
+
+    Given:
+        A rejected finding leaves the document, and phase 1 is blind.
+    When:
+        Step 8 and the template are read.
+    Then:
+        The rejection should be recorded in a ledger supplied to phase 2
+        only, so a later pass cannot re-raise it as new unnoticed.
+    """
+    # Arrange
+    template = TEMPLATE.read_text()
+
+    # Act & assert
+    assert "## Rejected in earlier passes" in template
+    assert "Rejected in earlier passes" in _step8()
+    assert "the Rejected in earlier passes ledger" in _step7()
+    assert "NEVER to phase 1" in _step8()
+
+
+def _invariants() -> str:
+    return _section(_skill_text(), "## Invariants")
+
+
+def test_invariants_should_carry_the_irreversible_rereview_rules():
+    """Test the rules whose omission cannot be undone sit in the leading span.
+
+    Given:
+        The Invariants block, which the subagent brief singles out ("follow
+        every step faithfully, especially the Invariants section") and which
+        is the document's own high-salience summary.
+    When:
+        It is read.
+    Then:
+        It should carry the re-review read-back and the blocking-disposition
+        corroboration gate. Both previously sat past the midpoint of a
+        765-line document — the read-back is the only instruction here whose
+        omission destroys data irreversibly, and the corroboration gate is the
+        only human-in-the-loop gate the re-review adds.
+    """
+    # Arrange
+    invariants = _invariants()
+
+    # Act & assert
+    assert "read the seeded" in invariants
+    assert "Retired ids" in invariants
+    assert "two reviewers agreeing" in invariants
+    assert "explicit user confirmation" in invariants
+
+
+def _step9() -> str:
+    return _section(_skill_text(), "### 9. Finalize the consolidated document")
+
+
+# Every phrase in these documents that says the write is ungated. Each MUST be
+# scoped, because an unqualified one is what step 9 carried for four passes
+# while step 8 and step 10 said the opposite.
+_GATE_DENIALS = (
+    "no approval gate",
+    "absence of an approval gate",
+    "without an approval gate",
+)
+
+# A denial is legitimate when it says WHICH path it describes, or names what
+# the exceptions are.
+_DENIAL_QUALIFIERS = (
+    "fresh round",
+    "exception",
+    "per-finding approval gate",
+    "two",
+)
+
+
+@pytest.mark.parametrize("document", [SKILL, AGENTS], ids=lambda p: p.name)
+def test_the_write_should_never_be_described_as_ungated_without_qualification(
+    document,
+):
+    """Test no sentence claims the write is ungated without saying where.
+
+    Given:
+        Every sentence in the skill and in AGENTS.md that says there is no
+        approval gate.
+    When:
+        Each is read on its own, as an agent retrieving one passage would.
+    Then:
+        Each should name the path it describes or the exceptions that apply.
+        The gate is real on a re-review, and a bare denial mid-document is
+        what let three documents disagree about it for four passes.
+    """
+    # Arrange
+    text = document.read_text()
+    sentences = [
+        sentence
+        for sentence in re.split(r"(?<=[.!?])\s+", text)
+        if any(denial in sentence for denial in _GATE_DENIALS)
+    ]
+
+    # Act & assert
+    assert sentences, f"{document.name} no longer describes the gate at all"
+    for sentence in sentences:
+        assert any(q in sentence for q in _DENIAL_QUALIFIERS), sentence
+
+
+def test_the_gate_count_should_agree_across_the_invariants_and_step_10():
+    """Test the two passages that COUNT the exceptions report the same number.
+
+    Given:
+        Invariant :72 and step 10, which each enumerate the cases where the
+        write is not autonomous.
+    When:
+        Both are read.
+    Then:
+        They should name the same count. A model reading the tail has been
+        told exactly how many exceptions exist, so a disagreement licenses it
+        to reason past whichever gate it did not see enumerated.
+    """
+    # Arrange
+    text = _skill_text()
+    invariant = next(
+        line for line in text.splitlines() if "MUST write AND commit" in line
+    )
+    step10 = _section(text, "### 10. Write and commit the review document")
+    opening = step10.split("\n\n")[1]
+
+    # Act
+    written = {
+        name: re.search(r"\*\*(one|two|three)\*\*", passage)
+        for name, passage in (("invariant", invariant), ("step10", opening))
+    }
+
+    # Assert
+    assert written["invariant"] is not None, invariant
+    assert written["step10"] is not None, opening
+    assert written["invariant"].group(1) == written["step10"].group(1)
+    assert "unresolved review repository" in invariant
+    assert "unresolved review repository" in opening
+
+
+def test_step9_should_route_the_uncorroborated_blocking_disposition_to_the_user():
+    """Test the step the gate is routed to actually performs it.
+
+    Given:
+        Step 8 requires corroboration before a blocking finding leaves the
+        termination predicate and routes the uncorroborated case to step 9.
+    When:
+        Step 9 is read.
+    Then:
+        It should gate both dispositions, require the quoted remediating text
+        for a close, and name `carry` as the outcome when the user does not
+        confirm — so the routing has a destination rather than terminating in
+        a step that denies the gate exists.
+    """
+    # Arrange
+    step9 = _step9()
+
+    # Act & assert
+    assert "close" in step9 and "reject" in step9
+    assert "carry" in step9
+    assert "quote" in step9.lower()
+    assert "Reviewers per role" in step9
+
+
+def test_agents_md_should_state_the_same_blocking_safeguards_as_the_skill():
+    """Test the canonical document does not state a weaker rule than the skill.
+
+    Given:
+        AGENTS.md, which step 4 makes every reviewer read and which the
+        reviewer brief interpolates — so it is read BEFORE step 8.
+    When:
+        Its re-review consolidation account is read.
+    Then:
+        It should carry both safeguards the skill defines, not just the
+        carry-beats-close rule. A reviewer that reads only the weaker version
+        applies the weaker version.
+    """
+    # Arrange
+    text = AGENTS.read_text()
+    paragraph = next(
+        line for line in text.splitlines() if "carry beats close" in line
+    )
+
+    # Act & assert
+    assert "two reviewers agreeing" in paragraph
+    assert "explicit user confirmation" in paragraph
+    assert "quote the remediating text" in paragraph
+
+
+def test_step8_should_instruct_the_write_that_the_retired_id_rule_depends_on():
+    """Test something actually APPENDS to the Retired ids line.
+
+    Given:
+        `max(retired ∪ open) + 1` is stated in the Invariants, in step 8 and
+        in the template, and every one of those is a read.
+    When:
+        Step 8's disposition bullets are read.
+    Then:
+        They should instruct the write. A line nothing extends freezes, at
+        which point `max(retired ∪ open)` collapses to `max(open)` and the
+        pass after a closure reissues the closed id to a different defect.
+    """
+    # Arrange
+    step8 = _step8()
+
+    # Act
+    apply_bullet = _section(step8, "- **Apply each disposition**").split("\n- ")[0]
+
+    # Assert
+    assert "Retired ids" in apply_bullet
+    assert "append" in apply_bullet.lower()
+
+
+def test_step8_should_move_the_blocking_marker_with_a_retiered_finding():
+    """Test a re-tier is told to strip or add the heading marker.
+
+    Given:
+        `parse_review_document` treats `**(BLOCKING)**` as authoritative over
+        the enclosing tier, and re-tiering is the primary outcome of a reject.
+    When:
+        Step 8 and the bundled template are read.
+    Then:
+        Both should say the marker moves with the finding. A Tier 2 finding
+        that kept its marker re-seeds as blocking, so the termination
+        predicate never clears and the chain cannot end.
+    """
+    # Arrange
+    step8 = _step8()
+    template = TEMPLATE.read_text()
+
+    # Act & assert
+    for text in (step8, template):
+        assert "**(BLOCKING)**" in text
+        assert "strip" in text
+        assert "re-tier" in text.lower()
+
+
+def test_the_disposition_block_should_have_a_slot_for_every_named_disposition():
+    """Test no disposition the phase-2 message names lacks a field value.
+
+    Given:
+        The phase-2 message names close, reject, carry and re-open.
+    When:
+        Its machine-readable disposition block and field list are read.
+    Then:
+        Every named disposition should appear as a value. One that has to
+        ride in free prose is the one that gets dropped — and re-open is the
+        signal that keeps a wrongly rejected blocking finding from blocking
+        forever.
+    """
+    # Arrange
+    step7 = _step7()
+    fields = next(
+        line for line in step7.splitlines() if "`|`-separated fields" in line
+    )
+
+    # Act
+    # The sample block sits inside a blockquote, so its lines carry a `> ` prefix.
+    sample = "\n".join(
+        line for line in step7.splitlines() if re.search(r"\|\s*\w+\s*\|", line)
+    )
+
+    # Assert
+    for disposition in ("close", "reject", "carry", "reopen"):
+        assert f"`{disposition}`" in fields, disposition
+        assert disposition in sample, disposition
+
+
+def test_a_reopened_finding_should_have_an_id_rule():
+    """Test re-open says which id the restored finding takes.
+
+    Given:
+        A re-opened finding's original id sits in `Retired ids`, while the
+        new-id rule would allocate it a fresh one.
+    When:
+        Step 8 is read.
+    Then:
+        It should state which id applies and what happens to the retired
+        line, rather than leaving a load-bearing id decision to the agent.
+    """
+    # Arrange
+    step8 = _step8()
+
+    # Act
+    bullet = _section(step8, "- **A re-opened finding").split("\n- ")[0]
+
+    # Assert
+    assert "original" in bullet
+    assert "Retired ids" in bullet
+
+
+def test_the_cross_role_merge_should_span_carried_and_new_findings():
+    """Test a cross-role rediscovery cannot acquire a second id.
+
+    Given:
+        Seeded findings route by originating role, so a reviewer never sees
+        another role's subset and cannot report a cross-role rediscovery.
+    When:
+        Step 8's re-review preamble is read.
+    Then:
+        It should scope the cross-role merge over carried AND new findings.
+        Scoped to new findings alone, one defect ends the pass with two open
+        ids, inflating the blocking count that termination depends on.
+    """
+    # Arrange
+    preamble = _step8().split("\n- ")[0]
+
+    # Assert
+    assert "carried" in preamble.lower()
+    assert "Merge across roles" in preamble
+
+
+def test_the_stale_reference_warning_should_reach_the_phase_two_message():
+    """Test reviewers are told the seeded line numbers have moved.
+
+    Given:
+        The user runs `sdlc_implement --review <#>` between passes, which by
+        construction edits the files the seeded references cite.
+    When:
+        The phase-2 message is read.
+    Then:
+        It should warn that a missing or unrelated line at the cited offset
+        is not evidence of a close, and step 8 should carry such a
+        disposition. Both failure directions delete a blocking finding on a
+        citation that merely drifted.
+    """
+    # Arrange
+    step7 = _step7()
+    step8 = _step8()
+
+    # Act & assert
+    assert "not evidence of a close" in step7.lower().replace("**", "")
+    assert "re-reference" in step7.lower()
+    assert "absence at a line is a carry" in step8.lower().replace("**", "")
+
+
+def test_the_unexamined_count_should_carry_both_of_its_causes():
+    """Test `<u>`'s two causes are distinguishable wherever it is reported.
+
+    Given:
+        A finding is carried unexamined either because its role was absent or
+        because a dispatched reviewer returned nothing for it.
+    When:
+        Step 8's counting bullet and step 11's prompts are read.
+    Then:
+        Both should cover both causes. The first cause's remedy — re-run with
+        the missing roles — is a false diagnosis for the second, since that
+        role already ran.
+    """
+    # Arrange
+    text = _skill_text()
+    counting = next(
+        line
+        for line in text.splitlines()
+        if "**carried without re-examination** (`<u>`)" in line
+    )
+    step11 = _section(text, "### 11. Prompt the user with next steps")
+
+    # Act & assert
+    assert "two" in counting
+    assert "no disposition" in counting
+    assert "returned no disposition" in step11
+    assert "were not in this pass" in step11
+
+
+def test_step7_should_persist_the_seeded_document_to_disk():
+    """Test the one irreversible read-back has a durable carrier.
+
+    Given:
+        Step 7(0) reads fields that the in-place rewrite destroys, and their
+        use in step 9 is separated from that read by the whole dispatch.
+    When:
+        Step 7(0) is read.
+    Then:
+        It should copy the document to a scratch path and direct step 9 to
+        read it back, the same treatment steps 3 and 9 give values that cross
+        far fewer tool calls.
+    """
+    # Arrange
+    step7 = _step7()
+
+    # Act
+    blocks = _bash_blocks(step7)
+
+    # Assert
+    assert any("seed=" in block and "cp " in block for block in blocks), blocks
+    assert "$seed" in step7
+
+
+def test_the_inline_fallback_should_not_claim_the_blindness_guarantee():
+    """Test the non-subagent path says what it actually delivers.
+
+    Given:
+        On the inline path there is no separate phase-1 prompt — the endpoint
+        appends the seeded block to the tool return the orchestrator reads,
+        and the orchestrator is the reviewer.
+    When:
+        The fallback paragraph and step 8's weighting are read.
+    Then:
+        The fallback should state the asymmetry, and the weighting it cannot
+        earn should be withdrawn for inline-run roles rather than applied
+        unconditionally on a foundation that is absent.
+    """
+    # Arrange
+    step7 = _step7()
+    step8 = _step8()
+
+    # Act
+    fallback = step7[step7.index("**Other LLM assistants:** where agent messaging"):]
+
+    # Assert
+    assert "NOT the same" in fallback
+    assert "instructional" in fallback
+    assert "inline" in step8
+
+
+def test_step7_should_reconcile_returned_dispositions_against_the_dispatch():
+    """Test a reviewer's dropped disposition is noticed rather than counted.
+
+    Given:
+        Step 8 defaults a missing disposition to carry, silently, and the
+        dispatched subsets are long enumerations.
+    When:
+        Step 7's collection step is read.
+    Then:
+        It should compare returned ids against dispatched ids and re-ask once
+        before falling back, so the gap is closed where it occurs rather than
+        counted downstream under a cause that misdescribes it.
+    """
+    # Arrange
+    step7 = _step7()
+
+    # Act
+    collect = next(
+        line for line in step7.splitlines() if line.startswith("4. Collect")
+    )
+
+    # Assert
+    assert "reconcile" in collect.lower()
+    assert "re-send" in collect.lower()
+
+
+@pytest.mark.parametrize(
+    ("excl", "accepted"),
+    [
+        (".sdlc", True),
+        ("docs/reviews", True),
+        ("_reviews", True),
+        ("/abs/path/.sdlc", False),
+        ("unresolved", False),
+        ("", False),
+        (".", False),
+        ("..", False),
+        ("../x", False),
+        ("a/../b", False),
+    ],
+)
+def test_exclusion_guard_should_accept_only_a_usable_relative_pathspec(
+    excl, accepted, tmp_path
+):
+    """Test the guard rejects every pathspec shape that excludes nothing.
+
+    Given:
+        Step 2's exclusion guard, extracted verbatim.
+    When:
+        It runs against a pathspec shape.
+    Then:
+        It should reject the absolute form the `Review repository:` directive
+        actually emits, the literal `unresolved` that directive carries on
+        every project's first review, and any root-or-ancestor form — while
+        accepting an ordinary relative path. Both rejected shapes exclude
+        NOTHING, so the review repository lands in the snapshot of the code it
+        reviews and the tree SHA churns every pass; no sentinel fires, because
+        the empty-tree check only catches over-exclusion.
+    """
+    # Arrange
+    guards = re.findall(
+        r'^case "\$excl" in\n.*?^esac', _skill_text(), re.DOTALL | re.MULTILINE
+    )
+    assert guards, "the exclusion guard moved"
+    script = f"excl={excl!r}\n" + "\n".join(guards) + '\necho ACCEPTED'
+
+    # Act
+    result = _run(script, tmp_path)
+
+    # Assert
+    assert ("ACCEPTED" in result.stdout) is accepted, result
+
+
+def test_count_reconciliation_should_agree_with_the_parser_on_a_fenced_heading(
+    tmp_path,
+):
+    """Test the id-set gate does not fire on a document that parsed cleanly.
+
+    Given:
+        A review document whose finding quotes a finding heading inside a
+        fence, and which carries a heading outside the severity tiers.
+    When:
+        Step 7(0)'s extraction command is run against it.
+    Then:
+        It should yield exactly the ids `parse_review_document` yields —
+        skipping the fenced sample and the out-of-tier heading. A raw heading
+        count reports a mismatch here on a healthy document, and a MUST-STOP
+        gate that fires on healthy input is one an agent learns to skip.
+    """
+    # Arrange
+    document = tmp_path / "review-1.md"
+    document.write_text(
+        "# Doc\n\n## Tier 1 — Blocking\n\n"
+        "### B1 — Real one **(BLOCKING)** — aie\n"
+        "**Reference:** `a.py:1`\n\n"
+        "**Issue:** quoting a sample:\n\n"
+        "```markdown\n### B9 — Phantom **(BLOCKING)** — aie\n```\n\n"
+        "**Remediation:**\n- [x] Fix.\n\n"
+        "## Tier 2 — Advisory\n\n"
+        "### A1 — Real advisory — aie\n"
+        "**Reference:** `b.py:2`\n\n"
+        "Body.\n- [x] Fix.\n\n"
+        "## Cross-cutting decisions\n\n"
+        "### B99 — Outside the tiers — aie\n"
+    )
+    awk = next(
+        b for b in _bash_blocks(_step7()) if b.lstrip().startswith("awk")
+    ).replace('"<Review document>"', f'"{document}"')
+
+    # Act
+    result = _run(awk, tmp_path)
+
+    # Assert
+    assert result.stdout.split() == ["B1", "A1"], result
+    from sdlc.pr_state import parse_review_document
+
+    parsed = [f.id for f in parse_review_document(document, 1, 1).findings]
+    assert result.stdout.split() == parsed
+
+
+def test_the_knowledge_graph_mandate_should_be_conditioned_on_freshness():
+    """Test a stale graph is treated as absent rather than fed to N briefs.
+
+    Given:
+        The graph's summary lands in every reviewer brief's architectural
+        context slot, where it reads as ground truth.
+    When:
+        The invariant and step 6 are read.
+    Then:
+        Both should condition the mandate on the graph being current, not on
+        the file existing. A graph describing a layout the tree no longer has
+        is worse than no graph, in all N briefs at once.
+    """
+    # Arrange
+    invariant = next(
+        line for line in _invariants().splitlines() if "understand-chat" in line
+    )
+    step6 = _section(_skill_text(), "### 6. Gather knowledge graph context")
+
+    # Act & assert
+    assert "current" in invariant
+    assert "ABSENT" in invariant or "absent" in invariant
+    assert "stale" in step6.lower()
+    assert "analysis commit" in step6
+
+
+def test_the_unresolved_rereview_branch_should_still_promote_the_snapshot():
+    """Test the document and the snapshot describe the same pass.
+
+    Given:
+        10(a)'s re-review carve-out writes the document and skips (c) and (d),
+        so the promote never runs.
+    When:
+        That carve-out is read.
+    Then:
+        It should promote the staged capture before stopping. Otherwise this
+        pass's capture is cleared by the next pass while `snapshot-<#>/` still
+        holds the previous pass's meta — beside a document rewritten to this
+        pass's finding set, which is what staging exists to prevent.
+    """
+    # Arrange
+    step10 = _step10_section()
+    carve_out = step10[step10.index("the whole pass in one write"):]
+
+    # Act
+    clause = carve_out[: carve_out.index("Do not attempt (d)")]
+
+    # Assert
+    assert "promote" in clause.lower()
+    assert "needs no repository" in clause
+
+
+def test_the_git_init_answer_should_get_the_per_mutation_history():
+    """Test authorizing a repository routes back into the normal commit path.
+
+    Given:
+        10(a)'s one-write clause and its `git init` exception were written for
+        different branches and meet when the user answers yes.
+    When:
+        The one-write clause is read.
+    Then:
+        It should be scoped to the case where no repository is authorized, so
+        a user who answers `git init .sdlc` gets the per-finding history that
+        is the whole deliverable the question exists to enable.
+    """
+    # Arrange
+    step10 = _step10_section()
+
+    # Act
+    clause = step10[step10.index("the whole pass in one write"):]
+    scope = clause[: clause.index("**(b)")] if "**(b)" in clause else clause
+
+    # Assert
+    assert "does NOT authorize" in scope
+    assert "(c) and (d)" in scope
+
+
+def test_readback_fields_should_be_enumerated_in_exactly_one_place():
+    """Test the lossy-block note points at step 7(0) instead of re-listing.
+
+    Given:
+        Two passages describe what the seeded block drops — the Arguments
+        note and step 7(0).
+    When:
+        The Arguments note is read.
+    Then:
+        It should defer to step 7(0) rather than enumerate the fields itself.
+        Two independent lists drift, and they had: the Arguments copy named
+        four fields while step 7(0) named six.
+    """
+    # Arrange
+    note = next(
+        line
+        for line in _skill_text().splitlines()
+        if "The block is **lossy**" in line
+    )
+
+    # Act & assert
+    assert "Step 7(0) enumerates those fields" in note
+    assert "Tests to add" not in note
+    assert "cross-cutting decisions" not in note
+
+
+def test_step_eleven_should_have_an_uncommitted_rereview_prompt():
+    """Test the unresolved-repository prompt has a re-review variant.
+
+    Given:
+        A re-review whose review repository is unresolved writes the document
+        but records no per-mutation history.
+    When:
+        Step 11's not-committed prompts are read.
+    Then:
+        Every path that can end uncommitted should have its own prompt —
+        PR-mode fresh, PR-mode re-review, and paths mode. The fresh-round
+        wording claims only that a commit is pending, which is a false
+        statement about what a re-review pass lost, and paths mode is the
+        mode reachable with no `gh` at all so it meets this state most often.
+    """
+    # Arrange
+    section = _section(_skill_text(), "### 11. Prompt the user with next steps")
+    quotes = [line for line in section.splitlines() if line.startswith("> ")]
+
+    # Act
+    uncommitted = [q for q in quotes if "not committed" in q]
+
+    # Assert — coverage, not a count: a new variant is an addition, not a break
+    assert any("per-finding history" in q for q in uncommitted), uncommitted
+    assert any(
+        "<Review document directory>" in q for q in uncommitted
+    ), "paths mode has no uncommitted prompt"
+    assert any(
+        ".sdlc/reviews/issue-#<N>" in q and "per-finding history" not in q
+        for q in uncommitted
+    ), "PR-mode fresh has no uncommitted prompt"
+
+
+def test_retired_ids_should_be_recorded_so_they_are_not_reused():
+    """Test the next id is computed from a high-water mark, not the survivors.
+
+    Given:
+        Closed and rejected findings are deleted from the tiers.
+    When:
+        Step 8's id rule and the template header are read.
+    Then:
+        Both should take the maximum across the retired line AND the surviving
+        findings. Either source alone is wrong, and in opposite directions:
+        the survivors miss every retired id, and the retired line misses the
+        highest-ever id whenever it is still open — the normal case.
+    """
+    # Arrange
+    template = TEMPLATE.read_text()
+    rule = next(
+        line for line in _step8().splitlines() if "Keep finding IDs stable" in line
+    )
+
+    # Act & assert
+    assert "**Retired ids**" in template
+    assert "Retired ids" in rule
+    assert "surviving findings" in rule
+    # The rule must not name the retired line as the sole source.
+    assert "read from the document's **Retired ids** line" not in rule
+
+
+def test_blocking_rejection_should_require_corroboration():
+    """Test one reviewer cannot delete a blocking finding unaided.
+
+    Given:
+        `reject` removes a finding and reviewers-per-role defaults to 1.
+    When:
+        Step 8's disposition rules are read.
+    Then:
+        A blocking rejection should need two reviewers or the user, and
+        closing a blocking finding — which removes it from the same
+        termination predicate — should carry a check of its own rather than
+        being grouped with carry as unconditionally autonomous.
+    """
+    # Arrange
+    rule = next(
+        line
+        for line in _step8().splitlines()
+        if "rejected only with corroboration" in line
+    )
+
+    # Act & assert
+    assert "two reviewers agreeing" in rule
+    assert "explicit user confirmation" in rule
+    assert "carry" in rule and "autonomous" in rule
+    # `close` also removes a blocking finding, so it is not unconditional.
+    assert "`close` and `carry` stay autonomous" not in rule
+    assert "quote the remediating text" in rule
+
+
+def test_pass_line_should_count_findings_carried_unexamined():
+    """Test a finding nobody looked at is reported as such.
+
+    Given:
+        A seeded finding whose originating role is absent carries unchanged.
+    When:
+        The template's pass line and step 8's counting rule are read.
+    Then:
+        Both should carry a carried-unexamined count.
+    """
+    # Arrange
+    template = TEMPLATE.read_text()
+
+    # Act & assert
+    assert "carried unexamined <u>" in template
+    assert "carried without re-examination" in _step8()
+    assert "carried WITHOUT re-examination" in _skill_text()
+
+
+def test_subagent_brief_should_request_every_declared_artifact():
+    """Test the brief asks for what the frontmatter promises.
+
+    Given:
+        The frontmatter declares the subagent artifacts.
+    When:
+        The orchestrator brief is read.
+    Then:
+        Each declared artifact should be named, since step 11's re-review
+        prompt reports the three deltas.
+    """
+    # Arrange
+    text = _skill_text()
+    declared = re.search(r"  artifacts:\n((?:    - \w+\n)+)", text)
+    assert declared is not None
+    names = re.findall(r"- (\w+)", declared.group(1))
+
+    # Act
+    start = text.index("4. Return a structured summary")
+    end = text.index("\n\n", start)
+    brief = text[start:end]
+
+    # Assert
+    assert names, "the frontmatter declares no artifacts"
+    for name in names:
+        assert name in brief, name
+
+
+def test_paths_mode_prompt_should_name_the_commit_and_the_chain():
+    """Test the paths-mode prompt matches what the skill actually does.
+
+    Given:
+        Committing is mandatory in both modes, and paths mode supports
+        re-review.
+    When:
+        Step 11's paths-mode prompt is read.
+    Then:
+        It should name the commit and the snapshot, and point at --verify
+        rather than at a fresh review that starts a separate chain.
+    """
+    # Arrange
+    section = _section(_skill_text(), "### 11. Prompt the user with next steps")
+
+    # Act
+    paths_prompt = section[section.index("**(PATHS mode):**") :]
+    paths_prompt = paths_prompt[: paths_prompt.index("**(re-review):**")]
+
+    # Assert
+    assert "committed to the review repository" in paths_prompt
+    assert "snapshot-<iteration>" in paths_prompt
+    assert "sdlc_review --verify <iteration>" in paths_prompt
+    assert "SEPARATE chain" in paths_prompt
