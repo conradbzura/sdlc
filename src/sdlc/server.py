@@ -58,19 +58,6 @@ def _target_branch_directive(target: str) -> str:
     )
 
 
-def reload_state() -> guides.GuidesState:
-    """Re-read the user config and rebind the module state.
-
-    The state is bound once at import, so a `.sdlc/config.json` edit would
-    otherwise need a server restart to take effect. Exposed publicly so the
-    config-to-directive path can be exercised without reaching into module
-    internals.
-    """
-    global _state
-    _state = guides.load_state(cwd=Path.cwd(), package_dir=PACKAGE_DIR)
-    return _state
-
-
 def _review_repo_directive(repo: git_state.ReviewRepo, configured: str | None) -> str:
     """Render the repository directive for `sdlc_review` document commits.
 
@@ -81,13 +68,43 @@ def _review_repo_directive(repo: git_state.ReviewRepo, configured: str | None) -
     """
     if repo.root is not None:
         return f"Review repository: {repo.root.as_posix()}"
+    if repo.reason is not None:
+        # A refusal, not a miss. The path IS a repository, so reporting it as
+        # "not a git repository" would send the user to initialize something
+        # that already exists.
+        return f"Review repository: unresolved\n{repo.reason}"
     if configured is not None:
+        # NAME the resolved path. `review-repo` resolves against the config
+        # file's parent, not the working directory, so the raw value alone
+        # cannot show the user what went wrong — and the natural misspelling
+        # of this very key produces a message that is FALSE without it:
+        # `{"review-repo": ".sdlc"}` in `.sdlc/config.json` resolves to
+        # `.sdlc/.sdlc`, and saying ".sdlc is not a git repository" sends the
+        # user to initialize a repository that already exists, on every call
+        # forever, since step 10(a) records the answer and asks once.
+        resolved = (
+            f" resolves to {repo.candidate.as_posix()} (relative to the config "
+            "file's parent), which"
+            if repo.candidate is not None
+            else ""
+        )
+        hint = ""
+        if (
+            repo.candidate is not None
+            and repo.candidate.name == repo.candidate.parent.name
+        ):
+            # The value repeats the directory it is resolved against — the
+            # same shape `guides._validate_schema` hints at for camel case.
+            hint = (
+                f' Did you mean "." — the value that names '
+                f"{repo.candidate.parent.as_posix()} itself?"
+            )
         return (
             "Review repository: unresolved\n"
-            f"The configured review-repo ({configured!r}) is not a git "
-            "repository. Tell the user, and ask them to correct review-repo in "
-            ".sdlc/config.json or initialize that path as a repository. Do not "
-            "commit anywhere else."
+            f"The configured review-repo ({configured!r}){resolved} is not a "
+            f"git repository.{hint} Tell the user, and ask them to correct "
+            "review-repo in .sdlc/config.json or initialize that path as a "
+            "repository. Do not commit anywhere else."
         )
     return (
         "Review repository: unresolved\n"
@@ -163,11 +180,17 @@ def _review_commit_directives(
     The config is re-read here rather than taken from the import-time `_state`.
     Step 10 of the review skill asks the user to name a repository when none
     resolves and writes their answer into `.sdlc/config.json`, promising the
-    question is asked once; without this reload that write would not be seen
+    question is asked once; without that re-read the write would not be seen
     until the server restarted, and the very next review — the `--verify` pass
     the skill directs the user to run — would ask again.
+
+    The read is deliberately non-mutating. Only `review_repo`, `review_branch`
+    and `config_dir` are wanted here, and rebinding the module-global `_state`
+    that `sdlc_guides_for`, `sdlc_roles`, `sdlc_role_scope`, `sdlc_role` and
+    every guide resource read from would be an invisible side effect of
+    rendering a directive.
     """
-    state = reload_state()
+    state = guides.load_state(cwd=Path.cwd(), package_dir=PACKAGE_DIR)
     repo = git_state.resolve_review_repo(
         state.review_repo, state.config_dir, Path.cwd()
     )
@@ -480,13 +503,44 @@ def _render_rereview(
     # would carry EVERY finding of a round run under another role, forever,
     # while still reporting progress. The document is already parsed here, so
     # the list is free.
-    seeded_roles = pr_state.parse_composition_roles(
-        directory / f"review-{verify}.md"
-    )
+    seeded_roles = pr_state.parse_composition_roles(findings.path)
     coverage_note = None
+    # An explicit empty list is an omission, not a request for no roles: it
+    # would otherwise render a bare `Roles:` line AND suppress inheritance
+    # while warning against every seeded role, which is the worst of both.
+    if not roles:
+        roles = None
     if roles is None:
         roles = seeded_roles or ["general-purpose"]
-    elif seeded_roles:
+        if not seeded_roles:
+            # The inheritance failed rather than being declined. This is
+            # strictly worse than a user narrowing the roles — which IS warned
+            # about below — because nobody chose it and nothing else says so.
+            coverage_note = (
+                "Seeded-role coverage warning: the seeded document's "
+                "Composition line could not be read, so no roles were "
+                "inherited and this pass runs general-purpose only. Every "
+                "seeded finding raised by another role will carry unexamined. "
+                "Check the Composition line names its roles as backticked, "
+                "comma-separated stems immediately after the literal "
+                "`role(s)`, or pass --roles explicitly."
+            )
+    elif not seeded_roles:
+        # An explicit list against a Composition line that could not be read.
+        # Coverage is LEAST knowable here and was, until this arm existed, the
+        # one case that reported nothing: the warning below is guarded on a
+        # non-empty seeded set, and the inheritance warning above is guarded on
+        # `roles is None`.
+        coverage_note = (
+            "Seeded-role coverage warning: the seeded document's Composition "
+            "line could not be read, so the roles this pass runs "
+            f"({', '.join(roles)}) could not be checked against the roles the "
+            "seeded findings were raised by. Any finding raised by a role not "
+            "in this pass will carry unexamined. Check the Composition line "
+            "names its roles as backticked, comma-separated stems immediately "
+            "after the literal `role(s)`."
+        )
+    else:
         uncovered = [role for role in seeded_roles if role not in roles]
         if uncovered:
             coverage_note = (
@@ -495,7 +549,10 @@ def _render_rereview(
                 f"{', '.join(uncovered)}, which no reviewer in this pass "
                 "carries. Every finding from those roles will carry "
                 "unexamined — record that in the pass header, or re-run with "
-                f"--roles {' '.join(seeded_roles)}."
+                # The UNION. `seeded_roles` alone fixes the seeded coverage by
+                # discarding whatever lens the caller deliberately added this
+                # pass, turning one coverage gap into the opposite one.
+                f"--roles {' '.join(sorted(set(roles) | set(seeded_roles)))}."
             )
     roles_line = ", ".join(roles)
     # The target directive selects the mode, and in paths mode a miss means
@@ -528,8 +585,14 @@ def _render_rereview(
     # wrong place. Keeping every directive in the leading span and the largest
     # distractor in the trailing one is the whole point of the ordering.
     parts.append(
-        "\n\nSeeded findings — the state to disposition, not to read from "
-        f"disk:\n{findings.format(label='Seeded from')}"
+        "\n\nSeeded findings — the authoritative FINDING-SET enumeration for "
+        "this pass: a finding absent here is absent from this pass, and the "
+        "set is not re-derived from the file. It is lossy in every other "
+        "respect, so step 7(0) still reads the document back from disk for "
+        "the fields it drops — role attribution, Tests to add, cross-cutting "
+        "decisions, both ledgers, the pass counter and full titles — before "
+        "any reviewer is dispatched.\n"
+        f"{findings.format(label='Seeded from')}"
     )
     return "".join(parts)
 
@@ -573,8 +636,9 @@ async def sdlc_review(
     never gate.
 
     Every finding-set mutation is committed separately, with a message
-    justifying the state change, to the repository resolved from the root of
-    `.sdlc` (see `git_state.resolve_review_repo`).
+    justifying the state change, to the repository named by the `review-repo`
+    config key, falling back to `.sdlc` only when that key is unset and `.sdlc`
+    is itself a repository (see `git_state.resolve_review_repo`).
 
     Nothing is posted to GitHub in any mode.
 
@@ -582,8 +646,14 @@ async def sdlc_review(
         pr_number: The PR number to review. Mutually exclusive with `paths`.
         paths: Literal file paths and/or globs to review in place. Mutually
             exclusive with `pr_number`.
-        roles: Review-role stems to run, one reviewer set per role. Defaults
-            to ["general-purpose"] when omitted (every mode).
+        roles: Review-role stems to run, one reviewer set per role. On a
+            fresh round, defaults to ["general-purpose"] when omitted. On a
+            re-review, defaults to the roles named on the seeded document's
+            Composition line, falling back to ["general-purpose"] only when
+            none are recorded — a seeded finding whose originating role is
+            absent from a pass has no reviewer and carries unexamined, so
+            passing an explicit list that does not cover the seeded roles
+            narrows coverage rather than widening it.
         subagents: Number of independent reviewers to run per role. Defaults
             to 1.
         verify: When set, re-review the existing `review-<verify>.md` for the
@@ -591,7 +661,9 @@ async def sdlc_review(
             place. Raises `ValueError` when no target is supplied (the
             exactly-one-target guard), when a PR target closes no issue (no
             issue directory to read from), or when the target has no
-            `review-<verify>.md`.
+            `review-<verify>.md`. An explicit `roles` list that fails to cover
+            the seeded document's roles emits a coverage warning naming the
+            uncovered ones, as does a Composition line that cannot be read.
         target: Optional branch the review-document commits land on, overriding
             the `review-branch` config key. When neither is set, commits go to
             the checked-out branch. Note this is a commit destination, unlike
@@ -603,6 +675,13 @@ async def sdlc_review(
             "sdlc_review requires exactly one target: pass either pr_number "
             "(PR mode) or paths (paths mode), not both and not neither."
         )
+    if target is not None:
+        # Validated here rather than where the directive is rendered. That
+        # render is skipped entirely on the PR path when the PR closes no
+        # issue, which would otherwise drop the user's explicit override
+        # without a word and leave the one argument that reaches a `git`
+        # invocation unchecked on exactly one branch.
+        git_state.validate_branch_name(target)
     if verify is not None:
         # `roles` stays None here on purpose: a re-review inherits the roles the
         # seeded document was produced under, and only an explicit list overrides
@@ -610,7 +689,7 @@ async def sdlc_review(
         return _render_rereview(
             pr_number, paths, roles, subagents, verify, target
         )
-    if roles is None:
+    if not roles:
         roles = ["general-purpose"]
     skill = _read_skill("review")
     template = _read_file(REVIEW_TEMPLATE_PATH)
