@@ -955,6 +955,60 @@ class TestReviewFindings:
         assert ".sdlc/reviews/server/review-1.md" in rendered
         assert ".sdlc/reviews/issue-#7/review-1.md" not in rendered
 
+    def test_format_should_label_the_header_with_the_document_default(self):
+        """Test ReviewFindings.format labels the header line by default.
+
+        Given:
+            ReviewFindings and no label argument.
+        When:
+            format() is called.
+        Then:
+            The header line should read `Review document: <path>`.
+        """
+        # Arrange
+        review = ReviewFindings(
+            issue_number=7,
+            iteration=1,
+            path=".sdlc/reviews/issue-#7/review-1.md",
+            findings=[],
+        )
+
+        # Act
+        rendered = review.format()
+
+        # Assert
+        assert rendered.startswith(
+            "Review document: .sdlc/reviews/issue-#7/review-1.md"
+        )
+
+    def test_format_should_label_the_header_when_a_label_is_given(self):
+        """Test ReviewFindings.format honors an explicit header label.
+
+        Given:
+            ReviewFindings and the label the re-review seeding block uses.
+        When:
+            format(label="Seeded from") is called.
+        Then:
+            The header line should carry that label instead of the default,
+            so the seeded block cannot be mistaken for the write target.
+        """
+        # Arrange
+        review = ReviewFindings(
+            issue_number=7,
+            iteration=1,
+            path=".sdlc/reviews/issue-#7/review-1.md",
+            findings=[],
+        )
+
+        # Act
+        rendered = review.format(label="Seeded from")
+
+        # Assert
+        assert rendered.startswith(
+            "Seeded from: .sdlc/reviews/issue-#7/review-1.md"
+        )
+        assert "Review document:" not in rendered
+
 
 def test_parse_review_document_should_extract_a_blocking_finding(tmp_path):
     """Test parse_review_document extracts a blocking finding's fields.
@@ -1094,6 +1148,283 @@ def test_parse_review_document_should_separate_adjacent_findings(tmp_path):
     assert [f.id for f in result.findings] == ["B1", "B3"]
     for finding in result.findings:
         assert "---" not in finding.remediation
+
+
+_FENCED_FINDING = textwrap.dedent(
+    """\
+    ### B1 — Quote the guide **(BLOCKING)** — aie (1/1 aie)
+    **Reference:** `src/sdlc/style-guides/markdown.md`
+
+    **Issue:** The guide states the rule as:
+
+    ```markdown
+    ### Do
+
+        Indented sample.
+
+    ### Don't
+    ```
+
+    and a reviewer may quote a whole finding heading to discuss it:
+
+    ```markdown
+    ### B9 — Phantom finding **(BLOCKING)** — aie (1/1 aie)
+    ## Tier 2 — Advisory
+    ```
+
+    which is prose, not structure.
+
+    **Remediation:**
+    - [x] Track fenced state while scanning. *(Recommended.)*
+    - [ ] Other: ________________________________________________
+
+    **Touched commit:** `abc1234`
+    """
+)
+
+
+def test_parse_review_document_should_keep_a_fenced_heading_in_the_issue_text(
+    tmp_path,
+):
+    """Test a `###` line inside a fence stays issue text instead of aborting.
+
+    Given:
+        A blocking finding whose Issue quotes a fenced Markdown sample
+        containing `### Do` and an indented line.
+    When:
+        parse_review_document is called.
+    Then:
+        It should return the finding rather than raising, with the fenced
+        sample preserved verbatim including its indentation.
+    """
+    # Arrange
+    path = tmp_path / "review-1.md"
+    path.write_text(_review_document(blocking=_FENCED_FINDING))
+
+    # Act
+    result = parse_review_document(path, issue_number=42, iteration=1)
+
+    # Assert
+    assert [f.id for f in result.findings] == ["B1"]
+    issue = result.findings[0].issue
+    assert "### Do" in issue
+    assert "### Don't" in issue
+    assert "    Indented sample." in issue
+
+
+def test_parse_review_document_should_ignore_a_finding_heading_inside_a_fence(
+    tmp_path,
+):
+    """Test a quoted finding heading does not become a second finding.
+
+    Given:
+        A blocking finding whose Issue quotes `### B9 — … **(BLOCKING)**`
+        inside a fenced block.
+    When:
+        parse_review_document is called.
+    Then:
+        Only the real finding should be returned, and the quoted heading
+        should survive as issue text.
+    """
+    # Arrange
+    path = tmp_path / "review-1.md"
+    path.write_text(_review_document(blocking=_FENCED_FINDING))
+
+    # Act
+    result = parse_review_document(path, issue_number=42, iteration=1)
+
+    # Assert
+    assert [f.id for f in result.findings] == ["B1"]
+    assert "B9 — Phantom finding" in result.findings[0].issue
+
+
+def test_parse_review_document_should_ignore_a_tier_heading_inside_a_fence(
+    tmp_path,
+):
+    """Test a fenced tier heading does not end the findings region.
+
+    Given:
+        A blocking finding quoting `## Tier 2 — Advisory` inside a fence, and
+        a real advisory finding under the real Tier 2 heading below it.
+    When:
+        parse_review_document is called.
+    Then:
+        The advisory finding should still be parsed, and be tiered advisory.
+    """
+    # Arrange
+    path = tmp_path / "review-1.md"
+    path.write_text(
+        _review_document(blocking=_FENCED_FINDING, advisory=_ADVISORY_FINDING)
+    )
+
+    # Act
+    result = parse_review_document(path, issue_number=42, iteration=1)
+
+    # Assert
+    assert [f.id for f in result.findings] == ["B1", "A1"]
+    assert result.findings[1].severity == "advisory"
+
+
+_FENCED_FIELD_FINDING = textwrap.dedent(
+    """\
+    ### B1 — Quote the template **(BLOCKING)** — aie (1/1 aie)
+    **Reference:** `src/sdlc/pr_state.py:331`
+
+    **Issue:** A template-conformant finding carries its fields like this:
+
+    ```markdown
+    **Reference:** `made/up.py:999`
+    **Touched commit:** `deadbee`
+    ```
+
+    which is a sample, not this finding's own attribution.
+
+    **Remediation:**
+    - [x] Make the extractor fence-aware. *(Recommended.)*
+    - [ ] Other: ________________________________________________
+
+    **Touched commit:** `abc1234`
+    """
+)
+
+
+def test_parse_review_document_should_ignore_a_reference_inside_a_fence(
+    tmp_path,
+):
+    """Test a fenced `**Reference:**` sample does not become the reference.
+
+    Given:
+        A blocking finding that quotes a fenced template sample carrying its
+        own `**Reference:**` line ABOVE the finding's real Reference, so the
+        template's usual ordering cannot be what protects the parse.
+    When:
+        parse_review_document is called.
+    Then:
+        The finding's reference should be the real one outside the fence, so
+        the in-place re-review cannot write a fabricated citation back into
+        the document.
+    """
+    # Arrange
+    leading_fence = textwrap.dedent(
+        """\
+        ### B1 — Quote the template first **(BLOCKING)** — aie (1/1 aie)
+
+        A finding may quote the shape before stating its own:
+
+        ```markdown
+        **Reference:** `made/up.py:999`
+        ```
+
+        **Reference:** `src/sdlc/pr_state.py:331`
+
+        **Issue:** The extractor took the leftmost match.
+
+        **Remediation:**
+        - [x] Make the extractor fence-aware. *(Recommended.)*
+        - [ ] Other: ________________________________________________
+
+        **Touched commit:** `abc1234`
+        """
+    )
+    path = tmp_path / "review-1.md"
+    path.write_text(_review_document(blocking=leading_fence))
+
+    # Act
+    result = parse_review_document(path, issue_number=42, iteration=1)
+
+    # Assert
+    assert result.findings[0].reference == "`src/sdlc/pr_state.py:331`"
+
+
+def test_parse_review_document_should_ignore_a_touched_commit_inside_a_fence(
+    tmp_path,
+):
+    """Test a fenced `**Touched commit:**` sample does not become the sha.
+
+    Given:
+        A blocking finding whose Issue quotes a fenced template sample
+        carrying its own `**Touched commit:**` line above the real trailing
+        one.
+    When:
+        parse_review_document is called.
+    Then:
+        The finding's touched commit should be the real trailing sha, since
+        the value drives `git commit --fixup` through the fixup mapping.
+    """
+    # Arrange
+    path = tmp_path / "review-1.md"
+    path.write_text(_review_document(blocking=_FENCED_FIELD_FINDING))
+
+    # Act
+    result = parse_review_document(path, issue_number=42, iteration=1)
+
+    # Assert
+    assert result.findings[0].touched_commit == "`abc1234`"
+
+
+def test_parse_review_document_should_raise_when_a_fence_is_never_closed(
+    tmp_path,
+):
+    """Test an unbalanced fence is reported instead of swallowing findings.
+
+    Given:
+        A two-finding document whose first finding quotes a fenced block that
+        is never closed, so every later line reads as fenced.
+    When:
+        parse_review_document is called.
+    Then:
+        It should raise, naming the line the fence was opened on, rather than
+        returning a short enumeration the in-place rewrite would then delete
+        the missing findings from.
+    """
+    # Arrange
+    unclosed = _BLOCKING_FINDING.replace(
+        "**Issue:** The symbol `foo` should be `bar` because the convention "
+        "says so.",
+        "**Issue:** Consider:\n\n```python\ndef f():\n    pass\n",
+    )
+    path = tmp_path / "review-1.md"
+    path.write_text(
+        _review_document(blocking=unclosed, advisory=_ADVISORY_FINDING)
+    )
+
+    # Act & assert
+    with pytest.raises(ValueError, match="unclosed code fence opened at line"):
+        parse_review_document(path, issue_number=42, iteration=1)
+
+
+def test_parse_review_document_should_keep_an_em_dash_inside_a_blocking_title(
+    tmp_path,
+):
+    """Test a blocking title containing an em dash is not truncated.
+
+    Given:
+        A blocking heading whose title itself contains ` — ` ahead of the
+        `**(BLOCKING)**` marker and the role attribution.
+    When:
+        parse_review_document is called.
+    Then:
+        The whole title should survive and the attribution should be dropped.
+    """
+    # Arrange
+    heading = (
+        "### B1 — Empty patch claim is false — the usual case "
+        "**(BLOCKING)** — aie (1/5 aie)"
+    )
+    blocking = _BLOCKING_FINDING.replace(
+        "### B1 — Rename foo to bar **(BLOCKING)** — aie (3/10 aie)", heading
+    )
+    path = tmp_path / "review-1.md"
+    path.write_text(_review_document(blocking=blocking))
+
+    # Act
+    result = parse_review_document(path, issue_number=42, iteration=1)
+
+    # Assert
+    assert result.findings[0].title == (
+        "Empty patch claim is false — the usual case"
+    )
+
 
 
 def test_iterations_should_be_empty_when_no_review_dir(tmp_path, monkeypatch):
@@ -1595,3 +1926,305 @@ def test_convert_pr_review_to_document_should_not_leak_separators(
     assert len(result.findings) == 2
     for finding in result.findings:
         assert "---" not in finding.remediation
+
+
+def test_convert_pr_review_to_document_should_round_trip_a_fenced_heading(
+    tmp_path, monkeypatch
+):
+    """Test a reviewer comment quoting a Markdown heading still converts.
+
+    Given:
+        A GitHub review comment whose body quotes a fenced block containing
+        `### Do`, which is ordinary prose in a style-guide discussion.
+    When:
+        convert_pr_review_to_document is called.
+    Then:
+        It should return the converted findings rather than raising on its own
+        read-back, since the document has already been written to disk by then
+        and a retry would only advance the iteration and fail again.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    threads = [
+        {
+            "isResolved": False,
+            "comments": {"nodes": [{
+                "body": "The guide says:\n\n```markdown\n### Do\n```\n\nFollow it.",
+                "path": "src/sdlc/server.py",
+                "line": 64,
+                "author": {"login": "alice"},
+            }]},
+        },
+    ]
+    responses = {
+        _closing_graphql_args("conradbzura", "sdlc", 42): _closing_payload([7]),
+        _graphql_args("conradbzura", "sdlc", 42): _graphql_payload(threads),
+        ("pr", "view", "42", "--json", "reviews"): _reviews_payload([]),
+    }
+    monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
+    repo = pr_state._Repo(owner="conradbzura", name="sdlc", repo_flag=None)
+
+    # Act
+    result = pr_state.convert_pr_review_to_document(
+        "https://github.com/conradbzura/sdlc/pull/42", repo=repo
+    )
+
+    # Assert
+    assert len(result.findings) == 1
+    assert "### Do" in result.findings[0].issue
+
+
+def test_parse_composition_roles_should_ignore_a_finding_that_quotes_the_literal(
+    tmp_path,
+):
+    """Test a finding body quoting `role(s)` cannot shadow the header.
+
+    Given:
+        A review document whose header line is malformed, followed by a
+        finding whose prose quotes the literal `role(s)` with a backticked
+        stem — the shape any review discussing this contract produces.
+    When:
+        parse_composition_roles is called on it.
+    Then:
+        It should return an empty list rather than the quoted stem, so the
+        caller emits its coverage warning instead of dispatching a role the
+        round never ran.
+    """
+    # Arrange
+    document = tmp_path / "review-1.md"
+    document.write_text(
+        "# PR #1 — Round 1 Review\n\n"
+        "Composition: 5 reviewer(s) per role across roles `aie`.\n\n"
+        "## Tier 1 — Blocking\n\n"
+        "### B1 — The contract **(BLOCKING)** — aie (1/1 aie)\n"
+        "**Reference:** `src/sdlc/AGENTS.md:1`\n\n"
+        "**Issue:** The stems are read after the literal role(s) `wrong-role` "
+        "up to the first parenthesis.\n"
+    )
+
+    # Act
+    result = pr_state.parse_composition_roles(document)
+
+    # Assert
+    assert result == []
+
+
+def test_parse_composition_roles_should_return_empty_when_the_line_ends_at_the_literal(
+    tmp_path,
+):
+    """Test a Composition line truncated at `role(s)` names nothing.
+
+    Given:
+        A review document whose Composition line ends exactly at the literal
+        `role(s)`, with no stems after it.
+    When:
+        parse_composition_roles is called on it.
+    Then:
+        It should return an empty list, which the caller reports as a
+        coverage warning rather than inheriting a role.
+    """
+    # Arrange
+    document = tmp_path / "review-1.md"
+    document.write_text(
+        "# PR #1 — Round 1 Review\n\n"
+        "Composition: 1 reviewer(s) per role across role(s)\n"
+    )
+
+    # Act
+    result = pr_state.parse_composition_roles(document)
+
+    # Assert
+    assert result == []
+
+
+def test_convert_pr_review_to_document_should_round_trip_an_unfenced_heading(
+    tmp_path, monkeypatch
+):
+    """Test a reviewer comment containing a bare Markdown heading converts.
+
+    Given:
+        A GitHub review comment whose body contains an unfenced `### Do` line
+        and a line shaped like a finding heading — ordinary prose in a
+        style-guide discussion, and text this package did not write.
+    When:
+        convert_pr_review_to_document is called.
+    Then:
+        It should return exactly the converted finding, neither raising on its
+        own read-back nor admitting the quoted heading as a second finding.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    threads = [
+        {
+            "isResolved": False,
+            "comments": {"nodes": [{
+                "body": (
+                    "The guide says:\n\n### Do\n\nUse long lines.\n\n"
+                    "### C9 — Phantom **(BLOCKING)** — @bob"
+                ),
+                "path": "src/sdlc/server.py",
+                "line": 64,
+                "author": {"login": "alice"},
+            }]},
+        },
+    ]
+    responses = {
+        _closing_graphql_args("conradbzura", "sdlc", 42): _closing_payload([7]),
+        _graphql_args("conradbzura", "sdlc", 42): _graphql_payload(threads),
+        ("pr", "view", "42", "--json", "reviews"): _reviews_payload([]),
+    }
+    monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
+    repo = pr_state._Repo(owner="conradbzura", name="sdlc", repo_flag=None)
+
+    # Act
+    result = pr_state.convert_pr_review_to_document(
+        "https://github.com/conradbzura/sdlc/pull/42", repo=repo
+    )
+
+    # Assert
+    assert [f.id for f in result.findings] == ["C1"]
+    assert "### Do" in result.findings[0].issue
+    assert "C9 — Phantom" in result.findings[0].issue
+
+
+class TestParseCompositionRoles:
+    """Tests for `parse_composition_roles`."""
+
+    def test_parse_composition_roles_should_return_the_documented_roles(self, tmp_path):
+        """Test the roles a round ran under are recovered from the header.
+
+        Given:
+            A review document whose Composition line names two roles.
+        When:
+            parse_composition_roles is called on it.
+        Then:
+            It should return both stems in order.
+        """
+        # Arrange
+        document = tmp_path / "review-1.md"
+        document.write_text(
+            "# PR #1 — Round 1 Review\n\n"
+            "Generated from a `5`-reviewer review. Composition: 5 reviewer(s) "
+            "per role across role(s) `aie`, `architect` (5 × 2 = 10 reviewer "
+            "subagents total). Findings are deduped.\n"
+        )
+
+        # Act
+        result = pr_state.parse_composition_roles(document)
+
+        # Assert
+        assert result == ["aie", "architect"]
+
+    def test_parse_composition_roles_should_return_empty_without_the_line(
+        self, tmp_path
+    ):
+        """Test a document predating the Composition line yields nothing.
+
+        Given:
+            A review document with no Composition line.
+        When:
+            parse_composition_roles is called on it.
+        Then:
+            It should return an empty list rather than raising, so the caller
+            can fall back instead of failing an older document.
+        """
+        # Arrange
+        document = tmp_path / "review-1.md"
+        document.write_text("# PR #1 — Round 1 Review\n\nNo composition here.\n")
+
+        # Act
+        result = pr_state.parse_composition_roles(document)
+
+        # Assert
+        assert result == []
+
+    def test_parse_composition_roles_should_return_empty_when_unbackticked(
+        self, tmp_path
+    ):
+        """Test a paraphrased Composition line names no roles.
+
+        Given:
+            A review document whose Composition line names its roles in prose,
+            with no backticked stems for the parser to collect.
+        When:
+            parse_composition_roles is called on it.
+        Then:
+            It should return an empty list. The caller treats that as nothing
+            to inherit, so this is the branch a re-review's silent fallback to
+            general-purpose runs through.
+        """
+        # Arrange
+        document = tmp_path / "review-1.md"
+        document.write_text(
+            "# PR #1 — Round 1 Review\n\n"
+            "Composition: 3 reviewer(s) per role across role(s) aie and "
+            "general-purpose, six reviewers in total.\n"
+        )
+
+        # Act
+        result = pr_state.parse_composition_roles(document)
+
+        # Assert
+        assert result == []
+
+
+class TestParseReviewDocumentTitles:
+    """Tests for title handling in `parse_review_document`."""
+
+    def _document(self, heading: str) -> str:
+        return (
+            "# PR #1 — Round 1 Review\n\n"
+            "## Tier 2 — Advisory\n\n"
+            f"### {heading}\n"
+            "**Reference:** `src/a.py:1`\n\n"
+            "Something is off.\n\n"
+            "**Remediation:**\n"
+            "- [x] Fix it. *(Recommended.)*\n"
+        )
+
+    def test_parse_review_document_should_keep_an_em_dash_inside_a_title(
+        self, tmp_path
+    ):
+        """Test only the trailing attribution is stripped from a title.
+
+        Given:
+            An advisory finding whose own title contains a spaced em dash,
+            followed by the usual role attribution.
+        When:
+            The document is parsed.
+        Then:
+            The full title should survive, since the parsed title is written
+            back to the document on the next in-place re-review.
+        """
+        # Arrange
+        document = tmp_path / "review-1.md"
+        document.write_text(
+            self._document("A1 — Empty patch claim is false — the usual case — aie (1/5)")
+        )
+
+        # Act
+        result = pr_state.parse_review_document(document, 1, 1)
+
+        # Assert
+        assert result.findings[0].title == (
+            "Empty patch claim is false — the usual case"
+        )
+
+    def test_parse_review_document_should_raise_on_an_unparsed_heading(self, tmp_path):
+        """Test a malformed finding heading is surfaced, not silently dropped.
+
+        Given:
+            A finding heading using a hyphen where the em dash belongs.
+        When:
+            The document is parsed.
+        Then:
+            It should raise, because a dropped finding is deleted from the
+            document with no disposition on the next in-place re-review.
+        """
+        # Arrange
+        document = tmp_path / "review-1.md"
+        document.write_text(self._document("A1 - Hyphen where an em dash belongs"))
+
+        # Act & assert
+        with pytest.raises(ValueError, match="unparsed finding heading"):
+            pr_state.parse_review_document(document, 1, 1)

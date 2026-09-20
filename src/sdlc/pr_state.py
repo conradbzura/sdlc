@@ -236,6 +236,79 @@ _BLOCKING_MARKER = "**(BLOCKING)**"
 _TIER_BLOCKING = re.compile(r"^##\s+Tier\s+1\b.*Blocking", re.IGNORECASE)
 _TIER_ADVISORY = re.compile(r"^##\s+Tier\s+2\b.*Advisory", re.IGNORECASE)
 
+# Fenced code blocks inside a finding's prose hold Markdown samples, and this
+# project's own documents quote review structure: `style-guides/markdown.md`
+# carries `### Do` / `### Don't` and `review-template.md` carries `### B1 — …`.
+# A line-oriented scan with no fence awareness reads those as document
+# structure — aborting the parse on the unparsed-heading guard, or admitting a
+# quoted heading as a phantom finding that the in-place re-review then writes
+# back as real.
+#
+# Two rules govern this module, and they are stated here rather than at each
+# call site because the defect they prevent has now been introduced three
+# times, each time by a fix that enumerated the scanners it knew about:
+#
+#   1. EVERY scanner over review-document text matches structure only on lines
+#      where `in_fence` is False. There are four — `_extract_field`,
+#      `_extract_issue`, `_extract_remediation` and `parse_review_document` —
+#      plus `parse_composition_roles` over the header. A scanner added without
+#      the mask reads a quoted sample as document structure.
+#   2. EVERY generator that embeds text this package did not write — a GitHub
+#      comment body, say — fences it. A generator that does not can manufacture
+#      a document the parser cannot read, which is worse than a parser that
+#      cannot read one, because the file is on disk before the failure.
+_FENCE = re.compile(r"^(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
+
+
+def _fence_scan(lines: list[str]) -> tuple[list[bool], int | None]:
+    """Return the per-line fence mask and the line number of an open fence.
+
+    The mask reports, per line, whether it lies inside a fenced code block.
+    The fence delimiters themselves report ``True``, so a caller that skips
+    structural matching on an inside line never mistakes a delimiter for
+    content either. Follows CommonMark on closing: a fence ends only on a run
+    of the SAME character at least as long as the opener and carrying no info
+    string, so a ``~~~`` line inside a backtick fence does not close it.
+
+    The second element is the 1-based line number of a fence still open at end
+    of input, or ``None`` when every fence closed. An unbalanced opener marks
+    the whole remainder of the document as fenced, which silently swallows
+    every finding below it — the same "deleted with no disposition and no
+    trace" failure the unparsed-heading guard exists to prevent, so the
+    document-level caller raises on it rather than returning a short
+    enumeration.
+    """
+    inside: list[bool] = []
+    opener: str | None = None
+    opened_at: int | None = None
+    for number, line in enumerate(lines, start=1):
+        match = _FENCE.match(line.lstrip())
+        if opener is None:
+            opener = match.group("marker") if match is not None else None
+            opened_at = number if match is not None else None
+            inside.append(match is not None)
+            continue
+        inside.append(True)
+        if (
+            match is not None
+            and match.group("marker")[0] == opener[0]
+            and len(match.group("marker")) >= len(opener)
+            and not match.group("info").strip()
+        ):
+            opener = None
+            opened_at = None
+    return inside, opened_at
+
+
+def _fenced(lines: list[str]) -> list[bool]:
+    """Return, per line, whether it lies inside a fenced code block.
+
+    The mask half of `_fence_scan`, for the body-level scanners. They operate
+    on a slice of a document `parse_review_document` has already checked for
+    balance, so the unclosed-opener half has nothing to report to them.
+    """
+    return _fence_scan(lines)[0]
+
 
 def _reviews_dir(issue_number: int) -> Path:
     """Return the review-document directory for ``issue_number``.
@@ -292,14 +365,25 @@ def _next_iteration(
 
 
 def _extract_field(block: str, label: str) -> str | None:
-    """Return the inline value of a ``**Label:** value`` line in ``block``."""
-    pattern = re.compile(
-        rf"^\*\*{re.escape(label)}:\*\*\s*(?P<value>.*)$", re.MULTILINE
-    )
-    match = pattern.search(block)
-    if match is None:
-        return None
-    return match.group("value").strip()
+    """Return the inline value of a ``**Label:** value`` line in ``block``.
+
+    Fence-aware, per rule 1 above. This supplies both ``Reference`` and
+    ``Touched commit``, and a finding whose prose quotes a template sample
+    carries those very labels inside a fence — so an unmasked leftmost search
+    reads the sample rather than the finding. Both values are written back into
+    the seeded block a re-review rewrites the document from, so a fabricated
+    reference becomes the document's own citation on the next pass and a
+    fabricated sha drives `git commit --fixup` through the fixup mapping.
+    """
+    pattern = re.compile(rf"^\*\*{re.escape(label)}:\*\*\s*(?P<value>.*)$")
+    lines = block.splitlines()
+    for line, in_fence in zip(lines, _fenced(lines)):
+        if in_fence:
+            continue
+        match = pattern.match(line)
+        if match is not None:
+            return match.group("value").strip()
+    return None
 
 
 def _parse_finding_block(
@@ -315,9 +399,17 @@ def _parse_finding_block(
     """
     title = rest
     if _BLOCKING_MARKER in title:
+        # A blocking heading reads `<title> **(BLOCKING)** — <attribution>`, so
+        # splitting on the marker has already dropped the attribution. Splitting
+        # again on ` — ` would eat the title itself wherever it contains one.
         title = title.split(_BLOCKING_MARKER, 1)[0]
-    # Drop a trailing `— <role / agreement>` attribution when present.
-    title = title.split(" — ", 1)[0].strip()
+    else:
+        # An advisory heading reads `<title> — <attribution>`. Split on the LAST
+        # separator so only the attribution goes: titles legitimately contain
+        # ` — `, and a leftmost split silently truncates them, which then gets
+        # written back to the document on the next in-place re-review.
+        title = title.rsplit(" — ", 1)[0]
+    title = title.strip()
 
     reference = _extract_field(body, "Reference") or ""
     touched_commit = _extract_field(body, "Touched commit")
@@ -347,34 +439,40 @@ def _extract_issue(body: str) -> str:
     checkbox (the advisory shape in the review template).
     """
     lines = body.splitlines()
+    fenced = _fenced(lines)
     labelled: list[str] = []
     capturing = False
-    for line in lines:
-        if line.startswith("**Issue:**"):
+    for line, in_fence in zip(lines, fenced):
+        if not in_fence and line.startswith("**Issue:**"):
             capturing = True
             labelled.append(line[len("**Issue:**"):].strip())
             continue
         if capturing:
-            if line.startswith("**") or line.lstrip().startswith("- ["):
+            if not in_fence and (
+                line.startswith("**") or line.lstrip().startswith("- [")
+            ):
                 break
-            labelled.append(line.strip())
+            # A fenced line is code: keep its indentation, and let no `**bold**`
+            # or `- [x]` line in the sample terminate the paragraph.
+            labelled.append(line.rstrip() if in_fence else line.strip())
     if any(labelled):
         return "\n".join(labelled).strip()
 
     # Advisory shape: text after the Reference line, before the first checkbox.
     bare: list[str] = []
     seen_reference = False
-    for line in lines:
-        if line.startswith("**Reference:**"):
+    for line, in_fence in zip(lines, fenced):
+        if not in_fence and line.startswith("**Reference:**"):
             seen_reference = True
             continue
         if not seen_reference:
             continue
-        if line.lstrip().startswith("- ["):
-            break
-        if line.startswith("**"):
-            break
-        bare.append(line.strip())
+        if not in_fence:
+            if line.lstrip().startswith("- ["):
+                break
+            if line.startswith("**"):
+                break
+        bare.append(line.rstrip() if in_fence else line.strip())
     return "\n".join(bare).strip()
 
 
@@ -388,13 +486,19 @@ def _extract_remediation(body: str) -> str:
     lines = body.splitlines()
     captured: list[str] = []
     capturing = False
-    for line in lines:
+    for line, in_fence in zip(lines, _fenced(lines)):
         stripped = line.lstrip()
-        if stripped.startswith("- ["):
+        if not in_fence and stripped.startswith("- ["):
             capturing = True
             captured.append(line.rstrip())
             continue
         if capturing:
+            if in_fence:
+                # A fenced sample inside a checkbox continuation: keep it
+                # verbatim, blank lines included, and let nothing in it
+                # terminate the checklist.
+                captured.append(line.rstrip())
+                continue
             if not stripped:
                 continue
             if (
@@ -406,6 +510,64 @@ def _extract_remediation(body: str) -> str:
             # A continuation line of the current checkbox item.
             captured.append(line.rstrip())
     return "\n".join(captured).strip()
+
+
+# Everything between the literal `role(s)` and the first `(` or end of line.
+# An earlier form required the backticked run to be followed by `(` or `.`,
+# which the template's own elided shape — ``role(s) `<a>`, `<b>`, … (…)`` —
+# does not satisfy, so the line the writing agent is told to copy exactly
+# parsed as no roles at all and the re-review fell back to general-purpose
+# without saying so.
+_COMPOSITION_ROLES = re.compile(r"role\(s\)\s+(?P<roles>[^(\n]*)")
+
+
+def parse_composition_roles(path: str | Path) -> list[str]:
+    """Return the role stems named on a review document's Composition line.
+
+    The header records the composition a round ran under, e.g. ``Composition: 5
+    reviewer(s) per role across role(s) `aie` (5 × 1 = 5 …)``. A re-review that
+    does not inherit these dispatches the wrong lens entirely: every seeded
+    finding whose originating role is absent carries unexamined, forever, while
+    each pass still reports progress.
+
+    The line is identified by carrying both the literal ``Composition`` and the
+    literal ``role(s)``, outside any code fence, and the FIRST such line
+    decides — see rule 1 above.
+
+    Returns ``[]`` when no such line is present or when it names no backticked
+    stem, which the caller treats as "nothing to inherit" rather than as an
+    error — an older document may predate the line. That empty result is what
+    raises the endpoint's coverage warning, so it is the reportable outcome for
+    a malformed header, not a reason to keep scanning.
+    """
+    lines = Path(path).read_text().splitlines()
+    for line, in_fence in zip(lines, _fenced(lines)):
+        # Anchored to the header line, and fence-aware, per rule 1 above. The
+        # literal `role(s)` appears in ordinary finding prose whenever a review
+        # discusses this contract — which reviews of this repository routinely
+        # do — so an unanchored scan lets a finding body shadow a malformed
+        # header and the pass inherits a role nobody ran. Stopping at the first
+        # anchored line is deliberate: a header that names no stems yields
+        # nothing to inherit, which the caller reports as a coverage warning.
+        # Reading on would replace that visible failure with a silent wrong
+        # answer, and the warning is the only signal the composition drifted.
+        if in_fence or "Composition" not in line or "role(s)" not in line:
+            continue
+        match = _COMPOSITION_ROLES.search(line)
+        if match is None:
+            return []
+        stems = [
+            stem.strip() for stem in re.findall(r"`([^`]+)`", match.group("roles"))
+        ]
+        # An unfilled template still has its `<role-a>` placeholders. Treat
+        # those as nothing to inherit rather than dispatching a role by that
+        # name, which no `guide-map.role` entry could ever match.
+        return [
+            stem
+            for stem in stems
+            if stem and not (stem.startswith("<") and stem.endswith(">"))
+        ]
+    return []
 
 
 def parse_review_document(
@@ -421,6 +583,18 @@ def parse_review_document(
     """
     text = Path(path).read_text()
     lines = text.splitlines()
+    fence_mask, unclosed_at = _fence_scan(lines)
+    if unclosed_at is not None:
+        # An opener still open at EOF marks every later line as fenced, so each
+        # remaining finding is appended to the current finding's body and
+        # vanishes — the same silent deletion the unparsed-heading guard below
+        # raises on, and worse, because `_render_rereview` declares the parsed
+        # enumeration authoritative and step 10 rewrites the document from it.
+        raise ValueError(
+            f"{path}: unclosed code fence opened at line {unclosed_at}: "
+            f"{lines[unclosed_at - 1]!r}. Every finding below it would be "
+            "swallowed into the preceding finding's body."
+        )
 
     findings: list[ReviewFinding] = []
     current_severity: Literal["blocking", "advisory"] | None = None
@@ -439,30 +613,45 @@ def parse_review_document(
         pending = None
         body_lines = []
 
-    for line in lines:
-        if _TIER_BLOCKING.match(line):
-            flush()
-            current_severity = "blocking"
-            continue
-        if _TIER_ADVISORY.match(line):
-            flush()
-            current_severity = "advisory"
-            continue
-        heading = _FINDING_HEADING.match(line)
-        if heading is not None and current_severity is not None:
-            flush()
-            rest = heading.group("rest")
-            severity: Literal["blocking", "advisory"] = current_severity
-            if _BLOCKING_MARKER in rest:
-                severity = "blocking"
-            pending = (heading.group("id"), rest, severity)
-            continue
-        if line.startswith("## "):
-            # A non-tier section heading (e.g. Cross-cutting decisions) ends
-            # the findings region.
-            flush()
-            current_severity = None
-            continue
+    # Structure is recognized only OUTSIDE fenced code blocks; a fenced line is
+    # sample text and is appended to the body verbatim.
+    for line, in_fence in zip(lines, fence_mask):
+        if not in_fence:
+            if _TIER_BLOCKING.match(line):
+                flush()
+                current_severity = "blocking"
+                continue
+            if _TIER_ADVISORY.match(line):
+                flush()
+                current_severity = "advisory"
+                continue
+            heading = _FINDING_HEADING.match(line)
+            if heading is not None and current_severity is not None:
+                flush()
+                rest = heading.group("rest")
+                severity: Literal["blocking", "advisory"] = current_severity
+                if _BLOCKING_MARKER in rest:
+                    severity = "blocking"
+                pending = (heading.group("id"), rest, severity)
+                continue
+            if line.startswith("### ") and current_severity is not None:
+                # A finding heading the regex could not parse — an en dash or a
+                # hyphen where the em dash belongs, most likely. Silently
+                # skipping it drops the finding from the enumeration, and
+                # because a re-review rewrites the document in place from that
+                # enumeration, the finding is then deleted with no disposition
+                # and no trace.
+                raise ValueError(
+                    f"{path}: unparsed finding heading in a severity tier: "
+                    f"{line!r}. A finding heading must read "
+                    "'### <id> — <title>' with a spaced em dash."
+                )
+            if line.startswith("## "):
+                # A non-tier section heading (e.g. Cross-cutting decisions)
+                # ends the findings region.
+                flush()
+                current_severity = None
+                continue
         if pending is not None:
             body_lines.append(line)
 
@@ -517,6 +706,32 @@ def load_review_findings(
     return parse_review_document(path, issue_number, iteration)
 
 
+_BACKTICK_RUN = re.compile(r"`+")
+
+
+def _fence_for(text: str) -> str:
+    """Return a backtick fence long enough to enclose ``text`` verbatim.
+
+    CommonMark closes a fence on a run of the same character at least as long
+    as the opener, so an opener must be longer than any run the content holds.
+    """
+    longest = max((len(run) for run in _BACKTICK_RUN.findall(text)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def _heading_safe(text: str) -> str:
+    """Return ``text`` reduced to something that cannot forge document structure.
+
+    A GitHub comment's first line becomes a finding title, and the heading is
+    assembled around it. Leading `#` characters would put a second heading
+    marker inside one, and any newline would put the remainder of the comment
+    on a line of its own outside the heading.
+    """
+    flattened = " ".join(text.split())
+    stripped = flattened.lstrip("#").strip()
+    return stripped or "Review comment"
+
+
 def _render_github_findings_as_document(
     issue_number: int,
     iteration: int,
@@ -558,16 +773,27 @@ def _render_github_findings_as_document(
         else:
             reference = "(cross-cutting — no single line)"
         author = finding.author or "unknown"
-        title = finding.body.strip().splitlines()[0] if finding.body.strip() else (
-            "Review comment"
-        )
+        body = finding.body.strip()
+        title = _heading_safe(body.splitlines()[0]) if body else "Review comment"
+        # Rule 2 above: the comment body is text this package did not write. An
+        # ordinary comment quoting a Markdown heading — `### Do`, which this
+        # project's own style guide carries — otherwise renders as document
+        # structure, and the document is WRITTEN to disk before the read-back
+        # below raises on it. The file then survives, so a retry computes the
+        # next iteration one higher and fails again. Fencing it also keeps a
+        # quoted `### C9 — … **(BLOCKING)**` from parsing as a real finding.
+        fence = _fence_for(body)
         blocks.append(
             "\n".join(
                 [
                     f"### C{index} — {title} **(BLOCKING)** — @{author}",
                     f"**Reference:** {reference}",
                     "",
-                    f"**Issue:** @{author} ({finding.kind}): {finding.body.strip()}",
+                    f"**Issue:** @{author} ({finding.kind}) wrote:",
+                    "",
+                    fence,
+                    *body.splitlines(),
+                    fence,
                     "",
                     "**Remediation:**",
                     "- [x] Address the reviewer's comment. "
