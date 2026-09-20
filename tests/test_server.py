@@ -1,6 +1,7 @@
 """Tests for sdlc.server — MCP tools and resources."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -2318,6 +2319,33 @@ async def test_agents_md_should_return_file_content():
 
     # Assert
     assert "# SDLC Pipeline for LLM Agents" in result
+
+
+@pytest.mark.asyncio
+async def test_agents_md_should_carry_only_loadable_json_examples():
+    """Test every fenced json block in AGENTS.md parses as JSON.
+
+    Given:
+        AGENTS.md, whose config example is the only worked example of
+        .sdlc/config.json and which review.md directs agents to edit.
+    When:
+        Each ```json block is parsed.
+    Then:
+        All should load. JSON has no comments, and guides.load_user_config
+        raises on a malformed file at import and on every review — so an
+        annotated example that gets copied takes down every sdlc_* call for
+        that project, not just the review.
+    """
+    # Arrange
+    content = await agents_md()
+
+    # Act
+    blocks = re.findall(r"```json\n(.*?)```", content, re.DOTALL)
+
+    # Assert
+    assert blocks, "AGENTS.md carries no json examples to check"
+    for block in blocks:
+        json.loads(block)
 
 
 @pytest.mark.asyncio
