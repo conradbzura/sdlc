@@ -38,6 +38,23 @@ from sdlc.server import (
 )
 
 
+_REAL_RELOAD_STATE = server.reload_state
+
+
+def _pin_state(monkeypatch, state):
+    """Bind server._state and make reload_state return it unchanged.
+
+    _review_commit_directives re-reads the config on every review so a
+    review-repo recorded mid-session takes effect. Pinning only server._state
+    would leave that read to pull the developer's own checkout back in, so the
+    reload is pinned alongside it. A test exercising the real reload restores
+    _REAL_RELOAD_STATE explicitly.
+    """
+    monkeypatch.setattr(server, "_state", state)
+    monkeypatch.setattr(server, "reload_state", lambda: state)
+    return state
+
+
 @pytest.fixture(autouse=True)
 def _isolated_review_config(monkeypatch):
     """Null the review-repo and review-branch config for every test.
@@ -47,9 +64,8 @@ def _isolated_review_config(monkeypatch):
     directives and these tests would assert against the host's configuration
     rather than against the code. Tests that need a value set it explicitly.
     """
-    monkeypatch.setattr(
-        server,
-        "_state",
+    _pin_state(
+        monkeypatch,
         dataclasses.replace(
             server._state, review_branch=None, review_repo=None, config_dir=None
         ),
@@ -2331,9 +2347,8 @@ async def test_knowledge_graph_should_return_not_found_when_file_missing(monkeyp
 
 def _configure(monkeypatch, tmp_path, *, repo=None, branch=None):
     """Point server._state at a review repo and/or branch rooted at tmp_path."""
-    monkeypatch.setattr(
-        server,
-        "_state",
+    _pin_state(
+        monkeypatch,
         dataclasses.replace(
             server._state,
             review_repo=repo,
@@ -2579,7 +2594,7 @@ async def test_sdlc_review_should_fall_back_to_the_configured_branch(
     configured = guides.GuidesState(
         discovered={}, guide_map={}, config={}, review_branch="from-config"
     )
-    monkeypatch.setattr(server, "_state", configured)
+    _pin_state(monkeypatch, configured)
 
     # Act
     result = await sdlc_review(paths=["src/sdlc/server.py"])
@@ -2607,7 +2622,7 @@ async def test_sdlc_review_should_prefer_the_target_over_the_configured_branch(
     configured = guides.GuidesState(
         discovered={}, guide_map={}, config={}, review_branch="from-config"
     )
-    monkeypatch.setattr(server, "_state", configured)
+    _pin_state(monkeypatch, configured)
 
     # Act
     result = await sdlc_review(paths=["src/sdlc/server.py"], target="explicit")
@@ -2904,16 +2919,18 @@ async def test_sdlc_review_should_use_config_written_to_disk(tmp_path, monkeypat
     """Test a config file on disk reaches the rendered directives.
 
     Given:
-        A .sdlc/config.json setting review-repo and review-branch, loaded
-        through the public reload path.
+        A .sdlc/config.json setting review-repo and review-branch, and the
+        real reload path restored.
     When:
         sdlc_review(paths=[...]) is called.
     Then:
-        It should name both the configured repository and branch.
+        It should name both the configured repository and branch, having
+        re-read the config itself rather than relying on the import-time bind.
     """
     # Arrange
     monkeypatch.delenv("SDLC_CONFIG", raising=False)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(server, "reload_state", _REAL_RELOAD_STATE)
     sdlc_dir = tmp_path / ".sdlc"
     (sdlc_dir / ".git").mkdir(parents=True)
     (sdlc_dir / "config.json").write_text(
@@ -2923,7 +2940,6 @@ async def test_sdlc_review_should_use_config_written_to_disk(tmp_path, monkeypat
 
     # Act
     try:
-        server.reload_state()
         result = await sdlc_review(paths=["src/sdlc/server.py"])
     finally:
         server._state = original
