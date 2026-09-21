@@ -2226,7 +2226,7 @@ def test_paths_mode_prompt_should_name_the_commit_and_the_chain():
     section = _section(_skill_text(), "### 11. Prompt the user with next steps")
 
     # Act
-    paths_prompt = section[section.index("**(PATHS mode):**") :]
+    paths_prompt = section[section.index("**(paths mode):**") :]
     paths_prompt = paths_prompt[: paths_prompt.index("**(re-review):**")]
 
     # Assert
