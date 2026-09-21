@@ -32,7 +32,9 @@ _Pending extraction._
 
 ## R3. Arguments — the directive dictionary's fine print
 
-_Pending extraction._
+The endpoint emits these directives; the skill describes them. What follows is the detail each description sheds — which branches omit a directive, and why two similar-looking paths are not interchangeable.
+
+In paths mode this line is always present (the endpoint computes the slug); in PR mode it is omitted on the `unresolved` branch. **(re-review)** Always present (the endpoint resolved the directory to load `review-<#>.md` from it). On a fresh round the endpoint resolved `<iteration>` as the next unused iteration deterministically (never overwriting an earlier round); **(re-review)** it is instead the existing `review-<#>.md`, rewritten in place. Present in PR mode (on the resolved-issue branch) and in paths mode; omitted on the PR-mode `unresolved` branch. `Review document in repository: unresolved` therefore survives only for a path symlinked out of an otherwise valid repository. They differ whenever the repository is not the working directory, which is the normal case when `.sdlc` is its own repository. Step 2 captures into a staging directory at acquisition and step 10 promotes the result here once every gate has cleared, then commits from here. This line is emitted whenever a document will be written — it does not depend on whether a *repository* resolved, so it does not come and go with the two repository-relative directives, but it IS absent alongside `Review document:` on the PR-mode unresolved-issue branch.
 
 ## R4. Step 2 — the reviewed-state capture
 
