@@ -21,6 +21,7 @@ from sdlc.server import (
     get_style_guide,
     get_test_guide,
     knowledge_graph,
+    review_rationale,
     review_template,
     role_template,
     sdlc_commit,
@@ -2061,6 +2062,28 @@ async def test_role_template_should_return_template_content():
     # Assert
     assert "## Lens / identity" in result
     assert "## Blocking policy" in result
+
+
+@pytest.mark.asyncio
+async def test_review_rationale_should_return_document_content():
+    """Test the rationale resource serves the review skill's design reasoning.
+
+    Given:
+        The bundled review-rationale document.
+    When:
+        The sdlc://review-rationale resource is read.
+    Then:
+        It should return the document, carrying its no-rules disclaimer. The
+        disclaimer is the safety property the whole split rests on: a rule can
+        only be in the skill, because a normative sentence here is forbidden.
+    """
+    # Act
+    result = await review_rationale()
+
+    # Assert
+    assert "# Review skill \u2014 design rationale" in result
+    assert "**This document carries NO rules.**" in result
+    assert "## R10. Step 10" in result
 
 
 @pytest.mark.asyncio

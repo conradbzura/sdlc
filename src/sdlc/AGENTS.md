@@ -52,6 +52,7 @@ The deterministic target-repository fact — which repo `gh` commands should add
 | `sdlc://config/default` | Package-default `config.json` content (read this to discover the bundled guide-map) |
 | `sdlc://role-template` | Bundled role-document template (the Lens and Blocking policy sections) |
 | `sdlc://review-template` | Bundled consolidated-review-document template (pass line, retired-id line, severity-tiered findings, rejected-in-earlier-passes ledger, cross-cutting decisions, fixup mapping) |
+| `sdlc://review-rationale` | Design rationale for the `review` skill — derivations, the failures that produced each guard, and the claims verified by execution. Read on demand when a block misbehaves; carries no rules |
 | `sdlc://agents-md` | This file (project-level agent instructions) |
 | `sdlc://knowledge-graph` | Codebase knowledge graph (if generated) |
 

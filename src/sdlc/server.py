@@ -14,6 +14,7 @@ SKILLS_DIR = PACKAGE_DIR / "skills"
 AGENTS_MD_PATH = PACKAGE_DIR / "AGENTS.md"
 ROLE_TEMPLATE_PATH = PACKAGE_DIR / "role-template.md"
 REVIEW_TEMPLATE_PATH = PACKAGE_DIR / "review-template.md"
+REVIEW_RATIONALE_PATH = PACKAGE_DIR / "review-rationale.md"
 
 _state = guides.load_state(cwd=Path.cwd(), package_dir=PACKAGE_DIR)
 
@@ -880,6 +881,18 @@ async def role_template() -> str:
 async def review_template() -> str:
     """Return the bundled consolidated-review-document template."""
     return _read_file(REVIEW_TEMPLATE_PATH)
+
+
+@mcp.resource("sdlc://review-rationale")
+async def review_rationale() -> str:
+    """Return the review skill's design rationale.
+
+    Read on demand by an agent executing `sdlc_review` — when a command block
+    misbehaves, or before deviating from an instruction whose reason is not
+    obvious. Deliberately NOT concatenated into the tool's return: the whole
+    point is that the skill carries the protocol and this carries the why.
+    """
+    return _read_file(REVIEW_RATIONALE_PATH)
 
 
 @mcp.resource("sdlc://agents-md")

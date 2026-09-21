@@ -355,7 +355,7 @@ Only the `<…>` placeholders are yours to substitute; every `$` field is filled
 
 `pass` is `<k>`, how many passes have run against this document — `1` on a fresh round, and on a re-review the `<k>` carried in the existing document's pass line, incremented by one. You read that pass line as part of the mandatory read-back of the fields the seeded block does not carry.
 
-`excluded` records the pathspec the index and the diff both used, so a later restore cannot drift from the capture. `worktree_dirty` is `true` when `git status --porcelain` was non-empty.
+`excluded` records the pathspec the index and the diff both used, so a later restore cannot drift from the capture — which is why the capture writes it down here rather than leaving a restore to repeat a literal. A restore MUST use exactly the pathspec `meta.excluded` records. `worktree_dirty` is `true` when `git status --porcelain` was non-empty.
 
 `head_matches_target` records whether the reviewed state corresponds to the PR head. **(PR mode)** Set it `true` only when `HEAD == headRefOid` **and** `worktree_dirty` is `false`. The sha check alone is not enough: `git rev-parse HEAD` returns the same sha however dirty the tree is, while the capture is `git add -A` over the **working tree** and deliberately includes uncommitted and untracked work — so a dirty tree yields a `tree` that is not the PR head's tree while the sha check passes. When either condition fails, write `false` and record `"target_head": "<headRefOid>"` beside it: `tree` still states what was captured, but it is NOT a claim about the PR head, and step 10's restore comparison cannot answer whether what merged is what was reviewed. **(paths mode)** There is no PR head, so omit `head_matches_target` and `target_head` entirely.
 
@@ -820,42 +820,8 @@ review: Add B4 — new guard misses the paths-mode branch
 
 A rejection that withdraws a finding outright and one that corrects it are both `Reject`; the subject says which, and the body carries the reasoning. Do NOT post anything to GitHub.
 
-**Restoring a snapshot.** In any clone that can reach `base`. Run it in a detached worktree so the recipe never mutates the tree it is invoked from. Substitute `<path to review.patch>` as an **absolute** path: the recipe `cd`s into the worktree, so the repository- or cwd-relative form every other path in this skill uses no longer resolves once it gets there.
-
-```bash
-restore="${TMPDIR:-/tmp}/sdlc-restore-$$"
-git worktree add -q --detach "$restore" "<meta.base>"
-cd "$restore"
-
-# A clean tree at `base == HEAD` captures an EMPTY patch, which this document
-# blesses as correct. A bare `git apply` refuses it with "No valid patches in
-# input" and exit 128, so the one recovery procedure the snapshot exists for
-# would abort on a state the capture calls valid.
-[ -s "<path to review.patch>" ] && git apply "<path to review.patch>"
-
-# Mirror the capture exactly — same empty index, same exclusion pathspec.
-# `export` is required: a `VAR=value cmd` prefix scopes to the single command it
-# prefixes, so `git add` would use the throwaway index while `git write-tree`
-# read the REAL one and returned base's tree on every non-empty patch.
-idx=$(mktemp -u)
-export GIT_INDEX_FILE="$idx"
-trap 'rm -f "$idx"' EXIT
-git read-tree --empty
-git add -A -- ':(exclude,top)<meta.excluded — the value meta.json records, not a literal>'
-git write-tree                        # MUST equal meta.tree
-unset GIT_INDEX_FILE
-
-# Leave nothing registered behind: without this every restore adds a worktree
-# to the user's repository that no later run removes or prunes.
-cd - >/dev/null
-git worktree remove --force "$restore"
-git worktree prune
-```
-
-Use exactly the pathspec `meta.excluded` records; capture and restore must not drift, which is why the capture writes it down rather than leaving both ends to repeat a literal.
-
-The recomputed tree SHA is content-addressed, so equality with `meta.tree` proves the restoration is byte-identical to what was captured. When `meta.head_matches_target` is `true`, comparing `meta.tree` against the tree that eventually landed on the default branch — **with `meta.excluded` applied to that tree too** — answers a further and useful question: whether what merged is what was reviewed. The exclusion has to be applied to both sides, because `meta.tree` can never contain the excluded review-repository path while the merged tree will whenever the project tracks it. When `head_matches_target` is `false`, the capture was not taken at the PR head — a different sha, or a dirty working tree — and cannot answer that question at all.
-
+**Restoring a snapshot.** The recipe is at `sdlc://review-rationale` §R10.5.
+*Why: read it when the user asks to restore a captured state, or to check whether what merged is what was reviewed — this workflow never runs it.*
 
 ### 11. Prompt the user with next steps
 

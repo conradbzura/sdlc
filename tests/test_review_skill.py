@@ -21,6 +21,7 @@ from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 SKILL = Path(__file__).resolve().parents[1] / "src/sdlc/skills/review.md"
+RATIONALE = Path(__file__).resolve().parents[1] / "src/sdlc/review-rationale.md"
 AGENTS = Path(__file__).resolve().parents[1] / "src/sdlc/AGENTS.md"
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
@@ -161,7 +162,7 @@ def _restore_script(patch: str, base: str) -> str:
     run it after the block's `unset GIT_INDEX_FILE` and read the real index
     instead — which is the very defect this recipe was corrected for.
     """
-    section = _section(_skill_text(), "### 10. Write and commit the review document")
+    section = _section(RATIONALE.read_text(), "### R10.5 Restoring a snapshot")
     blocks = [b for b in _bash_blocks(section) if "git apply" in b]
     assert len(blocks) == 1, f"expected 1 restore block, found {len(blocks)}"
     script = "set -e\n" + blocks[0]
