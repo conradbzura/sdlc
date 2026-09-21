@@ -90,6 +90,26 @@ Sub-sections here use `###`, and top sections use `##`, deliberately: the test
 harness locates a sub-section by scanning forward to the next `### `, so a
 `## ` lookup would terminate at the first `### ` beneath it.
 
+### R10.1 Why the repository must contain the document, and cannot be an ancestor
+
+`Review document in repository:` and `Review snapshot in repository:` are omitted entirely when no repository resolved, and each carries the literal value `unresolved`, followed by an explanation, when the path lies outside `<repo>`. Note that `Review snapshot directory:` is emitted either way, so the three do not appear and disappear together. Directives are injected at tool-call time and cannot appear mid-run, so immediately after the user authorizes `git init .sdlc` above, both repository-relative directives are still absent. The recorded `review-repo` makes the directives correct from the next call on.
+
+`Review document:` is hardcoded under `.sdlc/reviews/`, so a repository that does not contain that path reports `Review document in repository: unresolved` on every call and can never commit. A reviews repository somewhere else is therefore not a workable answer to this question, and `resolve_review_repo` refuses one rather than resolving it — so naming one here returns you to this same question with a different reason attached. Nor is an ancestor: `resolve_review_repo` refuses the reviewed tree's root and anything above it, because no top-anchored relative pathspec can exclude a directory that CONTAINS the tree. `git_state.resolve_review_repo` refuses such a value and the directive then reads `unresolved`, so in practice the first check catches it — but the reason belongs here, where the validations are enumerated, rather than only in step 2's discussion of the exclusion pathspec: the snapshot excludes the review repository from the reviewed tree by a top-anchored RELATIVE pathspec, and there is no such pathspec for a directory that contains the tree — the relative path is `.` or empty, and `':(exclude,top).'` excludes nothing. The capture then embeds the review repository in the snapshot of the code it reviews and the tree SHA churns every pass regardless of the code, silently, because the empty-tree sentinel only fires on an empty tree. (The unanchored `':!.'` does yield the empty tree, but that is not the form step 2 instructs.)
+
+### R10.2 Why `check-ignore` is run without `-q`
+
+This check exists to give the user an actionable message instead of that failure.
+
+### R10.3 Why the worktree path is derived rather than carried
+
+It is keyed on the repository AND the document rather than on the round number alone: `$TMPDIR` is per-user, not per-project, so a bare `sdlc-review-1` names the same directory for every project and every issue on the machine. A bare `[ ! -d "$worktree" ]` skips creation for a directory belonging to some other repository — or left behind by a crashed earlier run — and every commit below then lands somewhere other than where this round belongs. `git worktree list --porcelain` prints the **normalized** path — symlinks resolved, `//` collapsed — while string concatenation does not: on macOS `$TMPDIR` ends in `/` and `/var` is a symlink to `/private/var`, so the derived and the printed paths differ by both and the membership test never matches. The reuse branch would then be unreachable, and the `elif` would fire on the *correct* worktree, aborting every pass after an interrupted one with a message asserting the opposite of the truth. `grep -Fqx` for the same reason: the path is interpolated into a pattern, and an unescaped `.` in it is a wildcard.
+
+### R10.4 The commit protocol's mechanics
+
+Step 2 captured into a staging directory rather than writing `<Review snapshot directory>` directly, so that an abandoned run — a role-validation halt, a declined large diff, an unresolved repository — cannot destroy the previous pass's capture. The target is removed only once it matches, which is why the `rm` is chained to the `diff` rather than following it: an unconditional delete destroys the ground truth on exactly the path the check exists to serve, leaving the re-run to compare against a file that is no longer there. The subject names the disposition and the finding id, and carries the justification when it fits; longer reasoning goes in the body.
+
+When it holds nothing at all — or was never created — the guard above leaves the previous pass's capture in place and (d) omits the snapshot from its `add`, so the round is still recorded. Every `commit` below reads its message from disk rather than taking a `-m` string, so the subject and body survive shell quoting intact. Write it with your file tool to the `commit` skill's convention — `/tmp/commit_msg.txt` — immediately before each commit, overwriting the previous one; the commits in (d) are sequential, so one path is reused rather than one file per finding.
+
 ### R10.5 Restoring a snapshot
 
 This is the procedure the capture exists for, and the review workflow never

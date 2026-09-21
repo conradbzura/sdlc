@@ -616,13 +616,16 @@ A value that reads `unresolved`, or a line recorded as ABSENT, is a branch below
 
   **This one-write clause applies only when the user does NOT authorize a repository.** If they answer `git init .sdlc`, the exception below takes over and the round goes through (c) and (d) normally, with its per-mutation history — which is the feature the question exists to enable, so the user who said yes gets it.
 
-  **The repository MUST contain the document.** `Review document:` is hardcoded under `.sdlc/reviews/`, so a repository that does not contain that path reports `Review document in repository: unresolved` on every call and can never commit. A reviews repository somewhere else is therefore not a workable answer to this question, and `resolve_review_repo` refuses one rather than resolving it — so naming one here returns you to this same question with a different reason attached. Nor is an ancestor: `resolve_review_repo` refuses the reviewed tree's root and anything above it, because no top-anchored relative pathspec can exclude a directory that CONTAINS the tree. That leaves `.sdlc` itself — the only directory that both contains the hardcoded `.sdlc/reviews/` document path and does not contain the tree under review — or a directory beneath it.
+  **The repository MUST contain the document.** That leaves `.sdlc` itself — the only directory that both contains the hardcoded `.sdlc/reviews/` document path and does not contain the tree under review — or a directory beneath it.
+*Why: `sdlc://review-rationale` §R10.1 — read it if the user proposes a repository outside the reviewed tree.*
 
 **Validate the resolved repository before committing.** Three checks. All are cheap, and all are silent failures when skipped.
 
-First, the repository-relative directives may themselves be unresolved. `Review document in repository:` and `Review snapshot in repository:` are omitted entirely when no repository resolved, and each carries the literal value `unresolved`, followed by an explanation, when the path lies outside `<repo>`. Note that `Review snapshot directory:` is emitted either way, so the three do not appear and disappear together. If either repository-relative directive is absent or reads `unresolved`, STOP and relay the explanation to the user — never pass the string `unresolved` to `git add`.
+First, the repository-relative directives may themselves be unresolved. If either repository-relative directive is absent or reads `unresolved`, STOP and relay the explanation to the user — never pass the string `unresolved` to `git add`.
+*Why: `sdlc://review-rationale` §R10.1 — read it if the three snapshot directives do not appear together as you expect.*
 
-**Exception — a repository created during this run.** Directives are injected at tool-call time and cannot appear mid-run, so immediately after the user authorizes `git init .sdlc` above, both repository-relative directives are still absent. Do NOT stop a second time on that absence — it is the expected state, not a new failure. Derive the two paths instead, by re-expressing `Review document:` and `Review snapshot directory:` relative to `<repo>` (with `<repo>` = `.sdlc`, the document `.sdlc/reviews/issue-#<N>/review-<#>.md` addresses as `reviews/issue-#<N>/review-<#>.md`), and commit this round. The recorded `review-repo` makes the directives correct from the next call on.
+**Exception — a repository created during this run.** Do NOT stop a second time on that absence — it is the expected state, not a new failure. Derive the two paths instead, by re-expressing `Review document:` and `Review snapshot directory:` relative to `<repo>` (with `<repo>` = `.sdlc`, the document `.sdlc/reviews/issue-#<N>/review-<#>.md` addresses as `reviews/issue-#<N>/review-<#>.md`), and commit this round.
+*Why: `sdlc://review-rationale` §R10.1 — read it if you are unsure why the directives are absent right after a `git init`.*
 
 Second, the repository may ignore the review artifacts. Check BOTH paths — invariant "MUST NOT force-add a path the target repository ignores" covers every path this step adds, and a `<repo>/.gitignore` carrying `*.patch`, `*.json` or `snapshot-*/` leaves the snapshot ignored while the document is clean:
 
@@ -636,9 +639,11 @@ Note the absence of `-q`. With more than one pathname `--quiet` is **fatal** —
 - **Exit 1** — neither path is ignored. Proceed.
 - **Any other exit** — `check-ignore` itself failed (128 for a path outside the repository, for instance). Surface the error; do NOT read it as "not ignored".
 
-An ignored path is not a silent no-op at commit time: `git add` errors with "The following paths are ignored" and takes the whole multi-pathspec add down with it, so on a re-review the snapshot commit fails before any finding mutation is applied. This check exists to give the user an actionable message instead of that failure.
+An ignored path is not a silent no-op at commit time: `git add` errors with "The following paths are ignored" and takes the whole multi-pathspec add down with it, so on a re-review the snapshot commit fails before any finding mutation is applied.
+*Why: `sdlc://review-rationale` §R10.2 — read it if `git add` reports ignored paths.*
 
-Third, the repository MUST NOT be the reviewed tree's own root, nor any ancestor of it. `git_state.resolve_review_repo` refuses such a value and the directive then reads `unresolved`, so in practice the first check catches it — but the reason belongs here, where the validations are enumerated, rather than only in step 2's discussion of the exclusion pathspec: the snapshot excludes the review repository from the reviewed tree by a top-anchored RELATIVE pathspec, and there is no such pathspec for a directory that contains the tree — the relative path is `.` or empty, and `':(exclude,top).'` excludes nothing. The capture then embeds the review repository in the snapshot of the code it reviews and the tree SHA churns every pass regardless of the code, silently, because the empty-tree sentinel only fires on an empty tree. (The unanchored `':!.'` does yield the empty tree, but that is not the form step 2 instructs.) If a future change lets such a value through, refuse it here and tell the user to move the review repository to a subdirectory such as `.sdlc`.
+Third, the repository MUST NOT be the reviewed tree's own root, nor any ancestor of it. If a future change lets such a value through, refuse it here and tell the user to move the review repository to a subdirectory such as `.sdlc`.
+*Why: `sdlc://review-rationale` §R10.1 — read it if you are about to accept an ancestor as the review repository.*
 
 **(b) Resolve the branch.** When a `Review commit branch: <branch>` directive is present AND `<branch>` differs from the branch checked out in `<repo>`, do every write and commit below inside a temporary worktree, so the tree under review is never disturbed. Read the checked-out branch rather than assuming it:
 
@@ -648,7 +653,8 @@ git -C "<repo>" branch --show-current
 
 A freshly initialized repository has no commits, and `git worktree add` cannot attach to a branch that does not exist yet — the first-run state for every project that sets `review-branch`. Give `HEAD` a commit first, then create the branch if needed.
 
-The worktree path is **deterministic**, so (b), (c) and (d) each re-derive it identically instead of carrying a shell variable across tool calls. It is keyed on the repository AND the document rather than on the round number alone: `$TMPDIR` is per-user, not per-project, so a bare `sdlc-review-1` names the same directory for every project and every issue on the machine.
+The worktree path is **deterministic**, so (b), (c) and (d) each re-derive it identically instead of carrying a shell variable across tool calls.
+*Why: `sdlc://review-rationale` §R10.3 — read it if two projects collide on one worktree.*
 
 ```bash
 worktree="$(cd "${TMPDIR:-/tmp}" && pwd -P)/sdlc-review-$(printf '%s' "<repo>/<Review document in repository>" | shasum | cut -c1-12)"
@@ -669,9 +675,11 @@ else
 fi
 ```
 
-Testing *registration* rather than mere existence is what makes a collision loud. A bare `[ ! -d "$worktree" ]` skips creation for a directory belonging to some other repository — or left behind by a crashed earlier run — and every commit below then lands somewhere other than where this round belongs.
+Testing *registration* rather than mere existence is what makes a collision loud.
+*Why: `sdlc://review-rationale` §R10.3 — read it before relaxing this to a bare directory test.*
 
-Both sides of that test must name the path the same way, which is why the derivation resolves `$TMPDIR` with `cd … && pwd -P` rather than interpolating it. `git worktree list --porcelain` prints the **normalized** path — symlinks resolved, `//` collapsed — while string concatenation does not: on macOS `$TMPDIR` ends in `/` and `/var` is a symlink to `/private/var`, so the derived and the printed paths differ by both and the membership test never matches. The reuse branch would then be unreachable, and the `elif` would fire on the *correct* worktree, aborting every pass after an interrupted one with a message asserting the opposite of the truth. `grep -Fqx` for the same reason: the path is interpolated into a pattern, and an unescaped `.` in it is a wildcard.
+Both sides of that test must name the path the same way, which is why the derivation resolves `$TMPDIR` with `cd … && pwd -P` rather than interpolating it.
+*Why: `sdlc://review-rationale` §R10.3 — read it if the reuse branch never fires, or a pass aborts on its own worktree.*
 
 The worktree is removed at the END of (d), after the last commit; on a re-review that is several commits later, not at the end of this sub-step. The removal command lives there.
 
@@ -682,7 +690,8 @@ When the directive is absent, or names the branch already checked out, write and
 - `Review document: <path>` — relative to the working directory. This is where the document is WRITTEN, so the reviewed tree, `sdlc_implement --review` and the next `sdlc_review --verify` all find it where they expect.
 - `Review document in repository: <path>` — the same file addressed from `<repo>`'s root. This is what every `git` command below takes.
 
-**Promote the staged snapshot.** Step 2 captured into a staging directory rather than writing `<Review snapshot directory>` directly, so that an abandoned run — a role-validation halt, a declined large diff, an unresolved repository — cannot destroy the previous pass's capture. Every gate has now cleared, so move it into place. Clear the destination wholesale rather than removing two named files, so no third artifact from an earlier pass survives into a capture that no longer describes it:
+**Promote the staged snapshot.** Every gate has now cleared, so move it into place. Clear the destination wholesale rather than removing two named files, so no third artifact from an earlier pass survives into a capture that no longer describes it:
+*Why: `sdlc://review-rationale` §R10.4 — read it if a stale artifact survives beside a newer `meta.json`.*
 
 ```bash
 staging="${TMPDIR:-/tmp}/sdlc-review-$(printf '%s' "<Review snapshot directory>" | shasum | cut -c1-12).snapshot"
@@ -710,7 +719,8 @@ else
 fi
 ```
 
-Do NOT regenerate the capture here — recapturing at this point would record the tree as it stands now rather than as the reviewers read it, and the two can differ. If the capture was skipped (step 2 found no snapshot directive) or aborted unanchored, the staging directory holds `meta.json` alone or nothing at all; promote what is there and continue. When it holds nothing at all — or was never created — the guard above leaves the previous pass's capture in place and (d) omits the snapshot from its `add`, so the round is still recorded.
+Do NOT regenerate the capture here — recapturing at this point would record the tree as it stands now rather than as the reviewers read it, and the two can differ. If the capture was skipped (step 2 found no snapshot directive) or aborted unanchored, the staging directory holds `meta.json` alone or nothing at all; promote what is there and continue.
+*Why: `sdlc://review-rationale` §R10.4 — read it if the staging directory is empty or missing.*
 
 **What is written depends on the round.**
 
@@ -735,7 +745,8 @@ Do NOT post anything to GitHub.
 
 **(d) Commit.** Every `git` command in this sub-step has two variants. When (b) created a worktree, use the `-C "$worktree"` form — the worktree is where (c) put the copies that get committed, and `-C <repo>` would commit from the repository's main worktree, still on whatever branch it had checked out. Otherwise use the `-C <repo>` form. Each block below re-derives `$worktree` for itself: shell state does not survive between tool calls, so a block that reads the handle must also assign it.
 
-**`<message-file>` is a file you write first.** Every `commit` below reads its message from disk rather than taking a `-m` string, so the subject and body survive shell quoting intact. Write it with your file tool to the `commit` skill's convention — `/tmp/commit_msg.txt` — immediately before each commit, overwriting the previous one; the commits in (d) are sequential, so one path is reused rather than one file per finding.
+**`<message-file>` is a file you write first.**
+*Why: `sdlc://review-rationale` §R10.4 — read it if a commit subject or body arrives mangled.*
 
 **Stage the snapshot only when there is one.** Step 2 skips the capture when no snapshot directive was injected, and writes `meta.json` alone when the anchor could not be resolved. Omit `<Review snapshot in repository>` from the `add` when the promote above produced nothing — `git add` on a pathspec matching no file exits 128 and stages *nothing*, taking the document down with it, so a missing capture would otherwise convert a provenance gap into an unrecorded round.
 
@@ -799,7 +810,8 @@ target="$(cd "${TMPDIR:-/tmp}" && pwd -P)/sdlc-review-$(printf '%s' "<Review doc
 diff -u "$target" "<Review document>" && rm -f "$target"   # diff MUST produce no output
 ```
 
-If `diff` reports a difference, a mutation was missed — apply the remainder as one further commit rather than amending the history, then run the check again. The target is removed only once it matches, which is why the `rm` is chained to the `diff` rather than following it: an unconditional delete destroys the ground truth on exactly the path the check exists to serve, leaving the re-run to compare against a file that is no longer there.
+If `diff` reports a difference, a mutation was missed — apply the remainder as one further commit rather than amending the history, then run the check again.
+*Why: `sdlc://review-rationale` §R10.4 — read it if the terminal diff keeps reporting a difference.*
 
 Finally, when (b) created a worktree, remove it — after the LAST commit above, never earlier:
 
@@ -811,7 +823,8 @@ git -C "<repo>" worktree prune
 
 `--force` is required: (c) mirrors copies into the worktree that git sees as untracked, and a plain `worktree remove` refuses with exit 128 ("contains modified or untracked files"), leaving the directory behind for the next run to trip over.
 
-Commit messages follow the `commit` skill's subject rules — 72 characters maximum, imperative mood, first word capitalized, no trailing period, plain text with no markup — with one addition: review-document commits take a `review:` type prefix, which exists for this purpose and is never used for code commits. The subject names the disposition and the finding id, and carries the justification when it fits; longer reasoning goes in the body.
+Commit messages follow the `commit` skill's subject rules — 72 characters maximum, imperative mood, first word capitalized, no trailing period, plain text with no markup — with one addition: review-document commits take a `review:` type prefix, which exists for this purpose and is never used for code commits.
+*Why: `sdlc://review-rationale` §R10.4 — read it when composing a mutation commit's subject.*
 
 ```
 review: Close B2 — nil guard now present at server.py:318
