@@ -205,15 +205,20 @@ Resolve every entry: a literal path contributes that file (warn if it does not e
 
 #### Capture the reviewed state (all modes)
 
-The findings reference `file:line` in a repository whose history is routinely rewritten before merge, so the commits a review was performed against do not survive. Anchor the pass to a point that does. Run this **here**, at acquisition, so the captured state matches what the reviewers read — not later, when the tree may have moved. That correspondence is *proved* only on the branch where the PR-head verification above succeeded; when you continued past a `HEAD != headRefOid` mismatch, the capture records the mismatch rather than claiming a correspondence it cannot support.
+Run this **here**, at acquisition, so the captured state matches what the reviewers read — not later, when the tree may have moved. That correspondence is *proved* only on the branch where the PR-head verification above succeeded; when you continued past a `HEAD != headRefOid` mismatch, the capture records the mismatch rather than claiming a correspondence it cannot support.
+*Why: `sdlc://review-rationale` §R4 — read it if you are tempted to move this capture later in the run.*
 
-**First, confirm a snapshot directory was injected.** Despite the "(all modes)" heading, `Review snapshot directory:` is emitted only when a document will be written — so it is absent on the PR-mode unresolved-issue branch, which this subsection runs *before* step 3 resolves. It is NOT absent on the declined-large-diff branch: the endpoint emits it whenever a document will be written, which depends solely on issue resolution, and the endpoint has no knowledge of diff size. That branch declines later, in step 2's own edge case, with the capture already staged and never promoted. If the directive is absent, do NOT invent a path: skip the capture and continue to step 3, which settles the branch. On the unresolved-issue branch step 3 STOPS the run — the directory never becomes known within this invocation, so there is nothing to come back for — and the capture happens on the re-run, once the linked issue makes the directive available. Guessing it is forbidden for the same reason step 3 forbids it.
+**First, confirm a snapshot directory was injected.** If the directive is absent, do NOT invent a path: skip the capture and continue to step 3, which settles the branch. Guessing it is forbidden for the same reason step 3 forbids it.
+*Why: `sdlc://review-rationale` §R4.6 — read it if you expected the directive and it is absent.*
 
-The anchor is the merge-base with the upstream default branch, which by assumption never changes. Everything above it is collapsed into one synthetic commit whose tree is the reviewed state and whose parent is that merge-base. It descends from no branch commit, so rebasing, squashing, and fixups cannot invalidate it.
+The anchor is the merge-base with the upstream default branch, which by assumption never changes.
+*Why: `sdlc://review-rationale` §R4.1 — read it if you are about to anchor on the PR's base branch instead.*
 
-The three blocks below are ONE sequence — run them in a single shell invocation. `$vcs`, `$ref`, `$base`, `$tree` and `$staging` flow between them, and shell state does not survive between tool calls, so a split leaves `git commit-tree` with an empty parent or tree argument and the heredoc with empty fields. (`GIT_INDEX_FILE` is a separate matter: block 2 both exports and unsets it within itself, so a split cannot leave it dangling. `export` rather than a `VAR=value` prefix is still required there, for the reason the restore recipe in step 10 spells out.)
+The three blocks below are ONE sequence — run them in a single shell invocation. `$vcs`, `$ref`, `$base`, `$tree` and `$staging` flow between them, and shell state does not survive between tool calls, so a split leaves `git commit-tree` with an empty parent or tree argument and the heredoc with empty fields.
+*Why: `sdlc://review-rationale` §R4.2 — read it if you are about to split this into separate tool calls.*
 
-The capture is written to a **staging directory**, not straight into `Review snapshot directory`. Step 10 promotes it once every gate has cleared. Writing in place here would destroy the previous pass's capture before step 5's role-validation halt, before the declined-large-diff branch, and before step 10(a)'s "STOP before committing" — which would make that promise false the moment it is reached.
+The capture is written to a **staging directory**, not straight into `Review snapshot directory`. Step 10 promotes it once every gate has cleared.
+*Why: `sdlc://review-rationale` §R4.6 — read it if you are about to write the snapshot directory directly.*
 
 Resolve the anchor ref explicitly, preferring a cheap local read. `git remote set-head -a` is a **network call that writes `refs/remotes/<remote>/HEAD` in the user's repository**, so it is a fallback, not the opening move:
 
@@ -235,17 +240,8 @@ rm -rf "$staging" && mkdir -p "$staging"
 # `git rev-parse --show-toplevel`.
 excl='<review-repo path relative to the repository root — `.sdlc` unless Review repository: resolves to something else>'
 
-# The guard states what it ACCEPTS. A blocklist here has been wrong twice, in
-# both directions: `.` and `..` were enumerated while the absolute form — which
-# is literally what `Review repository:` emits, so pasting the directive value
-# is the likeliest slip — was not, and neither was the literal `unresolved`.
-# Both of those exclude NOTHING, verified by execution: the review repository
-# is captured into the snapshot of the code it reviews and the tree SHA then
-# churns every pass regardless of the code, defeating the one question the
-# capture exists to answer. The empty-tree sentinel below cannot catch it,
-# because it only fires on over-exclusion, and the restore recipe mirrors the
-# same wrong pathspec back out of `meta.excluded` so the integrity check still
-# passes.
+# The guard states what it ACCEPTS, deliberately — a blocklist here has been
+# wrong twice. See `sdlc://review-rationale` §R4.4 before widening it.
 case "$excl" in
     /*)
         echo "review: exclusion pathspec '$excl' is absolute; :(exclude,top) takes a path RELATIVE to the repository root" >&2
@@ -290,9 +286,11 @@ else
 fi
 ```
 
-**An unresolvable anchor aborts the CAPTURE, not the review.** `refs/remotes/origin/HEAD` is absent after `clone --single-branch`, after `git init` plus `git remote add`, and in most CI checkouts, and `set-head -a` cannot recover it offline, behind an auth prompt, or on a sandboxed runner. Tell the user the provenance could not be anchored, then carry on to step 3: the reviewers' findings are the round's deliverable, and losing provenance is no reason to lose them. Step 10 stages whatever the capture produced, so a missing patch cannot suppress the document commit.
+**An unresolvable anchor aborts the CAPTURE, not the review.** Tell the user the provenance could not be anchored, then carry on to step 3: the reviewers' findings are the round's deliverable, and losing provenance is no reason to lose them. Step 10 stages whatever the capture produced, so a missing patch cannot suppress the document commit.
+*Why: `sdlc://review-rationale` §R4.1 — read it if you are about to abort the round over a missing anchor.*
 
-Then capture the tree. The index is built from **empty**, not from `HEAD`: seeding it from `HEAD` stages every path `HEAD` tracks — including a tracked review repository — and the exclusion pathspec below only declines to *update* those entries, it never removes them. The reviewed state IS the working tree, so the `HEAD` baseline buys nothing, and worktree deletions are naturally absent. The pathspec is anchored with `top` because git resolves pathspecs against the **current working directory**: a bare `':!.sdlc'` run from a subdirectory excludes nothing, and the capture then embeds a gitlink to the review repository and changes its tree SHA on every pass.
+Then capture the tree. The index is built from **empty**, not from `HEAD`. The pathspec is anchored with `top`.
+*Why: `sdlc://review-rationale` §R4.2 — read it if the snapshot contains the review repository, or if you are about to drop the `top` anchor.*
 
 ```bash
 if [ "$vcs" = git ]; then
@@ -320,7 +318,8 @@ if [ "$vcs" = git ]; then
 fi
 ```
 
-Then write both artifacts into the staging directory. `meta.json` is written **by this block**, not transcribed afterwards: `$remote`, `$ref`, `$base` and `$tree` do not survive the end of the invocation, and `$tree` in particular cannot be recovered without redoing the whole empty-index sequence, by which time the tree may have moved — destroying the exact correspondence this capture exists to guarantee.
+Then write both artifacts into the staging directory. `meta.json` is written **by this block**, not transcribed afterwards.
+*Why: `sdlc://review-rationale` §R4.2 — read it if you are about to record these values and write the file in a later call.*
 
 ```bash
 if [ "$vcs" = git ]; then
@@ -359,9 +358,11 @@ Only the `<…>` placeholders are yours to substitute; every `$` field is filled
 
 `head_matches_target` records whether the reviewed state corresponds to the PR head. **(PR mode)** Set it `true` only when `HEAD == headRefOid` **and** `worktree_dirty` is `false`. The sha check alone is not enough: `git rev-parse HEAD` returns the same sha however dirty the tree is, while the capture is `git add -A` over the **working tree** and deliberately includes uncommitted and untracked work — so a dirty tree yields a `tree` that is not the PR head's tree while the sha check passes. When either condition fails, write `false` and record `"target_head": "<headRefOid>"` beside it: `tree` still states what was captured, but it is NOT a claim about the PR head, and step 10's restore comparison cannot answer whether what merged is what was reviewed. **(paths mode)** There is no PR head, so omit `head_matches_target` and `target_head` entirely.
 
-The synthetic commit is a construction device, not a durable artifact — nothing references it, so it is subject to garbage collection. What travels is `base`, the patch, and `tree`; those three reconstruct the state in any clone that can reach `base`.
+What travels is `base`, the patch, and `tree`; those three reconstruct the state in any clone that can reach `base`.
+*Why: `sdlc://review-rationale` §R4.1 — read it if you are about to record the synthetic commit's sha as if it were durable.*
 
-`git add -A` honours `.gitignore`, so ignored files stay out of the snapshot. Note that a path which is both **tracked and ignored** — force-added at some point, or ignored after the fact — is dropped too, although it is genuinely part of the reviewed state; the integrity check cannot surface this, because the restore mirrors the same empty index and pathspec and still reproduces `tree`. The review repository is excluded by pathspec rather than left to `.gitignore`, since a project that tracks `.sdlc` would otherwise capture it — and starting the index empty is what makes the exclusion actually hold in that case. A review repository that resolves to the reviewed tree's own root, or to any ancestor of it, is a configuration error rather than an exclusion, and the failure is quieter than it looks. The unanchored `':!.'` does exclude everything and yields the empty tree, which the sentinel above catches — but the **anchored** form this block instructs does not: with a relative path of `.` or empty, `':(exclude,top).'` excludes NOTHING, so the capture embeds the review repository in the snapshot of the code it reviews, the tree SHA churns every pass regardless of the code, and no sentinel fires. `git_state.resolve_review_repo` refuses such a value for exactly this reason; if the derived relative exclusion path is ever `.` or empty, abort here rather than capturing.
+`git add -A` honours `.gitignore`, so ignored files stay out of the snapshot. If the derived relative exclusion path is ever `.` or empty, abort here rather than capturing.
+*Why: `sdlc://review-rationale` §R4.5 — read it if the tree SHA churns between passes on unchanged code, or a tracked path is missing from the snapshot.*
 
 Reviewing the default branch itself yields `base == HEAD`, so the patch contains exactly the uncommitted and untracked work — empty only when the tree is clean. Record `$ref` as `anchor_ref` so a reader can tell which branch the base was taken from.
 
