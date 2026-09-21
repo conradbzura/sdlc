@@ -24,7 +24,7 @@ wording of a heading may change, the id may not.
 
 ## R1. Modes, markers and the re-review layer
 
-_Pending extraction._
+Reviewing before reconciling is what keeps the prior round from setting the agenda for this one, and withholding the seeded set is what makes that ordering real rather than merely instructed. This skill is the **sixth** stage, invoked after the PR has been created and is ready for review. Nothing is posted to GitHub, but the document IS consumed by the `implement` skill: in PR mode a later `sdlc_implement <N>` reads the latest `review-<iteration>.md` for the closing issue straight off disk and routes to `implement-feedback`, walking each finding's pre-selected remediation through a per-finding approval gate (`--review <int>` selects an earlier iteration). Paths-mode documents are not keyed to an issue and so are not picked up automatically; read and apply those directly.
 
 ## R2. Invariants — why the block is duplicative on purpose
 
@@ -70,9 +70,13 @@ Despite the "(all modes)" heading, `Review snapshot directory:` is emitted only 
 
 _Pending extraction._
 
+## R5. Step 3 — resolving the issue and the write target
+
+The MCP endpoint performs the relationship check via GitHub's `closingIssuesReferences` connection (issues that close when the PR merges, whether linked via a `Closes #N` keyword or the GitHub UI), with a `Closes` / `Fixes` / `Resolves #N` PR-body fallback. When several issues are linked, the endpoint resolves the **first** of them (the connection has no ordering guarantee), so `<N>` is one closing issue, not necessarily the only one. Their answer cannot be used: directives are injected at tool-call time and cannot appear mid-run, and `Resolved issue:` is derived from GitHub rather than from the reply, so re-deriving the path here is guessing under another name. The endpoint resolved `<iteration>` as the next unused iteration deterministically (never overwriting an earlier round), so you do NOT glob the directory or compute `iteration = max + 1` yourself — take the injected path as-is. This holds in both base modes: in **PR mode** the injected path is `.sdlc/reviews/issue-#<N>/review-<iteration>.md`, and in **PATHS mode** it is `<Review document directory>/review-<iteration>.md` under the endpoint-computed slug directory (successive paths-mode reviews of the same target accumulate their rounds there).
+
 ## R6. Steps 5–6 — role validation and the stale-graph rule
 
-_Pending extraction._
+The summary lands in the reviewer brief's "architectural context" slot, where it reads as ground truth and competes with the diff for attention — so a graph describing a layout that no longer exists is worse than no graph at all, in all N briefs at once. This project's own graph is the worked example — analyzed at `"initial"`, indexing markdown only, with node ids under a directory layout the tree no longer has.
 
 ## R7. Step 7 — the two-turn dispatch
 
@@ -197,4 +201,6 @@ _Pending extraction._
 
 ## R12. Edge cases — the reasoning behind the branches
 
-_Pending extraction._
+Each edge case in the skill states its branch rule. The reasoning that justifies the branch, and the states that make it reachable, are here.
+
+The PR-only edge cases below (`PR is already merged or closed`, `No linked issue`, and `Very large diffs`) do not apply in paths mode. **(re-review)** A pass that ends with no blocking findings is the pass that TERMINATES the chain, so any blocking `close` or `reject` that got it there still clears step 9's gate first; an empty document is the strongest reason to check, not a reason to skip. Do not post anything. Tell the user which heading, and that the fix is in the file rather than in the tool; the same error from `sdlc_implement --review <#>` has the same cause. A heading that has drifted OUTSIDE the tier regions does not raise — it is silently skipped — which is what step 7(0)'s count reconciliation exists to catch. The snapshot-and-header commit of 10(d) is the whole round — it carries the pass-counter bump, so the document does change and `git add` has something to stage — and the finding set is byte-identical to the pass before. Do NOT manufacture an empty commit, and give the zero-delta variant of step 11's prompt. *(This is PR-mode only — paths mode reviews exactly the files the user named.)*
