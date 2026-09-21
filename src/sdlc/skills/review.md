@@ -271,7 +271,7 @@ rm -rf "$staging" && mkdir -p "$staging"
 excl='<review-repo path relative to the repository root — `.sdlc` unless Review repository: resolves to something else>'
 
 # The guard states what it ACCEPTS, deliberately — a blocklist here has been
-# wrong twice. See `sdlc://review-rationale` §R4.4 before widening it.
+# wrong twice. See `sdlc://review-rationale` §R4.3 and §R4.4 before widening it.
 case "$excl" in
     /*)
         echo "review: exclusion pathspec '$excl' is absolute; :(exclude,top) takes a path RELATIVE to the repository root" >&2
@@ -892,8 +892,8 @@ review: Add B4 — new guard misses the paths-mode branch
 
 A rejection that withdraws a finding outright and one that corrects it are both `Reject`; the subject says which, and the body carries the reasoning. Do NOT post anything to GitHub.
 
-**Restoring a snapshot.** The recipe is at `sdlc://review-rationale` §R10.5.
-*Why: read it when the user asks to restore a captured state, or to check whether what merged is what was reviewed — this workflow never runs it.*
+**Restoring a snapshot.** This workflow never runs it — step 10 writes a snapshot, it does not read one back.
+*Why: `sdlc://review-rationale` §R10.5 — read it when the user asks to restore a captured state, or to check whether what merged is what was reviewed.*
 
 ### 11. Prompt the user with next steps
 

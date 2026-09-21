@@ -26,10 +26,6 @@ wording of a heading may change, the id may not.
 
 Reviewing before reconciling is what keeps the prior round from setting the agenda for this one, and withholding the seeded set is what makes that ordering real rather than merely instructed. This skill is the **sixth** stage, invoked after the PR has been created and is ready for review. Nothing is posted to GitHub, but the document IS consumed by the `implement` skill: in PR mode a later `sdlc_implement <N>` reads the latest `review-<iteration>.md` for the closing issue straight off disk and routes to `implement-feedback`, walking each finding's pre-selected remediation through a per-finding approval gate (`--review <int>` selects an earlier iteration). Paths-mode documents are not keyed to an issue and so are not picked up automatically; read and apply those directly.
 
-## R2. Invariants — why the block is duplicative on purpose
-
-_Pending extraction._
-
 ## R3. Arguments — the directive dictionary's fine print
 
 The endpoint emits these directives; the skill describes them. What follows is the detail each description sheds — which branches omit a directive, and why two similar-looking paths are not interchangeable.
@@ -66,11 +62,9 @@ Note that a path which is both **tracked and ignored** — force-added at some p
 
 Despite the "(all modes)" heading, `Review snapshot directory:` is emitted only when a document will be written — so it is absent on the PR-mode unresolved-issue branch, which this subsection runs *before* step 3 resolves. It is NOT absent on the declined-large-diff branch: the endpoint emits it whenever a document will be written, which depends solely on issue resolution, and the endpoint has no knowledge of diff size. That branch declines later, in step 2's own edge case, with the capture already staged and never promoted. On the unresolved-issue branch step 3 STOPS the run — the directory never becomes known within this invocation, so there is nothing to come back for — and the capture happens on the re-run, once the linked issue makes the directive available. Writing in place here would destroy the previous pass's capture before step 5's role-validation halt, before the declined-large-diff branch, and before step 10(a)'s "STOP before committing" — which would make that promise false the moment it is reached.
 
-## R5. Step 3 — why the commit destinations go to disk
+## R5. Step 3 — resolving the issue, the write target, and the commit destinations
 
 _Pending extraction._
-
-## R5. Step 3 — resolving the issue and the write target
 
 The MCP endpoint performs the relationship check via GitHub's `closingIssuesReferences` connection (issues that close when the PR merges, whether linked via a `Closes #N` keyword or the GitHub UI), with a `Closes` / `Fixes` / `Resolves #N` PR-body fallback. When several issues are linked, the endpoint resolves the **first** of them (the connection has no ordering guarantee), so `<N>` is one closing issue, not necessarily the only one. Their answer cannot be used: directives are injected at tool-call time and cannot appear mid-run, and `Resolved issue:` is derived from GitHub rather than from the reply, so re-deriving the path here is guessing under another name. The endpoint resolved `<iteration>` as the next unused iteration deterministically (never overwriting an earlier round), so you do NOT glob the directory or compute `iteration = max + 1` yourself — take the injected path as-is. This holds in both base modes: in **PR mode** the injected path is `.sdlc/reviews/issue-#<N>/review-<iteration>.md`, and in **PATHS mode** it is `<Review document directory>/review-<iteration>.md` under the endpoint-computed slug directory (successive paths-mode reviews of the same target accumulate their rounds there).
 
@@ -121,10 +115,6 @@ The `rediscovered` column is the reviewer's own judgement of its own prior trace
 ### R8.4 The unexamined count and its two causes
 
 Dropping it would let the chain report clean on a blocking defect nobody looked at, since termination is "no blocking findings remain".
-
-## R9. Step 9 — why the consolidated target is written to disk
-
-_Pending extraction._
 
 ## R10. Step 10 — the commit protocol
 
@@ -194,10 +184,6 @@ git worktree prune
 Use exactly the pathspec `meta.excluded` records; capture and restore must not drift, which is why the capture writes it down rather than leaving both ends to repeat a literal.
 
 The recomputed tree SHA is content-addressed, so equality with `meta.tree` proves the restoration is byte-identical to what was captured. When `meta.head_matches_target` is `true`, comparing `meta.tree` against the tree that eventually landed on the default branch — **with `meta.excluded` applied to that tree too** — answers a further and useful question: whether what merged is what was reviewed. The exclusion has to be applied to both sides, because `meta.tree` can never contain the excluded review-repository path while the merged tree will whenever the project tracks it. When `head_matches_target` is `false`, the capture was not taken at the PR head — a different sha, or a dirty working tree — and cannot answer that question at all.
-
-## R11. Step 11 — why each prompt variant exists
-
-_Pending extraction._
 
 ## R12. Edge cases — the reasoning behind the branches
 
