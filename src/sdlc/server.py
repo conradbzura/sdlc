@@ -38,6 +38,54 @@ def _read_skill(name: str) -> str:
     return path.read_text()
 
 
+# Spans of the review skill that only a re-review needs. The markers are block
+# FENCES, not per-line tags: roughly three quarters of the re-review-only text
+# carries no `**(re-review)**` marker of its own, because a marked header
+# introduces paragraphs, bullets and command blocks that inherit its mode
+# silently. Filtering on the literal marker would strip a fifth of the material
+# and mangle a dozen shared paragraphs.
+_REREVIEW_BEGIN = "<!-- rereview:begin -->"
+_REREVIEW_END = "<!-- rereview:end -->"
+
+
+def _strip_rereview(text: str) -> str:
+    """Return ``text`` with every fenced re-review span removed.
+
+    A fresh round is handed a prompt that never mentions dispositions, seeded
+    findings or the pass ledger — material it cannot act on and which competes
+    for attention with the steps it must actually run.
+    """
+    out, depth = [], 0
+    for line in text.splitlines(keepends=True):
+        marker = line.strip()
+        if marker == _REREVIEW_BEGIN:
+            depth += 1
+            continue
+        if marker == _REREVIEW_END:
+            depth -= 1
+            if depth < 0:
+                raise ValueError("review.md: unbalanced re-review fence")
+            continue
+        if depth == 0:
+            out.append(line)
+    if depth:
+        raise ValueError("review.md: re-review fence opened and never closed")
+    return "".join(out)
+
+
+def _review_skill(rereview: bool) -> str:
+    """Return the review skill assembled for the active mode.
+
+    The `Re-review:` directive is known here, before the skill body is ever
+    concatenated, so a fresh round need not carry the re-review protocol. On a
+    re-review the fences themselves are dropped and everything else is byte
+    identical to the file on disk.
+    """
+    text = _read_skill("review")
+    return text.replace(_REREVIEW_BEGIN + "\n", "").replace(_REREVIEW_END + "\n", "") \
+        if rereview else _strip_rereview(text)
+
+
 def _read_file(path: Path) -> str:
     """Read a file and return its content."""
     if not path.is_file():
@@ -461,7 +509,7 @@ def _render_rereview(
     Raises ``ValueError`` when a PR target closes no issue, or when the target
     has no `review-<verify>.md` (surfaced by `load_review_findings`).
     """
-    skill = _read_skill("review")
+    skill = _review_skill(rereview=True)
     template = _read_file(REVIEW_TEMPLATE_PATH)
     if paths is not None:
         slug = _paths_slug(paths)
@@ -692,7 +740,7 @@ async def sdlc_review(
         )
     if not roles:
         roles = ["general-purpose"]
-    skill = _read_skill("review")
+    skill = _review_skill(rereview=False)
     template = _read_file(REVIEW_TEMPLATE_PATH)
     roles_line = ", ".join(roles)
     if paths is not None:

@@ -15,6 +15,7 @@ from sdlc.pr_state import (
 )
 from sdlc.server import (
     _read_skill,
+    _review_skill,
     agents_md,
     get_default_config,
     get_role_guide,
@@ -119,7 +120,15 @@ def _review_directive(result):
     mode-specific contract is about what the tool APPENDS, so isolate that
     block by stripping the inlined skill prefix and the trailing template.
     """
-    body = result[len(_read_skill("review")) :]
+    # The skill is assembled per mode, so strip whichever assembly this result
+    # actually carries rather than assuming the whole file is present.
+    for rereview in (False, True):
+        skill = _review_skill(rereview=rereview)
+        if result.startswith(skill):
+            body = result[len(skill):]
+            break
+    else:
+        raise AssertionError("result does not begin with either skill assembly")
     head, separator, tail = body.partition("\n\nReview document template:")
     if not separator:
         return body
