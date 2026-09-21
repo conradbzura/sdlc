@@ -80,6 +80,24 @@ _Pending extraction._
 
 _Pending extraction._
 
+### R8.1 Retired ids and the max(retired ∪ open) high-water mark
+
+Computing it from the survivors alone is wrong because closed and rejected findings are deleted from the document, so with `B1` closed the next pass sees only `B2`, reuses `B1`, and silently re-points every commit-history and implement-loop citation of `B1` at a different defect. Computing it from the `Retired ids` line alone is wrong for the mirror reason: that line records only ids since closed or rejected, so whenever the highest-ever id is still open — the normal case — it is not the maximum. Run the same example the other way: `B1` closed and `B2` open makes `Retired ids` = `B1`, and "next above the retired line" yields `B2`, colliding with the finding that is still there.
+
+### R8.2 Re-tiering and the `**(BLOCKING)**` marker
+
+`parse_review_document` reads the heading marker as authoritative OVER the enclosing tier, so a finding moved to Tier 2 that keeps its marker is re-seeded as blocking on the next pass and the termination predicate never clears — a reviewer that correctly rejects an over-severe finding would produce a chain that cannot end.
+
+### R8.3 Rediscovery, corroboration, and the default composition of one
+
+The `rediscovered` column is the reviewer's own judgement of its own prior trace, made in the turn in which it has just been shown the answer — but you collected its phase-1 findings verbatim in step 7 and can check. This is the same ground-truth-over-recollection move step 9 makes for its target file. Treat it as stronger evidence absent a contrary signal, not as an override that cannot be argued with. A phase-1 finding matching nothing in the seeded set is new and takes a fresh id below.
+
+`close` stays autonomous too, but not unconditionally: it also removes a blocking finding from the termination predicate, it is also decided by one agent at the default composition, and it leaves less behind than a rejection does (a bare id in `Retired ids`, where a rejection keeps its rationale in the ledger). A model asked whether its own prior round's finding was fixed is the canonical premature-completion case, and the two safeguards that exist — carry-beats-close and rediscovery-outranks-close — both need a second opinion the default composition does not supply.
+
+### R8.4 The unexamined count and its two causes
+
+Dropping it would let the chain report clean on a blocking defect nobody looked at, since termination is "no blocking findings remain".
+
 ## R9. Step 9 — why the consolidated target is written to disk
 
 _Pending extraction._
