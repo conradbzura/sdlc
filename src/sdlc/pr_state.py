@@ -89,6 +89,40 @@ class ReviewFinding:
     touched_commit: str | None
 
 
+def _by_severity(findings: list[ReviewFinding]) -> list[ReviewFinding]:
+    """Return ``findings`` blocking first, then advisory, then incidental.
+
+    The order a consumer spends attention in: only the first tier gates, and
+    only the last is a deferral.
+    """
+    return (
+        [f for f in findings if f.severity == "blocking"]
+        + [f for f in findings if f.severity == "advisory"]
+        + [f for f in findings if f.severity == "incidental"]
+    )
+
+
+def _render_finding(index: int, finding: ReviewFinding) -> list[str]:
+    """Render one finding as the numbered block both renderings emit.
+
+    Shared by ``ReviewFindings.format`` and ``render_findings`` so the text a
+    consumer sees when a finding is disclosed up front and the text it sees
+    when it fetches the body later cannot diverge.
+    """
+    lines = [
+        "",
+        f"  {index}. [{finding.severity}] {finding.id} — {finding.title}",
+        f"     Reference: {finding.reference}",
+    ]
+    if finding.issue:
+        lines.append(f"     Issue: {finding.issue}")
+    lines.append("     Remediation:")
+    lines.extend(f"       {line}" for line in finding.remediation.splitlines())
+    if finding.touched_commit is not None:
+        lines.append(f"     Touched commit: {finding.touched_commit}")
+    return lines
+
+
 @dataclass(frozen=True)
 class ReviewFindings:
     """A parsed local review document: its provenance and its findings."""
@@ -123,22 +157,8 @@ class ReviewFindings:
             f"Path: {self.path}",
             f"Findings ({len(self.findings)}):",
         ]
-        ordered = [f for f in self.findings if f.severity == "blocking"]
-        ordered += [f for f in self.findings if f.severity == "advisory"]
-        ordered += [f for f in self.findings if f.severity == "incidental"]
-        for index, finding in enumerate(ordered, start=1):
-            lines.append("")
-            lines.append(
-                f"  {index}. [{finding.severity}] {finding.id} — {finding.title}"
-            )
-            lines.append(f"     Reference: {finding.reference}")
-            if finding.issue:
-                lines.append(f"     Issue: {finding.issue}")
-            lines.append("     Remediation:")
-            for remediation_line in finding.remediation.splitlines():
-                lines.append(f"       {remediation_line}")
-            if finding.touched_commit is not None:
-                lines.append(f"     Touched commit: {finding.touched_commit}")
+        for index, finding in enumerate(_by_severity(self.findings), start=1):
+            lines.extend(_render_finding(index, finding))
         return "\n".join(lines)
 
 
@@ -329,13 +349,19 @@ def _fenced(lines: list[str]) -> list[bool]:
     return _fence_scan(lines)[0]
 
 
+# Where every review document lives, relative to the working directory. Named
+# once: `_reviews_dir` builds the issue-keyed case from it, and
+# `render_findings` refuses a path that resolves outside it.
+_REVIEWS_ROOT = Path(".sdlc/reviews")
+
+
 def _reviews_dir(issue_number: int) -> Path:
     """Return the review-document directory for ``issue_number``.
 
     Mirrors the cwd-relative convention `sdlc_review` writes to:
     ``.sdlc/reviews/issue-#<N>``.
     """
-    return Path(".sdlc/reviews") / f"issue-#{issue_number}"
+    return _REVIEWS_ROOT / f"issue-#{issue_number}"
 
 
 def _iterations(
@@ -775,6 +801,57 @@ def render_outline(path: str | Path) -> str:
             out.append(f"{_ELIDED}\n")
             elided = True
     return "".join(out)
+
+
+def render_findings(path: str | Path, ids: list[str]) -> str:
+    """Return the full bodies of the findings ``ids`` names, in severity order.
+
+    The fetch half of incremental disclosure: the endpoints inject
+    ``render_outline``'s elided view, and a consumer calls this when it
+    reaches a finding it actually has to act on. Each finding renders exactly
+    as ``ReviewFindings.format`` would have rendered it — both go through
+    ``_render_finding`` — so what a consumer reads does not depend on when it
+    read it.
+
+    An id that is not in the document is **named in the result** rather than
+    silently omitted. A short answer returned without comment is how a
+    consumer ends up dispositioning a finding it was never shown, which is the
+    failure the whole enumeration discipline in this module guards against.
+
+    ``path`` is REFUSED unless it resolves inside ``.sdlc/reviews`` under the
+    working directory. It reaches the filesystem and it arrives from a prompt
+    — an agent interpolating an injected directive — so the location is
+    checked rather than assumed, as `git_state.resolve_review_repo` checks the
+    repository it is handed.
+    """
+    resolved = Path(path).resolve()
+    reviews = (Path.cwd() / _REVIEWS_ROOT).resolve()
+    if not resolved.is_relative_to(reviews):
+        raise ValueError(
+            f"refusing to read {resolved.as_posix()}: review findings are "
+            f"served only from {reviews.as_posix()}. The path is interpolated "
+            "from a prompt directive, so a document outside the reviews "
+            "directory is a misdirected fetch rather than a review document."
+        )
+    parsed = parse_review_document(resolved, issue_number=0, iteration=0)
+    wanted = list(dict.fromkeys(ids))
+    found = {f.id: f for f in parsed.findings}
+    ordered = [f for f in _by_severity(parsed.findings) if f.id in wanted]
+
+    lines = [f"Findings from {parsed.path} ({len(ordered)} of {len(wanted)} requested):"]
+    for index, finding in enumerate(ordered, start=1):
+        lines.extend(_render_finding(index, finding))
+    missing = [i for i in wanted if i not in found]
+    if missing:
+        lines += [
+            "",
+            f"  NOT FOUND in this document: {', '.join(missing)}. The document "
+            "holds "
+            f"{', '.join(f.id for f in parsed.findings) or 'no findings'}. An id "
+            "that is absent here is absent from the round — do not act on it "
+            "from recollection.",
+        ]
+    return "\n".join(lines)
 
 
 def load_review_findings(

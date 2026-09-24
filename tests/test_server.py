@@ -31,6 +31,7 @@ from sdlc.server import (
     sdlc_issue,
     sdlc_pr,
     sdlc_review,
+    sdlc_review_findings,
     sdlc_role,
     sdlc_role_scope,
     sdlc_roles,
@@ -3794,3 +3795,84 @@ async def test_sdlc_review_should_place_the_seeded_block_after_the_template(
     assert result.index("Review snapshot directory:") < template
     assert result.index("Review document:") < template
     assert template < result.index("\n\nSeeded findings —")
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_findings_should_return_the_requested_body(
+    tmp_path, monkeypatch
+):
+    """Test the fetch serves a finding the outline elided.
+
+    Given:
+        A review document whose outline carries B1's heading but not its
+        issue text.
+    When:
+        sdlc_review_findings is called for B1.
+    Then:
+        It should return the issue text and remediation, which is what a
+        disposition or a remediation is judged against.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    path = _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 1)
+
+    # Act
+    result = await sdlc_review_findings(str(path), ["B1"])
+
+    # Assert
+    assert "The symbol `foo` should be `bar`." in result
+    assert "Rename `foo` to `bar`." in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_findings_should_report_a_path_outside_the_reviews_dir(
+    tmp_path, monkeypatch
+):
+    """Test a misdirected fetch is refused as a message, not an exception.
+
+    Given:
+        A document path outside `.sdlc/reviews/`.
+    When:
+        sdlc_review_findings is called with it.
+    Then:
+        It should return an error string naming the refusal. A tool that
+        raises here would surface as a transport failure rather than as
+        something the agent can read and correct.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    outside = tmp_path / "elsewhere.md"
+    outside.write_text("# not a review document\n")
+
+    # Act
+    result = await sdlc_review_findings(str(outside), ["B1"])
+
+    # Assert
+    assert result.startswith("Error:")
+    assert "elsewhere.md" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_findings_should_name_an_id_the_document_lacks(
+    tmp_path, monkeypatch
+):
+    """Test a missing id comes back named rather than as a short answer.
+
+    Given:
+        A request for a finding the document does not hold.
+    When:
+        sdlc_review_findings is called.
+    Then:
+        It should name the id and say the document does not hold it, so the
+        caller cannot mistake absence for a finding it already understood.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    path = _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 1)
+
+    # Act
+    result = await sdlc_review_findings(str(path), ["B4"])
+
+    # Assert
+    assert "B4" in result
+    assert "NOT FOUND" in result

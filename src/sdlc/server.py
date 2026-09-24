@@ -881,6 +881,35 @@ async def sdlc_role_scope(paths: list[str], role: str) -> list[str]:
 
 
 @mcp.tool()
+async def sdlc_review_findings(document: str, ids: list[str]) -> str:
+    """Return the full text of specific findings from a review document.
+
+    The endpoints inject a review document as an OUTLINE — every finding's
+    heading, reference and touched commit, with the issue text and remediation
+    checklist elided behind a marker. Call this when you reach a finding you
+    have to act on: composing a reviewer's phase-2 message, applying a
+    disposition, or walking a remediation with the user.
+
+    Unlike `sdlc://review-rationale`, which is read on a symptom and may be
+    skipped, this fetch is REQUIRED at the point of use. A finding's body is
+    what a disposition or a remediation is judged against; acting on an
+    elided finding means acting on a body you never read.
+
+    Args:
+        document: The review document path, taken verbatim from the injected
+            `Review document:` or `Seeded from:` directive. Must resolve
+            inside `.sdlc/reviews/`.
+        ids: Finding ids to fetch, e.g. `["B1", "B4", "A7"]`. Batch a whole
+            role's subset in one call rather than fetching one at a time. An
+            id the document does not hold is named in the result.
+    """
+    try:
+        return pr_state.render_findings(document, ids)
+    except (ValueError, OSError) as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
 async def sdlc_role(name: str) -> str:
     """Author a review role document.
 

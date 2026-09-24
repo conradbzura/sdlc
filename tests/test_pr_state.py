@@ -14,6 +14,7 @@ from sdlc.pr_state import (
     ReviewFinding,
     ReviewFindings,
     parse_review_document,
+    render_findings,
     render_outline,
     resolve_repo,
 )
@@ -1775,6 +1776,160 @@ def test_render_outline_should_ignore_a_finding_heading_inside_a_fence(tmp_path)
     assert "### B9" not in outline
     assert "`nowhere.py:1`" not in outline
     assert outline.count("**Reference:**") == 1
+
+
+def _reviews_document(tmp_path, body):
+    """Write a review document at the containment-approved location."""
+    directory = tmp_path / ".sdlc" / "reviews" / "issue-#42"
+    directory.mkdir(parents=True)
+    path = directory / "review-1.md"
+    path.write_text(body)
+    return path
+
+
+def test_render_findings_should_return_only_the_requested_bodies(
+    tmp_path, monkeypatch
+):
+    """Test a fetch serves the named findings and nothing else.
+
+    Given:
+        A document with three findings and a request for one of them.
+    When:
+        render_findings is called with that id.
+    Then:
+        It should return that finding's full body and omit the others, so a
+        consumer pays only for what it asked for.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    path = _reviews_document(
+        tmp_path,
+        _review_document(
+            blocking=_BLOCKING_FINDING,
+            advisory=_ADVISORY_FINDING,
+            incidental=_INCIDENTAL_FINDING,
+        ),
+    )
+
+    # Act
+    result = render_findings(path, ["A1"])
+
+    # Assert
+    assert "A1" in result
+    assert "readability nit" in result
+    assert "Group stdlib imports first." in result
+    assert "B1" not in result
+    assert "I1" not in result
+
+
+def test_render_findings_should_order_the_result_by_severity(tmp_path, monkeypatch):
+    """Test a batch fetch comes back in the order a consumer spends attention.
+
+    Given:
+        A request naming an incidental finding before a blocking one.
+    When:
+        render_findings is called.
+    Then:
+        The blocking finding should come first, matching the order the
+        seeded block and the implement walk both use.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    path = _reviews_document(
+        tmp_path,
+        _review_document(
+            blocking=_BLOCKING_FINDING,
+            advisory=_ADVISORY_FINDING,
+            incidental=_INCIDENTAL_FINDING,
+        ),
+    )
+
+    # Act
+    result = render_findings(path, ["I1", "A1", "B1"])
+
+    # Assert
+    assert result.index("B1") < result.index("A1") < result.index("I1")
+
+
+def test_render_findings_should_name_an_id_it_could_not_find(tmp_path, monkeypatch):
+    """Test an unknown id is reported rather than silently dropped.
+
+    Given:
+        A request naming a finding that is not in the document.
+    When:
+        render_findings is called.
+    Then:
+        It should name the missing id in the result. Silently returning a
+        short answer is how a consumer ends up dispositioning a finding it
+        was never shown.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    path = _reviews_document(tmp_path, _review_document(blocking=_BLOCKING_FINDING))
+
+    # Act
+    result = render_findings(path, ["B1", "B9"])
+
+    # Assert
+    assert "B9" in result
+    assert "not found" in result.lower()
+
+
+def test_render_findings_should_refuse_a_path_outside_the_reviews_directory(
+    tmp_path, monkeypatch
+):
+    """Test the fetch cannot be pointed at an arbitrary file.
+
+    Given:
+        A path outside `.sdlc/reviews/`, which is where every review
+        document lives.
+    When:
+        render_findings is called with it.
+    Then:
+        It should raise, naming the path. The argument reaches the
+        filesystem and arrives from a prompt, so the location is checked
+        rather than assumed.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    outside = tmp_path / "secrets.md"
+    outside.write_text(_review_document(blocking=_BLOCKING_FINDING))
+
+    # Act & assert
+    with pytest.raises(ValueError, match="secrets.md"):
+        render_findings(outside, ["B1"])
+
+
+def test_render_findings_should_match_the_full_render_for_the_same_finding(
+    tmp_path, monkeypatch
+):
+    """Test a fetched body is the body the full render would have carried.
+
+    Given:
+        The same document rendered in full and fetched one finding at a
+        time.
+    When:
+        Both renderings of a finding are compared.
+    Then:
+        The fetched text should carry the same issue and remediation, so
+        disclosure changes when a consumer reads a body and never what it
+        reads.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    path = _reviews_document(
+        tmp_path, _review_document(blocking=_BLOCKING_FINDING, advisory=_ADVISORY_FINDING)
+    )
+    parsed = parse_review_document(path, issue_number=42, iteration=1)
+    expected = next(f for f in parsed.findings if f.id == "B1")
+
+    # Act
+    result = render_findings(path, ["B1"])
+
+    # Assert
+    assert expected.issue in result
+    for line in expected.remediation.splitlines():
+        assert line in result
 
 
 def test_iterations_should_be_empty_when_no_review_dir(tmp_path, monkeypatch):
