@@ -2193,6 +2193,84 @@ def test_pass_line_should_count_findings_carried_unexamined():
     assert "carried WITHOUT re-examination" in _skill_text()
 
 
+def _step2() -> str:
+    return _section(_skill_text(), "### 2. Acquire the review targets")
+
+
+def test_step2_should_capture_the_originating_issue_for_relevance():
+    """Test the issue the PR closes is fetched and held for the reviewers.
+
+    Given:
+        A reviewer can only judge a finding's relevance against the issue's
+        acceptance criteria, and it is spawned into a fresh context that
+        inherits none of the orchestrator's reads.
+    When:
+        Step 2's PR-mode acquisition is read.
+    Then:
+        It should fetch the issue body, say it is interpolated into the
+        step-7 brief, and skip the fetch when the endpoint reported the
+        issue unresolved — the branch step 3 stops the run on.
+    """
+    # Arrange
+    step2 = _step2()
+
+    # Act & assert
+    assert "gh issue view <N> --repo <target> --json title,body" in step2
+    assert "step 7" in step2.split("gh issue view")[1]
+    assert "unresolved" in step2
+
+
+def test_the_reviewer_brief_should_classify_findings_against_the_issue():
+    """Test a reviewer is asked whether a finding pertains to the issue.
+
+    Given:
+        Confinement to a role's mapped files is file scope, not relevance —
+        a reviewer may raise anything anywhere in those files.
+    When:
+        The step-7 reviewer brief is read.
+    Then:
+        It should name all three tiers, carry the issue's acceptance criteria
+        as a slot, and state the test that separates Incidental: the finding
+        traces to no criterion and to no code this PR introduced.
+    """
+    # Arrange
+    brief = _step7()
+
+    # Act & assert
+    assert "**Blocking**, **Advisory** or **Incidental**" in brief
+    assert "acceptance criteri" in brief
+    assert "<the originating issue" in brief
+    # Paths mode has no issue, so it has neither the slot nor the tier.
+    assert "**(paths mode)**" in brief
+    assert "Incidental" in brief.split("**(paths mode)**")[1]
+
+
+def test_severity_definitions_should_agree_between_the_skill_and_the_template():
+    """Test the consolidator and the document define the tiers identically.
+
+    Given:
+        The consolidator reads step 8's definitions and fills the template's
+        legend, so a disagreement between them is a tiering the document
+        contradicts.
+    When:
+        Both are read.
+    Then:
+        Each should define all three tiers by what a finding is, and neither
+        should define a tier by its effect on approval alone.
+    """
+    # Arrange
+    definitions = _step8()
+    legend = _line(TEMPLATE.read_text(), "**Severity legend**")
+
+    # Act & assert
+    for phrase in ("incorrect intent", "technical debt", "not role-relative"):
+        assert phrase in definitions, phrase
+        assert phrase in legend, phrase
+    assert "does not pertain to the originating issue" in definitions
+    assert "deferral" in definitions and "dismissal" in definitions
+    assert "paths mode" in definitions
+
+
 def test_the_template_should_carry_an_incidental_tier():
     """Test the document shape has somewhere to record a deferral.
 

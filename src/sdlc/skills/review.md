@@ -203,6 +203,14 @@ If the PR does not exist, inform the user and stop. Parse the PR title, body, br
 
 **Capture the diff text** returned by `gh pr diff` — this exact text is interpolated into each reviewer's brief in step 7 (the reviewers are spawned into fresh contexts and do NOT inherit this read).
 
+**Fetch the originating issue too, and capture its body the same way.** `<N>` is the `Resolved issue: #<N>` directive appended below this prompt; do not re-derive it.
+
+```bash
+gh issue view <N> --repo <target> --json title,body
+```
+
+A reviewer cannot tell an on-issue defect from an incidental one without the acceptance criteria to test against, and confinement to a role's mapped files is *file* scope, not relevance — it says where a reviewer may look, not what the work was. So this body is interpolated into each reviewer's brief in step 7 alongside the diff. If the appended directive reports the issue as **unresolved**, skip this fetch: step 3 stops the run on that branch, so there is nothing to brief.
+
 **Verify the local working tree is at the PR head.** The diff above comes from the remote, but reviewers read the changed files from the local filesystem, so the recorded `headRefOid` and the lines they read must correspond:
 
 ```bash
@@ -471,7 +479,8 @@ For each role, spawn **N independent reviewer subagents** (N = reviewers per rol
 > You are a **reviewer** for the SDLC `review` skill, assigned the **`<role-stem>`** role.
 > - Your lens and blocking policy: `<the role document body>`.
 > - Your findings are confined to these files (matched from `guide-map.role`): `<the role's in-scope changed files>`. You MAY read any other file for context, but raise findings ONLY against your in-scope files.
-> - Apply your role's blocking policy to classify each finding as **Blocking** or **Advisory**.
+> - **(PR mode)** The issue this PR closes, whose acceptance criteria are what "on-issue" means: `<the originating issue's title and body, captured in step 2>`.
+> - Classify each finding as **Blocking**, **Advisory** or **Incidental**. Two questions, in this order. **First, does it pertain to the issue above?** A finding traces to an acceptance criterion, or to code this PR introduced, or it does not; one that does not is **Incidental** — a real observation about a file this PR happens to touch, not about the work the issue specified. Say which criterion, or say that none covers it; relevance is a claim you evidence like any other, not an aside. **Then, for an on-issue finding, apply your role's blocking policy**: a correctness defect, or an implementation that does something other than what the issue asked for, is **Blocking**; work that adds to technical debt if it is not addressed now is **Advisory**. An incidental finding is a deferral and not a dismissal — it is recorded with its evidence intact — so hold it to the same standard of proof as the other two, and do NOT use the tier to park a finding you have not evidenced. **(paths mode)** There is no originating issue and therefore no relevance to test, so the Incidental tier is unavailable: classify as **Blocking** or **Advisory** only, and omit the issue slot above.
 > - The artifacts under review — interpolate the slot for the active mode (include exactly one):
 >   - **(PR mode)** The PR diff under review (full text): `<pr-diff>` — the `gh pr diff` output captured in step 2. Review THIS diff; do not infer the diff from whatever branch or working tree you happen to be on.
 >   - **(paths mode)** The files under review, each as its whole current contents (no diff): for each matched file from step 2, `<file-path>` followed by `<the file's full contents>`. Review these artifacts as they stand in the working tree — there is no PR, no diff, and no base to compare against.
@@ -603,10 +612,13 @@ The main session agent (NOT a reviewer) merges every reviewer's findings into on
 
   **The Composition line is machine-read, so its shape is a contract.** `sdlc_review --verify` parses it to inherit the roles this round ran under, so the next pass dispatches them without the user restating `--roles`. Render the role stems **backticked and comma-separated, immediately after the literal `role(s)`**, and put nothing but stems between that literal and the opening parenthesis. A line it cannot read yields no roles, and the pass falls back to `general-purpose`: every seeded finding raised by another role then carries unexamined while the pass still reports progress. The endpoint says so when it happens (`Seeded-role coverage warning`), but the cheap fix is upstream — **(re-review)** step 7(0) preserves this line verbatim along with the rest of the header.
 
-Severity definitions (the raising role's blocking policy is authoritative — the MUST/SHALL gloss is one common example, not the definition, since a role's policy need not be phrased in MUST/SHALL terms):
+Severity definitions. The tiers are defined by what a finding **is**, not by what it does to approval — the two are not the same question, and only the first one a reviewer can answer from the code. These are the definitions the template's legend carries; the consolidator fills that legend from here, so the two MUST say the same thing.
 
-- **Blocking** — a defect that MUST be resolved before the PR can be approved per the raising role's blocking policy (for example, a violation of a MUST / SHALL guide rule, or a correctness defect on a consequential path).
-- **Advisory** — clarity, consistency, or quality observations that do not gate approval per that policy (for example, SHOULD / MAY observations or optional improvements).
+- **Blocking** — a correctness defect, or an *incorrect intent* finding: the implementation does something other than what the originating issue asked for. Gates termination.
+- **Advisory** — on-issue work that adds to technical debt if it is not addressed now. Does not gate.
+- **Incidental** — the finding **does not pertain to the originating issue**: a legitimate observation about a file the PR happens to touch, not about the work the issue specified. Does not gate, is not remediated in this PR, and is carried as a candidate for a future issue. A **deferral, not a dismissal** — the finding keeps its id and its evidence, so the chain records the observation without the observation holding the chain open. **(paths mode)** unavailable: there is no originating issue to test relevance against, so an off-issue observation is Advisory there.
+
+The raising role's blocking policy is authoritative for the Blocking / Advisory split on ON-ISSUE work — a MUST / SHALL violation is the common Blocking case and a SHOULD / MAY observation the common Advisory one, but a policy need not be phrased in those terms. Relevance to the originating issue is what separates Incidental from both, and relevance is **not role-relative**: two roles disagreeing about it are disagreeing about the issue, not about their lenses.
 
 ### 9. Finalize the consolidated document
 
