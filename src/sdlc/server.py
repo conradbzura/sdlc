@@ -854,22 +854,27 @@ async def sdlc_roles() -> list[str]:
 
 @mcp.tool()
 async def sdlc_role_scope(paths: list[str], role: str) -> list[str]:
-    """Return the subset of `paths` a role's findings are confined to.
+    """Return the subset of `paths` that seeds a role's review scope.
 
     Performs the reverse lookup over the server's already-merged
     `guide-map.role` (default config deep-merged with `.sdlc/config.json`) and
     intersects the role's globs with `paths` using the same
     `pathlib.PurePath.full_match` semantics `sdlc_guides_for` uses. The
-    `sdlc_review` skill calls this to scope each reviewer to its role's files
-    instead of re-deriving the merge and glob match by hand. An empty list
+    `sdlc_review` skill calls this to seed each reviewer's scope instead of
+    re-deriving the merge and glob match by hand. The result is a SEED, not a
+    boundary: it can only contain paths that were passed in, so a review whose
+    scope is defined by an issue rather than by a diff extends it (see the
+    skill's "Context and scope" section). The role's globs remain the outer
+    bound, and the skill re-calls this per finding to enforce it. An empty list
     means the role maps to none of the given paths (a role with no
     `guide-map.role` entry, or a real role whose globs match no changed file);
     callers MUST distinguish those cases (see the review skill). The bundled
     `general-purpose` role maps to `**/*`, so every path is in scope.
 
     Args:
-        paths: File paths (relative to project root) to scope — typically the
-            PR's changed files.
+        paths: File paths (relative to project root) to scope — the PR's
+            changed files when seeding, or a single finding's file when the
+            skill validates which role that finding belongs to.
         role: The review-role stem to scope `paths` for.
     """
     return guides.files_for_role(paths, role, _state.guide_map)
