@@ -48,7 +48,7 @@ _REREVIEW_BEGIN = "<!-- rereview:begin -->"
 _REREVIEW_END = "<!-- rereview:end -->"
 
 
-def _strip_rereview(text: str) -> str:
+def _strip_rereview(text: str, keep_body: bool = False) -> str:
     """Return ``text`` with every fenced re-review span removed.
 
     A fresh round is handed a prompt that never mentions dispositions, seeded
@@ -66,24 +66,31 @@ def _strip_rereview(text: str) -> str:
             if depth < 0:
                 raise ValueError("review.md: unbalanced re-review fence")
             continue
-        if depth == 0:
+        if keep_body or depth == 0:
             out.append(line)
     if depth:
         raise ValueError("review.md: re-review fence opened and never closed")
     return "".join(out)
 
 
-def _review_skill(rereview: bool) -> str:
+def review_skill(rereview: bool) -> str:
     """Return the review skill assembled for the active mode.
 
     The `Re-review:` directive is known here, before the skill body is ever
     concatenated, so a fresh round need not carry the re-review protocol. On a
     re-review the fences themselves are dropped and everything else is byte
     identical to the file on disk.
+
+    Both modes go through one pass so they cannot disagree about what a
+    marker IS: an earlier form assembled the re-review by exact `str.replace`
+    of the marker plus its newline, which required column 0 and no trailing
+    whitespace, while the fresh path matched on `line.strip()`. A marker that
+    drifted by one space would then have been honoured on one path and
+    emitted literally on the other, and only the fresh path ran the balance
+    check that catches an unclosed opener — whose failure mode is silently
+    deleting the rest of the prompt.
     """
-    text = _read_skill("review")
-    return text.replace(_REREVIEW_BEGIN + "\n", "").replace(_REREVIEW_END + "\n", "") \
-        if rereview else _strip_rereview(text)
+    return _strip_rereview(_read_skill("review"), keep_body=rereview)
 
 
 def _read_file(path: Path) -> str:
@@ -132,7 +139,7 @@ def _review_repo_directive(repo: git_state.ReviewRepo, configured: str | None) -
         # user to initialize a repository that already exists, on every call
         # forever, since step 10(a) records the answer and asks once.
         resolved = (
-            f" resolves to {repo.candidate.as_posix()} (relative to the config "
+            f" resolves to {repo.candidate.as_posix()!r} (relative to the config "
             "file's parent), which"
             if repo.candidate is not None
             else ""
@@ -512,7 +519,7 @@ def _render_rereview(
     Raises ``ValueError`` when a PR target closes no issue, or when the target
     has no `review-<verify>.md` (surfaced by `load_review_findings`).
     """
-    skill = _review_skill(rereview=True)
+    skill = review_skill(rereview=True)
     template = _read_file(REVIEW_TEMPLATE_PATH)
     if paths is not None:
         slug = _paths_slug(paths)
@@ -746,7 +753,7 @@ async def sdlc_review(
         )
     if not roles:
         roles = ["general-purpose"]
-    skill = _review_skill(rereview=False)
+    skill = review_skill(rereview=False)
     template = _read_file(REVIEW_TEMPLATE_PATH)
     roles_line = ", ".join(roles)
     if paths is not None:
@@ -907,7 +914,12 @@ async def sdlc_review_findings(document: str, ids: list[str]) -> str:
             inside `.sdlc/reviews/`.
         ids: Finding ids to fetch, e.g. `["B1", "B4", "A7"]`. Batch a whole
             role's subset in one call rather than fetching one at a time. An
-            id the document does not hold is named in the result.
+            id the document does not hold is named in the result. Pass an
+            EMPTY list to get the enumeration instead — every finding as one
+            `id / severity / reference / title` line with no bodies, plus a
+            trailing `Ids:` line for comparing id sets. Use that to reconcile
+            a seeded block against the file, or to order a remediation walk,
+            without paying for a body you are not going to read.
     """
     try:
         return pr_state.render_findings(document, ids)

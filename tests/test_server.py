@@ -14,8 +14,7 @@ from sdlc.pr_state import (
     ReviewFindings,
 )
 from sdlc.server import (
-    _read_skill,
-    _review_skill,
+    review_skill,
     agents_md,
     get_default_config,
     get_role_guide,
@@ -124,7 +123,7 @@ def _review_directive(result):
     # The skill is assembled per mode, so strip whichever assembly this result
     # actually carries rather than assuming the whole file is present.
     for rereview in (False, True):
-        skill = _review_skill(rereview=rereview)
+        skill = review_skill(rereview=rereview)
         if result.startswith(skill):
             body = result[len(skill):]
             break

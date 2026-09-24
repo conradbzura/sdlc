@@ -9,18 +9,11 @@ description: >
 
 # Review skill — design rationale
 
-**This document carries NO rules.** Nothing here changes, adds to, or qualifies
-anything `review.md` requires. Every MUST, SHALL and STOP lives in the skill;
-what lives here is the reasoning behind them — the derivations, the failures
-that produced a guard, and the claims that were verified by execution.
+**This document carries NO rules.** Nothing here changes, adds to, or qualifies anything `review.md` requires. Every MUST, SHALL and STOP lives in the skill; what lives here is the reasoning behind them — the derivations, the failures that produced a guard, and the claims that were verified by execution.
 
-Read it **on demand**: when a command block does something you did not expect,
-or when you are about to deviate from an instruction you do not understand.
-Never read it as a precondition for executing a step, and never quote it into a
-reviewer's brief — a reviewer is reviewing code, not this protocol.
+Read it **on demand**: when a command block does something you did not expect, or when you are about to deviate from an instruction you do not understand. Never read it as a precondition for executing a step, and never quote it into a reviewer's brief — a reviewer is reviewing code, not this protocol.
 
-Addresses are the `R<n>` ids, not the headings. `review.md` cites `§R4.3`; the
-wording of a heading may change, the id may not.
+Addresses are the `R<n>` ids, not the headings. `review.md` cites `§R4.3`; the wording of a heading may change, the id may not.
 
 ## R1. Modes, markers and the re-review layer
 
@@ -64,8 +57,6 @@ Despite the "(all modes)" heading, `Review snapshot directory:` is emitted only 
 
 ## R5. Step 3 — resolving the issue, the write target, and the commit destinations
 
-_Pending extraction._
-
 The MCP endpoint performs the relationship check via GitHub's `closingIssuesReferences` connection (issues that close when the PR merges, whether linked via a `Closes #N` keyword or the GitHub UI), with a `Closes` / `Fixes` / `Resolves #N` PR-body fallback. When several issues are linked, the endpoint resolves the **first** of them (the connection has no ordering guarantee), so `<N>` is one closing issue, not necessarily the only one. Their answer cannot be used: directives are injected at tool-call time and cannot appear mid-run, and `Resolved issue:` is derived from GitHub rather than from the reply, so re-deriving the path here is guessing under another name. The endpoint resolved `<iteration>` as the next unused iteration deterministically (never overwriting an earlier round), so you do NOT glob the directory or compute `iteration = max + 1` yourself — take the injected path as-is. This holds in both base modes: in **PR mode** the injected path is `.sdlc/reviews/issue-#<N>/review-<iteration>.md`, and in **PATHS mode** it is `<Review document directory>/review-<iteration>.md` under the endpoint-computed slug directory (successive paths-mode reviews of the same target accumulate their rounds there).
 
 ## R6. Steps 5–6 — role validation and the stale-graph rule
@@ -74,7 +65,7 @@ The summary lands in the reviewer brief's "architectural context" slot, where it
 
 ## R7. Step 7 — the two-turn dispatch
 
-_Pending extraction._
+The derivations for this step are held per-topic in the subsections below; cite those ids rather than this one.
 
 ### R7.1 Why the seeded read-back is persisted to disk
 
@@ -86,6 +77,8 @@ Between this read and its use sits the seeded block, N phase-1 dispatches with t
 
 A raw count therefore reports a mismatch on a document that parsed perfectly, naming phantom ids no pass can resolve, and a MUST-STOP gate that fires on healthy input is a gate an agent learns to reason past — at which point the genuinely drifted heading it exists for goes through. The silent-drop path this guards is narrower than it looks, and worth stating exactly, because a wrong reason invites the conclusion that the gate is obsolete. A `### <id> — ` heading the parser cannot read *inside* a tier does NOT vanish: `pr_state.parse_review_document` raises `ValueError` on it, which propagates out of the endpoint before this skill is ever dispatched, so you would never reach step 7 to notice. What IS skipped silently is a well-formed finding heading that has drifted **outside** the Tier 1 / Tier 2 regions — below `## Rejected in earlier passes` or `## Cross-cutting decisions`, or above `## Tier 1` — where the parser's severity is `None` and the heading is passed over without raising. Under the "block is authoritative" rule that finding is then deleted from the document with no disposition and no commit message. Git history is a recovery path, not a detection path.
 
+Two hand-written scanners have stood here and both were wrong. The first matched `/^## +Tier +[12]/`, so it never saw `## Tier 3 — Incidental`: every document carrying an incidental finding reported a phantom mismatch, and the gate's real purpose — catching a heading that drifted outside the tier regions — became unreachable for `I<n>` ids entirely. The second toggled fence state on any run of three or more backticks or tildes, which is not the CommonMark rule: a fence closes only on a run of the SAME character, at least as long as the opener, carrying no info string. On a finding that quotes a fenced sample inside a longer fence — which `pr_state._fence_for` deliberately emits, and which the reviewed artifacts in this chain contain, because findings about review documents routinely quote finding headings — the toggle desynced and read a quoted `### B9 — …` as a real finding. That id is "present in the file but missing from the block", which is the STOP condition, so the pass halted on a healthy document and named an id that does not exist. `pr_state.py`'s rule 1 exists for this defect class and enumerates the scanners inside that module, which is why it reached neither of these: they lived in the skill markdown. The fix was not a third scanner taught CommonMark but the removal of the duplication — the skill now calls the parser it was imitating.
+
 ### R7.3 Why the inline path cannot claim the blindness guarantee
 
 There is no separate phase-1 prompt to withhold anything from: the endpoint appends the whole `Seeded findings` block to the tool return you are reading right now, and on the inline path you ARE the reviewer — so your phase-1 pass is conditioned on the seeded text, which is the exact failure the ordering exists to prevent. Prompt omission alone would not be enough — the prior round's findings sit at a fixed, conventional, guessable path *inside the tree the reviewer is reviewing*, put there by step 10 precisely so the next `--verify` finds them, and the brief otherwise grants "You MAY read any other file for context". The prohibition is what closes that, and the two together are what earn step 8's treatment of an independent rediscovery as stronger evidence than agreement.
@@ -96,7 +89,7 @@ A reference match leaves the `(cross-cutting — no single line)` and `issue acc
 
 ## R8. Step 8 — the disposition rules and their counterexamples
 
-_Pending extraction._
+The derivations for this step are held per-topic in the subsections below; cite those ids rather than this one.
 
 ### R8.1 Retired ids and the max(retired ∪ open) high-water mark
 
@@ -118,9 +111,7 @@ Dropping it would let the chain report clean on a blocking defect nobody looked 
 
 ## R10. Step 10 — the commit protocol
 
-Sub-sections here use `###`, and top sections use `##`, deliberately: the test
-harness locates a sub-section by scanning forward to the next `### `, so a
-`## ` lookup would terminate at the first `### ` beneath it.
+Sub-sections here use `###`, and top sections use `##`, deliberately: the test harness locates a sub-section by scanning forward to the next `### `, so a `## ` lookup would terminate at the first `### ` beneath it.
 
 ### R10.1 Why the repository must contain the document, and cannot be an ancestor
 
@@ -144,10 +135,7 @@ When it holds nothing at all — or was never created — the guard above leaves
 
 ### R10.5 Restoring a snapshot
 
-This is the procedure the capture exists for, and the review workflow never
-runs it — step 10 writes a snapshot, it does not read one back. It is here for
-a user who asks to reconstruct a reviewed state, or to check whether what
-merged is what was reviewed.
+This is the procedure the capture exists for, and the review workflow never runs it — step 10 writes a snapshot, it does not read one back. It is here for a user who asks to reconstruct a reviewed state, or to check whether what merged is what was reviewed.
 
 In any clone that can reach `base`. Run it in a detached worktree so the recipe never mutates the tree it is invoked from. Substitute `<path to review.patch>` as an **absolute** path: the recipe `cd`s into the worktree, so the repository- or cwd-relative form every other path in this skill uses no longer resolves once it gets there.
 

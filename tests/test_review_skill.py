@@ -1,312 +1,69 @@
-"""Execute the `review` skill's documented command blocks against real repos.
+"""Assert the `review` skill document states what it is supposed to state.
 
-The skill is an instruction document, so its command blocks are its contract:
-an agent following them has no way to discover that the surrounding prose
-promises something the commands do not deliver. These tests extract the blocks
-from the markdown and run them verbatim, in fixtures matching the cases the
-prose names — notably a repository that TRACKS its review directory, which is
-the case the exclusion pathspec exists for.
+The skill is an instruction document, so its text is its contract: a rule that
+drifted, an enumeration that went stale, or a cross-reference that no longer
+resolves is a defect an agent cannot discover by following it. These tests read
+the markdown and the assembled prompts; none of them starts a subprocess, so
+they run in the default suite. The blocks that execute against real git
+repositories live in `tests/integration/test_review_skill.py`.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import shlex
 import string
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
-SKILL = Path(__file__).resolve().parents[1] / "src/sdlc/skills/review.md"
-RATIONALE = Path(__file__).resolve().parents[1] / "src/sdlc/review-rationale.md"
-AGENTS = Path(__file__).resolve().parents[1] / "src/sdlc/AGENTS.md"
-EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+from skill_text import (
+    AGENTS,
+    RATIONALE,
+    SKILL,
+    _bash_blocks,
+    _invariants,
+    _line,
+    _scope_section,
+    _section,
+    _skill_text,
+    _step10_block,
+    _step10_blocks,
+    _step10_section,
+    _step2,
+    _step7,
+    _step8,
+    _step9,
+    _variant,
+)
 
-GIT_ENV = {
-    "GIT_AUTHOR_NAME": "Test",
-    "GIT_AUTHOR_EMAIL": "test@example.com",
-    "GIT_COMMITTER_NAME": "Test",
-    "GIT_COMMITTER_EMAIL": "test@example.com",
-    "GIT_CONFIG_GLOBAL": "/dev/null",
-    "GIT_CONFIG_SYSTEM": "/dev/null",
-}
+TEMPLATE = Path(__file__).resolve().parents[1] / "src/sdlc/review-template.md"
 
+# Phrasings that would DENY the gate exists, as opposed to describing when it
+# does not fire. The distinction is the finding: a step that says "no approval
+# gate" reads as permission to proceed.
+_GATE_DENIALS = (
+    "no approval gate",
+    "absence of an approval gate",
+    "without an approval gate",
+)
 
-def _skill_text() -> str:
-    return SKILL.read_text()
-
-
-def _section(text: str, heading: str) -> str:
-    """Return the body of the section introduced by `heading`."""
-    start = text.index(heading)
-    nxt = text.find("\n### ", start + len(heading))
-    end = nxt if nxt != -1 else len(text)
-    return text[start:end]
-
-
-def _line(text: str, prefix: str) -> str:
-    """Return the single line starting with `prefix`.
-
-    Markdown prose here is never hard-wrapped, so a block-level element is one
-    line and can be asserted on without a section scan picking up its
-    neighbours.
-    """
-    return next(line for line in text.splitlines() if line.startswith(prefix))
-
-
-def _bash_blocks(text: str) -> list[str]:
-    """Return every ```bash fenced block in `text`, in order.
-
-    The closing fence is anchored to the start of a line. A block whose body
-    legitimately contains a backtick run — an awk program matching Markdown
-    fences, say — would otherwise be truncated at that run, and the tests that
-    EXECUTE these blocks would then run a fragment.
-    """
-    return re.findall(
-        r"^[ \t]*```bash\n(.*?)^[ \t]*```", text, flags=re.DOTALL | re.MULTILINE
-    )
+# What makes such a sentence honest: it names the case in which the gate does
+# not fire, rather than asserting the write is ungated outright.
+_DENIAL_QUALIFIERS = (
+    "fresh round",
+    "exception",
+    "per-finding approval gate",
+    "two",
+)
 
 
-def _run(script: str, cwd: Path) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["bash", "-c", script],
-        cwd=cwd,
-        env={"PATH": "/usr/bin:/bin:/usr/local/bin", **GIT_ENV},
-        capture_output=True,
-        text=True,
-    )
-
-
-def _git(cwd: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        env={"PATH": "/usr/bin:/bin:/usr/local/bin", **GIT_ENV},
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, f"git {args}: {result.stderr}"
-    return result.stdout.strip()
-
-
-@pytest.fixture
-def tracked_sdlc_repo(tmp_path):
-    """A feature branch off a published `main`, with `.sdlc` TRACKED in HEAD.
-
-    Tracking `.sdlc` is the case `review.md`'s exclusion rationale names and
-    the case a `.gitignore`-based fixture silently fails to exercise.
-    """
-    bare = tmp_path / "origin.git"
-    _git(tmp_path, "init", "--bare", "-b", "main", str(bare))
-
-    work = tmp_path / "work"
-    work.mkdir()
-    _git(work, "init", "-b", "main")
-    (work / "app.py").write_text("value = 1\n")
-    _git(work, "add", "app.py")
-    _git(work, "commit", "-m", "Add app")
-    _git(work, "remote", "add", "origin", str(bare))
-    _git(work, "push", "-u", "origin", "main")
-
-    _git(work, "checkout", "-b", "feature")
-    (work / "app.py").write_text("value = 2\n")
-    (work / "new.py").write_text("added = True\n")
-    reviews = work / ".sdlc" / "reviews"
-    reviews.mkdir(parents=True)
-    (reviews / "review-1.md").write_text("# pass 1\n")
-    _git(work, "add", "-A")
-    _git(work, "commit", "-m", "Change app and track .sdlc")
-    return work
-
-
-def _fill_meta(script: str, pass_number: int = 1) -> str:
-    """Fill the `meta.json` placeholders as a PATHS-mode agent is told to.
-
-    Every field whose placeholder says to omit the whole line is dropped,
-    rather than named one by one — that is the instruction the block carries
-    inline, so following it generically keeps this helper from silently
-    diverging when a field is added.
-    """
-    script = re.sub(
-        r'^\s*"[a-z_]+": <[^>]*omit this WHOLE LINE[^>]*>,?\n',
-        "",
-        script,
-        flags=re.MULTILINE,
-    )
-    script = script.replace("<pr|paths>", "paths")
-    script = script.replace("<k>", str(pass_number))
-    return re.sub(r"<true\|false[^>]*>", "false", script)
-
-
-def _capture_script(snapshot_dir: str) -> str:
-    """The step-2 capture, extracted verbatim and pointed at `snapshot_dir`."""
-    section = _section(_skill_text(), "#### Capture the reviewed state (all modes)")
-    blocks = _bash_blocks(section)
-    assert len(blocks) == 3, f"expected 3 capture blocks, found {len(blocks)}"
-    script = "set -e\n" + "".join(blocks)
-    # Fail loudly if the extraction drifted off the block the prose describes.
-    assert "git read-tree --empty" in script
-    assert '":(exclude,top)$excl"' in script
-    assert "git commit-tree" in script
-    script = re.sub(r"excl='<[^']*>'", "excl='.sdlc'", script)
-    assert "excl='.sdlc'" in script, "the exclusion placeholder moved"
-    script = _fill_meta(script.replace("<Review snapshot directory>", snapshot_dir))
-    return script + '\necho "TREE=$tree"\necho "BASE=$base"\necho "STAGING=$staging"\n'
-
-
-def _promote_script(snapshot_dir: str) -> str:
-    """The step-10(c) promote, which moves the staged capture into place."""
-    blocks = [b for b in _step10_blocks() if '"$staging"' in b]
-    assert len(blocks) == 1, f"expected 1 promote block, found {len(blocks)}"
-    return "set -e\n" + blocks[0].replace("<Review snapshot directory>", snapshot_dir)
-
-
-def _restore_script(patch: str, base: str) -> str:
-    """The step-10 restore recipe, extracted verbatim.
-
-    Nothing is appended. The block's own `git write-tree` is the command under
-    test and prints the recomputed SHA on stdout; appending another one would
-    run it after the block's `unset GIT_INDEX_FILE` and read the real index
-    instead — which is the very defect this recipe was corrected for.
-    """
-    section = _section(RATIONALE.read_text(), "### R10.5 Restoring a snapshot")
-    blocks = [b for b in _bash_blocks(section) if "git apply" in b]
-    assert len(blocks) == 1, f"expected 1 restore block, found {len(blocks)}"
-    script = "set -e\n" + blocks[0]
-    assert "export GIT_INDEX_FILE" in script
-    assert "git read-tree --empty" in script
-    script = re.sub(
-        r"':\(exclude,top\)<meta\.excluded[^']*>'", "':(exclude,top).sdlc'", script
-    )
-    assert "':(exclude,top).sdlc'" in script, "the meta.excluded placeholder moved"
-    script = script.replace('"<path to review.patch>"', f'"{patch}"')
-    script = script.replace('"<meta.base>"', f'"{base}"')
-    return script
-
-
-def _field(output: str, name: str) -> str:
-    match = re.search(rf"^{name}=(.+)$", output, flags=re.MULTILINE)
-    assert match is not None, f"{name} missing from:\n{output}"
-    return match.group(1).strip()
-
-
-def test_capture_should_exclude_a_tracked_review_directory(tracked_sdlc_repo):
-    """Test the documented capture omits `.sdlc` when the repo tracks it.
-
-    Given:
-        A feature branch whose HEAD tracks `.sdlc/reviews/review-1.md`.
-    When:
-        The step-2 capture blocks are run verbatim.
-    Then:
-        The snapshot tree should contain the source files and no `.sdlc`
-        entry, and should not be the empty tree.
-    """
-    # Arrange
-    snapshot = tracked_sdlc_repo / ".sdlc" / "reviews" / "snapshot-1"
-
-    # Act
-    result = _run(_capture_script(str(snapshot)), tracked_sdlc_repo)
-
-    # Assert
-    assert result.returncode == 0, result.stderr
-    tree = _field(result.stdout, "TREE")
-    assert tree != EMPTY_TREE
-    entries = _git(tracked_sdlc_repo, "ls-tree", "-r", "--name-only", tree).split()
-    assert "app.py" in entries
-    assert "new.py" in entries
-    assert not [e for e in entries if e.startswith(".sdlc")], entries
-
-
-def test_capture_should_be_stable_when_only_the_review_changes(tracked_sdlc_repo):
-    """Test two passes differing only in review content yield the same tree.
-
-    Given:
-        A capture taken, then `.sdlc` content changed and committed.
-    When:
-        The capture is run a second time.
-    Then:
-        Both passes should produce the same tree SHA, so the integrity check
-        distinguishes code changes rather than review churn.
-    """
-    # Arrange
-    snapshot = tracked_sdlc_repo / ".sdlc" / "reviews" / "snapshot-1"
-    first = _run(_capture_script(str(snapshot)), tracked_sdlc_repo)
-    assert first.returncode == 0, first.stderr
-
-    # Act
-    review = tracked_sdlc_repo / ".sdlc" / "reviews" / "review-1.md"
-    review.write_text("# pass 2\n\nmany more findings\n")
-    _git(tracked_sdlc_repo, "add", "-A", "--", ".sdlc")
-    _git(tracked_sdlc_repo, "commit", "-m", "Update the review")
-    second = _run(_capture_script(str(snapshot)), tracked_sdlc_repo)
-
-    # Assert
-    assert second.returncode == 0, second.stderr
-    assert _field(first.stdout, "TREE") == _field(second.stdout, "TREE")
-
-
-def test_restore_should_recompute_the_captured_tree(tracked_sdlc_repo):
-    """Test the documented restore recipe reproduces `meta.tree`.
-
-    Given:
-        A capture producing a non-empty patch and a tree SHA.
-    When:
-        The step-10 restore recipe is run verbatim against the base.
-    Then:
-        The recomputed tree SHA should equal the captured one.
-    """
-    # Arrange
-    snapshot = tracked_sdlc_repo / ".sdlc" / "reviews" / "snapshot-1"
-    captured = _run(_capture_script(str(snapshot)), tracked_sdlc_repo)
-    assert captured.returncode == 0, captured.stderr
-    tree = _field(captured.stdout, "TREE")
-    base = _field(captured.stdout, "BASE")
-    patch = Path(_field(captured.stdout, "STAGING")) / "review.patch"
-    assert patch.stat().st_size > 0, "the patch should not be empty"
-
-    # Act
-    result = _run(_restore_script(str(patch), base), tracked_sdlc_repo)
-
-    # Assert
-    assert result.returncode == 0, result.stderr
-    recomputed = result.stdout.strip().splitlines()[-1].strip()
-    assert re.fullmatch(r"[0-9a-f]{40}", recomputed), result.stdout
-    assert recomputed == tree
-
-
-def test_promote_should_clear_a_stale_artifact_from_a_previous_pass(tracked_sdlc_repo):
-    """Test promoting a capture replaces the whole snapshot directory.
-
-    Given:
-        A snapshot directory holding a patch, a meta, and a third artifact
-        left behind by an earlier pass.
-    When:
-        The capture runs and step 10 promotes it.
-    Then:
-        Only the freshly captured artifacts should remain, so nothing survives
-        beside a `meta.json` that no longer describes it.
-    """
-    # Arrange
-    snapshot = tracked_sdlc_repo / ".sdlc" / "reviews" / "snapshot-1"
-    snapshot.mkdir(parents=True)
-    (snapshot / "review.patch").write_text("stale patch\n")
-    (snapshot / "meta.json").write_text('{"pass": 0}\n')
-    (snapshot / "target_head").write_text("stale sidecar\n")
-    captured = _run(_capture_script(str(snapshot)), tracked_sdlc_repo)
-    assert captured.returncode == 0, captured.stderr
-
-    # Act
-    result = _run(_promote_script(str(snapshot)), tracked_sdlc_repo)
-
-    # Assert
-    assert result.returncode == 0, result.stderr
-    assert (snapshot / "review.patch").read_text() != "stale patch\n"
-    assert not (snapshot / "target_head").exists(), "a third artifact survived"
-    assert '"pass": 0' not in (snapshot / "meta.json").read_text()
-
+from sdlc.pr_state import render_findings
 
 def test_skill_should_not_carry_shell_state_between_steps():
     """Test no step depends on a shell variable another step assigned.
@@ -335,6 +92,7 @@ def test_skill_should_not_carry_shell_state_between_steps():
     assert unassigned == []
     # Guard the assertion above against passing because nothing uses the handle.
     assert any("$worktree" in block for block in blocks)
+
 
 
 def test_rereview_brief_should_withhold_the_seeded_findings_from_phase_one():
@@ -369,211 +127,6 @@ def test_rereview_brief_should_withhold_the_seeded_findings_from_phase_one():
     assert "SendMessage" in section
 
 
-# --- Step 10: the commit protocol --------------------------------------------
-
-
-def _step10_section() -> str:
-    return _section(_skill_text(), "### 10. Write and commit the review document")
-
-
-def _step10_blocks() -> list[str]:
-    return _bash_blocks(_step10_section())
-
-
-def _step10_block(*needles: str) -> str:
-    """Return the single step-10 block containing every needle."""
-    matches = [b for b in _step10_blocks() if all(n in b for n in needles)]
-    assert len(matches) == 1, f"expected 1 block matching {needles}, found {len(matches)}"
-    return matches[0]
-
-
-def _variant(block: str, label: str) -> str:
-    """Return the `# <label>` half of a block showing two commit variants.
-
-    The header may carry a trailing comment, and may wrap onto further comment
-    lines, so the variant runs until the OTHER variant's header rather than
-    until the next comment.
-    """
-    other = "# in place" if label == "worktree" else "# worktree"
-    lines = block.splitlines(keepends=True)
-    start = next(
-        (i for i, line in enumerate(lines) if line.startswith(f"# {label}")), None
-    )
-    assert start is not None, f"'# {label}' missing from:\n{block}"
-    rest = lines[start:]
-    end = next(
-        (i for i, line in enumerate(rest[1:], 1) if line.startswith(other)), len(rest)
-    )
-    return "".join(rest[:end])
-
-
-def _make_review_repo(base: Path) -> Path:
-    """Build a project whose `.sdlc` is its own repository, checked out on main."""
-    repo = base / ".sdlc"
-    repo.mkdir(parents=True)
-    _git(repo, "init", "-b", "main")
-    (repo / ".gitkeep").write_text("")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-m", "Initialize the review document repository")
-    snapshot = repo / "reviews" / "issue-#1" / "snapshot-1"
-    snapshot.mkdir(parents=True)
-    (repo / "reviews" / "issue-#1" / "review-1.md").write_text("# pass 1\n")
-    (snapshot / "meta.json").write_text("{}\n")
-    (snapshot / "review.patch").write_text("")
-    return base
-
-
-def _substitute(script: str, project: Path, branch: str = "reviews") -> str:
-    message = project / "msg.txt"
-    message.write_text("review: Add review-1 with 0 blocking findings\n")
-    for key, value in {
-        "<repo>": str(project / ".sdlc"),
-        "<Review document in repository>": "reviews/issue-#1/review-1.md",
-        "<Review snapshot in repository>": "reviews/issue-#1/snapshot-1",
-        "<Review document>": ".sdlc/reviews/issue-#1/review-1.md",
-        "<Review snapshot directory>": ".sdlc/reviews/issue-#1/snapshot-1",
-        "<branch>": branch,
-        "<message-file>": str(message),
-    }.items():
-        script = script.replace(key, value)
-    return script
-
-
-def _derive(repo: str, document: str, cwd: Path) -> str:
-    """Run the documented worktree derivation for one (repo, document) pair."""
-    line = _step10_block("worktree list --porcelain").splitlines()[0]
-    script = line.replace("<repo>", repo).replace(
-        "<Review document in repository>", document
-    )
-    result = _run(script + '\necho "$worktree"', cwd)
-    assert result.returncode == 0, result.stderr
-    return result.stdout.strip()
-
-
-@pytest.fixture
-def review_repo(tmp_path):
-    """A project whose `.sdlc` repository is checked out on a non-target branch.
-
-    Mirrors the directive layout: the document is `.sdlc/reviews/...` from the
-    working directory and `reviews/...` from the repository root.
-    """
-    project = tmp_path / "project"
-    project.mkdir()
-    return _make_review_repo(project)
-
-
-def test_commit_should_land_on_the_named_branch_when_it_differs_from_head(review_repo):
-    """Test the documented commit reaches the branch the directive names.
-
-    Given:
-        A review repository checked out on `main`, with a `Review commit
-        branch:` of `reviews`.
-    When:
-        Step 10's (b), (c) and (d) blocks are run verbatim.
-    Then:
-        The document commit should be reachable from `refs/heads/reviews` and
-        absent from `refs/heads/main`.
-    """
-    # Arrange
-    resolve = _step10_block("worktree list --porcelain")
-    mirror = _step10_block("$worktree/$(dirname", "<Review snapshot directory>")
-    fresh = _step10_block(
-        'add "<Review document in repository>" "<Review snapshot in repository>"'
-    )
-    script = "set -e\n" + resolve + mirror + _variant(fresh, "worktree")
-    repo = review_repo / ".sdlc"
-
-    # Act
-    result = _run(_substitute(script, review_repo), review_repo)
-
-    # Assert
-    assert result.returncode == 0, result.stderr
-    assert "review: Add review-1" in _git(repo, "log", "--format=%s", "refs/heads/reviews")
-    tracked = _git(repo, "ls-tree", "-r", "--name-only", "refs/heads/reviews")
-    assert "reviews/issue-#1/review-1.md" in tracked
-    assert "review: Add review-1" not in _git(repo, "log", "--format=%s", "refs/heads/main")
-
-
-def test_worktree_should_not_be_shared_between_repositories(tmp_path):
-    """Test two projects at the same round number get separate worktrees.
-
-    Given:
-        Two review repositories, each holding its own `review-1.md`.
-    When:
-        Step 10(b) is run in each.
-    Then:
-        Each worktree should be registered to its own repository, and the
-        second should not adopt the first's directory.
-    """
-    # Arrange
-    first = _make_review_repo(tmp_path / "first")
-    second = _make_review_repo(tmp_path / "second")
-    block = _step10_block("worktree list --porcelain")
-
-    # Act
-    left = _run(_substitute("set -e\n" + block, first), first)
-    right = _run(_substitute("set -e\n" + block, second), second)
-
-    # Assert
-    assert left.returncode == 0, left.stderr
-    assert right.returncode == 0, right.stderr
-    left_path = _derive(str(first / ".sdlc"), "reviews/issue-#1/review-1.md", first)
-    right_path = _derive(str(second / ".sdlc"), "reviews/issue-#1/review-1.md", second)
-    assert left_path != right_path
-    # The documented check is `grep -Fqx "worktree $worktree"`, which is line
-    # anchored. A Python `in` is not: it is satisfied by /tmp/x against
-    # /private/tmp/x, which is exactly the mismatch that made the real
-    # predicate fail while this test passed.
-    left_lines = _git(first / ".sdlc", "worktree", "list", "--porcelain").splitlines()
-    right_lines = _git(second / ".sdlc", "worktree", "list", "--porcelain").splitlines()
-    assert f"worktree {left_path}" in left_lines
-    assert f"worktree {left_path}" not in right_lines
-
-
-def test_snapshot_commit_should_mirror_the_bumped_document_into_the_worktree(
-    review_repo,
-):
-    """Test the pass-header bump reaches the committed document on a re-review.
-
-    Given:
-        A re-review whose snapshot-and-header commit carries the pass bump, run
-        on the worktree path a `review-branch` project takes.
-    When:
-        10(b), 10(c)'s mirror and the snapshot-and-header commit are run, with
-        the working-directory document bumped to pass 2 beforehand.
-    Then:
-        The COMMITTED document should carry the bump. Without a `cp` in that
-        block the worktree copy still holds the seeded content, so the commit
-        that exists to record the bump records the state before it — and on a
-        pass where every finding carries there is no later commit to fix it.
-    """
-    # Arrange
-    document = review_repo / ".sdlc" / "reviews" / "issue-#1" / "review-1.md"
-    resolve = _step10_block("worktree list --porcelain")
-    mirror = _step10_block("$worktree/$(dirname", "<Review snapshot directory>")
-    snapshot = _step10_block(
-        'add "<Review snapshot in repository>" "<Review document in repository>"'
-    )
-    script = "set -e\n" + resolve + mirror
-    setup = _run(_substitute(script, review_repo), review_repo)
-    assert setup.returncode == 0, setup.stderr
-    document.write_text("# pass 2\n")
-
-    # Act
-    result = _run(
-        _substitute("set -e\n" + resolve + _variant(snapshot, "worktree"), review_repo),
-        review_repo,
-    )
-
-    # Assert
-    assert result.returncode == 0, result.stderr
-    committed = _git(
-        review_repo / ".sdlc",
-        "show",
-        "refs/heads/reviews:reviews/issue-#1/review-1.md",
-    )
-    assert committed.strip() == "# pass 2"
-
 
 def test_rereview_worktree_commits_should_copy_the_document_first():
     """Test both re-review commit blocks re-mirror the document before staging.
@@ -607,6 +160,7 @@ def test_rereview_worktree_commits_should_copy_the_document_first():
         ), variant
 
 
+
 def test_target_path_should_be_keyed_on_the_working_directory_document():
     """Test the scratch target is derivable when no review repository resolves.
 
@@ -635,6 +189,7 @@ def test_target_path_should_be_keyed_on_the_working_directory_document():
     assert '"<Review document>"' in derivations[0]
     assert "<repo>" not in derivations[0]
     assert "<Review document in repository>" not in derivations[0]
+
 
 
 def test_commit_destinations_should_be_transcribed_before_step_ten():
@@ -679,90 +234,6 @@ def test_commit_destinations_should_be_transcribed_before_step_ten():
         assert derivation in block, block
 
 
-def test_worktree_resolution_should_reuse_a_registered_worktree(review_repo):
-    """Test a second run adopts the worktree the first one registered.
-
-    Given:
-        Step 10(b) already run once, leaving a worktree registered to this
-        repository — the state any interrupted pass leaves behind, since the
-        worktree is removed only after the last commit of 10(d).
-    When:
-        10(b) is run again.
-    Then:
-        It should exit 0 and reuse it. The derivation must name the path the
-        way `git worktree list --porcelain` prints it — normalized — or this
-        branch is unreachable and the run aborts on its own worktree.
-    """
-    # Arrange
-    block = _step10_block("worktree list --porcelain")
-    script = _substitute("set -e\n" + block, review_repo)
-    first = _run(script, review_repo)
-    assert first.returncode == 0, first.stderr
-
-    # Act
-    second = _run(script, review_repo)
-
-    # Assert
-    assert second.returncode == 0, second.stderr
-    assert "not registered" not in second.stderr
-    derived = _derive(
-        str(review_repo / ".sdlc"), "reviews/issue-#1/review-1.md", review_repo
-    )
-    registered = _git(
-        review_repo / ".sdlc", "worktree", "list", "--porcelain"
-    ).splitlines()
-    assert f"worktree {derived}" in registered
-
-
-def test_worktree_resolution_should_refuse_an_unregistered_directory(review_repo):
-    """Test a foreign directory at the derived path is an error, not a reuse.
-
-    Given:
-        A plain directory sitting at the path step 10(b) derives.
-    When:
-        Step 10(b) is run.
-    Then:
-        It should fail loudly rather than silently commit into that directory.
-    """
-    # Arrange
-    path = Path(_derive(str(review_repo / ".sdlc"), "reviews/issue-#1/review-1.md", review_repo))
-    path.mkdir(parents=True, exist_ok=True)
-    (path / "someone-elses.txt").write_text("not our worktree\n")
-
-    # Act
-    result = _run(_substitute("set -e\n" + _step10_block("worktree list --porcelain"), review_repo), review_repo)
-
-    # Assert
-    assert result.returncode != 0
-    assert "not registered" in result.stderr
-
-
-@settings(max_examples=20, deadline=None)
-@given(
-    first=st.text(alphabet=string.ascii_letters + string.digits + "/_-.", min_size=1, max_size=40),
-    second=st.text(alphabet=string.ascii_letters + string.digits + "/_-.", min_size=1, max_size=40),
-)
-def test_worktree_derivation_should_differ_for_distinct_documents(first, second):
-    """Test the derived worktree path is keyed on the document, not the round.
-
-    Given:
-        Any two distinct repository-relative document paths.
-    When:
-        The documented derivation is applied to each.
-    Then:
-        The two worktree paths should differ, so no two rounds collide.
-    """
-    # Arrange
-    assume(first != second)
-    here = Path(__file__).resolve().parent
-
-    # Act
-    left = _derive("/repo", first, here)
-    right = _derive("/repo", second, here)
-
-    # Assert
-    assert left != right
-
 
 def test_rereview_should_verify_the_document_against_an_on_disk_target():
     """Test the terminal equality check reads the filesystem, not recollection.
@@ -786,6 +257,7 @@ def test_rereview_should_verify_the_document_against_an_on_disk_target():
     assert ".target.md" in step_nine
     assert len(checks) == 1, f"expected 1 diff block, found {len(checks)}"
     assert "MUST equal step 9's consolidated document" not in step_ten
+
 
 
 def test_unresolved_repository_should_still_write_the_document():
@@ -812,44 +284,6 @@ def test_unresolved_repository_should_still_write_the_document():
     assert "STOP before writing anything" not in section
 
 
-def test_ignore_check_should_report_an_ignored_snapshot(review_repo):
-    """Test the ignore check covers the snapshot, not the document alone.
-
-    Given:
-        A review repository whose `.gitignore` hides the snapshot directory.
-    When:
-        Step 10(a)'s check-ignore command is run verbatim.
-    Then:
-        It should exit zero and name the ignored path.
-    """
-    # Arrange
-    (review_repo / ".sdlc" / ".gitignore").write_text("snapshot-*/\n")
-
-    # Act
-    result = _run(_substitute(_step10_block("check-ignore"), review_repo), review_repo)
-
-    # Assert
-    assert result.returncode == 0, result.stderr
-    assert "snapshot-1" in result.stdout
-
-
-def test_ignore_check_should_pass_when_neither_path_is_ignored(review_repo):
-    """Test the ignore check reports a clean repository as clean.
-
-    Given:
-        A review repository with no `.gitignore`.
-    When:
-        Step 10(a)'s check-ignore command is run verbatim.
-    Then:
-        It should exit 1 — the documented "proceed" status — and not 128.
-    """
-    # Act
-    result = _run(_substitute(_step10_block("check-ignore"), review_repo), review_repo)
-
-    # Assert
-    assert result.returncode == 1, f"rc={result.returncode}: {result.stderr}"
-    assert result.stdout.strip() == ""
-
 
 def test_snapshot_commit_should_carry_the_pass_header_bump():
     """Test a pass that changes no finding still has a commit to make.
@@ -872,438 +306,6 @@ def test_snapshot_commit_should_carry_the_pass_header_bump():
     assert "pass-header bump" in section
     assert "Every seeded finding carries (re-review):" in text
 
-
-# --- Step 2: the reviewed-state capture ---------------------------------------
-
-
-def _meta(stdout: str) -> dict:
-    """Parse the `meta.json` the capture block wrote into its staging directory."""
-    staging = Path(_field(stdout, "STAGING"))
-    return json.loads((staging / "meta.json").read_text())
-
-
-@pytest.fixture
-def bare_tree(tmp_path):
-    """A directory of files that is not a git repository at all."""
-    tree = tmp_path / "loose"
-    tree.mkdir()
-    (tree / "notes.md").write_text("# notes\n")
-    return tree
-
-
-@pytest.fixture
-def remoteless_repo(tmp_path):
-    """A repository with commits but no remotes configured."""
-    work = tmp_path / "local"
-    work.mkdir()
-    _git(work, "init", "-b", "main")
-    (work / "app.py").write_text("value = 1\n")
-    _git(work, "add", "-A")
-    _git(work, "commit", "-m", "Add app")
-    return work
-
-
-@pytest.fixture
-def headless_remote_repo(tmp_path):
-    """A repository with a remote whose `HEAD` symref is absent."""
-    bare = tmp_path / "origin.git"
-    _git(tmp_path, "init", "--bare", "-b", "main", str(bare))
-    work = tmp_path / "work"
-    work.mkdir()
-    _git(work, "init", "-b", "main")
-    (work / "app.py").write_text("value = 1\n")
-    _git(work, "add", "-A")
-    _git(work, "commit", "-m", "Add app")
-    _git(work, "remote", "add", "origin", str(bare))
-    _git(work, "push", "-u", "origin", "main")
-    # `push -u` does not create refs/remotes/origin/HEAD; make sure of it, then
-    # point the remote somewhere unreachable so `set-head -a` cannot recover it
-    # either — the offline / sandboxed case the skill calls out.
-    subprocess.run(["git", "symbolic-ref", "-d", "refs/remotes/origin/HEAD"],
-                   cwd=work, capture_output=True,
-                   env={"PATH": "/usr/bin:/bin:/usr/local/bin", **GIT_ENV})
-    _git(work, "remote", "set-url", "origin", str(tmp_path / "gone.git"))
-    return work
-
-
-def test_capture_should_exclude_the_review_repo_from_a_subdirectory(tracked_sdlc_repo):
-    """Test the exclusion holds regardless of the working directory.
-
-    Given:
-        A repository tracking `.sdlc`, and a subdirectory within it.
-    When:
-        The capture runs from the root and again from the subdirectory.
-    Then:
-        Both should yield the same tree, with no gitlink to the review repo.
-    """
-    # Arrange
-    snapshot = tracked_sdlc_repo / ".sdlc" / "reviews" / "snapshot-1"
-    nested = tracked_sdlc_repo / "src"
-    nested.mkdir()
-    (nested / "mod.py").write_text("x = 1\n")
-    _git(tracked_sdlc_repo, "add", "-A")
-    _git(tracked_sdlc_repo, "commit", "-m", "Add a subdirectory")
-
-    # Act
-    from_root = _run(_capture_script(str(snapshot)), tracked_sdlc_repo)
-    from_nested = _run(_capture_script(str(snapshot)), nested)
-
-    # Assert
-    assert from_root.returncode == 0, from_root.stderr
-    assert from_nested.returncode == 0, from_nested.stderr
-    tree = _field(from_nested.stdout, "TREE")
-    assert tree == _field(from_root.stdout, "TREE")
-    listing = _git(tracked_sdlc_repo, "ls-tree", "-r", tree)
-    assert "160000" not in listing, "a gitlink to the review repository was captured"
-
-
-def test_capture_should_write_every_meta_field_itself(tracked_sdlc_repo):
-    """Test no `meta.json` value has to survive the end of the invocation.
-
-    Given:
-        A repository with a resolvable anchor.
-    When:
-        The capture runs as a single invocation.
-    Then:
-        `meta.json` should already hold the resolved shas and refs, with no
-        unsubstituted shell variable left in it.
-    """
-    # Arrange
-    snapshot = tracked_sdlc_repo / ".sdlc" / "reviews" / "snapshot-1"
-
-    # Act
-    result = _run(_capture_script(str(snapshot)), tracked_sdlc_repo)
-
-    # Assert
-    assert result.returncode == 0, result.stderr
-    meta = _meta(result.stdout)
-    assert meta["base"] == _field(result.stdout, "BASE")
-    assert meta["tree"] == _field(result.stdout, "TREE")
-    assert meta["anchor_ref"] == "refs/remotes/origin/main"
-    assert meta["upstream"], "upstream URL was not resolved"
-    assert meta["excluded"] == [".sdlc"]
-    assert "$" not in json.dumps(meta)
-
-
-@pytest.fixture
-def tracked_at_base(tmp_path):
-    """A branch whose merge-base already tracks `.sdlc`, changing only source."""
-    bare = tmp_path / "origin.git"
-    _git(tmp_path, "init", "--bare", "-b", "main", str(bare))
-    work = tmp_path / "based"
-    work.mkdir()
-    _git(work, "init", "-b", "main")
-    (work / "app.py").write_text("value = 1\n")
-    reviews = work / ".sdlc" / "reviews"
-    reviews.mkdir(parents=True)
-    (reviews / "review-1.md").write_text("# base pass\n")
-    _git(work, "add", "-A")
-    _git(work, "commit", "-m", "Add app and track .sdlc")
-    _git(work, "remote", "add", "origin", str(bare))
-    _git(work, "push", "-q", "-u", "origin", "main")
-    _git(work, "checkout", "-q", "-b", "feature")
-    (work / "app.py").write_text("value = 2\n")
-    _git(work, "add", "-A")
-    _git(work, "commit", "-m", "Change app only")
-    return work
-
-
-def test_capture_should_not_record_the_review_repo_as_deleted(tracked_at_base):
-    """Test the patch excludes the review repo rather than deleting it.
-
-    Given:
-        A repository whose merge-base tracks `.sdlc`.
-    When:
-        The capture generates `review.patch`.
-    Then:
-        The patch should contain no deletion under the excluded path, so a
-        restore does not lose it.
-    """
-    # Arrange
-    work = tracked_at_base
-    snapshot = work / ".sdlc" / "reviews" / "snapshot-1"
-
-    # Act
-    result = _run(_capture_script(str(snapshot)), work)
-
-    # Assert
-    assert result.returncode == 0, result.stderr
-    patch = (Path(_field(result.stdout, "STAGING")) / "review.patch").read_text()
-    assert patch, "the source change should still produce a patch"
-    assert ".sdlc" not in patch, f"the excluded path appears in the patch:\n{patch}"
-    assert "deleted file mode" not in patch
-
-
-def test_capture_should_record_no_vcs_outside_a_repository(bare_tree):
-    """Test a non-repository reaches its documented outcome, not an abort.
-
-    Given:
-        A directory of files that is not a git repository.
-    When:
-        The capture runs.
-    Then:
-        It should write `meta.json` alone, recording no version control and
-        no anchor, rather than exiting non-zero.
-    """
-    # Act
-    result = _run(_capture_script(str(bare_tree / "snapshot-1")), bare_tree)
-
-    # Assert
-    assert result.returncode == 0, result.stderr
-    meta = _meta(result.stdout)
-    assert meta["vcs"] == "none"
-    assert meta["base"] == ""
-    assert not (Path(_field(result.stdout, "STAGING")) / "review.patch").exists()
-
-
-def test_capture_should_abort_unanchored_when_no_remote_exists(remoteless_repo):
-    """Test a repository with no remotes loses provenance, not the review.
-
-    Given:
-        A repository with commits but no configured remote.
-    When:
-        The capture runs.
-    Then:
-        It should record an unanchored capture and exit zero, so the round
-        still reaches step 3.
-    """
-    # Act
-    result = _run(_capture_script(str(remoteless_repo / "snap")), remoteless_repo)
-
-    # Assert
-    assert result.returncode == 0, result.stderr
-    assert _meta(result.stdout)["vcs"] == "unanchored"
-    assert "set-head" in result.stderr
-
-
-def test_capture_should_abort_unanchored_when_the_remote_head_is_unset(
-    headless_remote_repo,
-):
-    """Test an unresolvable remote HEAD is survivable, not fatal.
-
-    Given:
-        A repository with a remote whose HEAD symref does not exist and
-        cannot be fetched.
-    When:
-        The capture runs.
-    Then:
-        It should record an unanchored capture and exit zero.
-    """
-    # Act
-    result = _run(
-        _capture_script(str(headless_remote_repo / "snap")), headless_remote_repo
-    )
-
-    # Assert
-    assert result.returncode == 0, result.stderr
-    assert _meta(result.stdout)["vcs"] == "unanchored"
-
-
-def test_capture_should_record_a_dirty_worktree(tracked_sdlc_repo):
-    """Test cleanliness is detected, which the HEAD sha alone cannot do.
-
-    Given:
-        The same commit, captured once clean and once with an uncommitted edit.
-    When:
-        The capture runs in each state.
-    Then:
-        `worktree_dirty` should distinguish them even though `HEAD` does not.
-    """
-    # Arrange
-    snapshot = tracked_sdlc_repo / ".sdlc" / "reviews" / "snapshot-1"
-    clean = _run(_capture_script(str(snapshot)), tracked_sdlc_repo)
-    assert clean.returncode == 0, clean.stderr
-    clean_meta = _meta(clean.stdout)   # staging is reused; read before overwriting
-
-    # Act
-    (tracked_sdlc_repo / "app.py").write_text("value = 999\n")
-    dirty = _run(_capture_script(str(snapshot)), tracked_sdlc_repo)
-
-    # Assert
-    assert dirty.returncode == 0, dirty.stderr
-    dirty_meta = _meta(dirty.stdout)
-    assert clean_meta["worktree_dirty"] is False
-    assert dirty_meta["worktree_dirty"] is True
-    assert clean_meta["head"] == dirty_meta["head"]
-    assert clean_meta["tree"] != dirty_meta["tree"]
-
-
-def test_capture_should_leave_the_previous_snapshot_untouched(tracked_sdlc_repo):
-    """Test an abandoned run cannot destroy the prior pass's capture.
-
-    Given:
-        A snapshot directory holding the previous pass's artifacts.
-    When:
-        The capture runs but the round is abandoned before step 10 promotes.
-    Then:
-        The previous pass's artifacts should still be intact.
-    """
-    # Arrange
-    snapshot = tracked_sdlc_repo / ".sdlc" / "reviews" / "snapshot-1"
-    snapshot.mkdir(parents=True)
-    (snapshot / "review.patch").write_text("pass 1 patch\n")
-    (snapshot / "meta.json").write_text('{"pass": 1}\n')
-
-    # Act
-    result = _run(_capture_script(str(snapshot)), tracked_sdlc_repo)
-
-    # Assert
-    assert result.returncode == 0, result.stderr
-    assert (snapshot / "review.patch").read_text() == "pass 1 patch\n"
-    assert json.loads((snapshot / "meta.json").read_text())["pass"] == 1
-
-
-def test_restore_should_succeed_on_the_empty_patch(tmp_path):
-    """Test the restore survives the empty patch the capture calls correct.
-
-    Given:
-        A clean tree on the default branch, where `base == HEAD`.
-    When:
-        The capture runs and the restore recipe is applied to its patch.
-    Then:
-        Both should succeed, and the restore should reproduce `meta.tree`.
-    """
-    # Arrange
-    bare = tmp_path / "origin.git"
-    _git(tmp_path, "init", "--bare", "-b", "main", str(bare))
-    work = tmp_path / "work"
-    work.mkdir()
-    _git(work, "init", "-b", "main")
-    (work / "app.py").write_text("value = 1\n")
-    _git(work, "add", "-A")
-    _git(work, "commit", "-m", "Add app")
-    _git(work, "remote", "add", "origin", str(bare))
-    _git(work, "push", "-q", "-u", "origin", "main")
-    captured = _run(_capture_script(str(work / "snap")), work)
-    assert captured.returncode == 0, captured.stderr
-    patch = Path(_field(captured.stdout, "STAGING")) / "review.patch"
-    assert patch.stat().st_size == 0, "a clean default branch should yield no patch"
-
-    # Act
-    result = _run(_restore_script(str(patch), _field(captured.stdout, "BASE")), work)
-
-    # Assert
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip().splitlines()[-1].strip() == _field(captured.stdout, "TREE")
-
-
-def test_empty_tree_guard_should_hold_under_sha256(tmp_path):
-    """Test the guard derives its sentinel rather than hard-coding SHA-1.
-
-    Given:
-        A repository using the sha256 object format, where the empty tree has
-        a different hash from the SHA-1 constant.
-    When:
-        The capture runs with an exclusion covering the whole tree.
-    Then:
-        The guard should still fire rather than capturing nothing silently.
-    """
-    # Arrange
-    work = tmp_path / "wide"
-    work.mkdir()
-    bare = tmp_path / "origin.git"
-    _git(tmp_path, "init", "--bare", "-b", "main", "--object-format=sha256", str(bare))
-    _git(work, "init", "-b", "main", "--object-format=sha256")
-    (work / "app.py").write_text("value = 1\n")
-    _git(work, "add", "-A")
-    _git(work, "commit", "-m", "Add app")
-    _git(work, "remote", "add", "origin", str(bare))
-    _git(work, "push", "-q", "-u", "origin", "main")
-    script = _capture_script(str(work / "snap")).replace("excl='.sdlc'", "excl='*'")
-
-    # Act
-    result = _run(script, work)
-
-    # Assert
-    assert result.returncode != 0
-    assert "snapshot tree is empty" in result.stderr
-
-
-@pytest.fixture
-def ignored_sdlc_repo(tmp_path):
-    """A repository whose .gitignore matches the review repository.
-
-    This is the common case and the one this project is in: a leading `.*`
-    rule makes `.sdlc` ignored, so `git add` names it in an "ignored by one of
-    your .gitignore files" message and exits non-zero while staging the rest
-    of the tree correctly.
-    """
-    bare = tmp_path / "origin.git"
-    _git(tmp_path, "init", "--bare", "-b", "main", str(bare))
-    work = tmp_path / "ignored"
-    work.mkdir()
-    _git(work, "init", "-b", "main")
-    (work / ".gitignore").write_text(".*\n!.gitignore\n")
-    (work / "app.py").write_text("value = 1\n")
-    _git(work, "add", "-A")
-    _git(work, "commit", "-m", "Add app")
-    _git(work, "remote", "add", "origin", str(bare))
-    _git(work, "push", "-q", "-u", "origin", "main")
-    (work / ".sdlc" / "reviews").mkdir(parents=True)
-    (work / ".sdlc" / "config.json").write_text('{"review-repo": "."}\n')
-    (work / "feature.py").write_text("value = 2\n")
-    return work
-
-
-def test_capture_should_succeed_when_the_review_repo_is_gitignored(
-    ignored_sdlc_repo,
-):
-    """Test a gitignored review repository does not abort the capture.
-
-    Given:
-        A repository whose .gitignore matches .sdlc, so `git add` exits
-        non-zero while staging the whole tree correctly.
-    When:
-        The step-2 capture is run as the single invocation it documents.
-    Then:
-        It should exit 0 and write both artifacts, with the review repository
-        absent from the captured tree. An exit-status guard here would abort
-        the sequence before meta.json was written and the feature would
-        silently never run on any project that ignores its review repository.
-    """
-    # Arrange
-    snapshot = ignored_sdlc_repo / ".sdlc" / "reviews" / "snapshot-1"
-
-    # Act
-    result = _run(_capture_script(str(snapshot)), ignored_sdlc_repo)
-
-    # Assert
-    assert result.returncode == 0, result.stderr
-    staging = Path(_field(result.stdout, "STAGING"))
-    assert (staging / "meta.json").is_file()
-    assert (staging / "review.patch").is_file()
-    tree = _field(result.stdout, "TREE")
-    listing = _git(ignored_sdlc_repo, "ls-tree", "-r", "--name-only", tree)
-    assert "app.py" in listing
-    assert "feature.py" in listing
-    assert ".sdlc" not in listing
-
-
-def test_capture_should_refuse_an_exclusion_that_excludes_nothing(
-    tracked_sdlc_repo,
-):
-    """Test a review repository at the reviewed root is refused at step 2.
-
-    Given:
-        An exclusion pathspec whose relative path is `.`, which is what a
-        review repository resolving to the reviewed tree's root produces.
-    When:
-        The step-2 capture is run.
-    Then:
-        It should abort before capturing. Anchored to the top, `.` excludes
-        NOTHING, so the empty-tree sentinel never fires and the review
-        repository would be captured into the snapshot of the code it reviews.
-    """
-    # Arrange
-    snapshot = tracked_sdlc_repo / ".sdlc" / "reviews" / "snapshot-1"
-    script = _capture_script(str(snapshot)).replace("excl='.sdlc'", "excl='.'")
-
-    # Act
-    result = _run(script, tracked_sdlc_repo)
-
-    # Assert
-    assert result.returncode != 0
-    assert "excludes nothing" in result.stderr
 
 
 def test_directive_placeholders_should_be_quoted_in_command_blocks():
@@ -1343,19 +345,6 @@ def test_directive_placeholders_should_be_quoted_in_command_blocks():
     assert unquoted == []
 
 
-# --- Steps 7-8: the re-review reconciliation ----------------------------------
-
-
-TEMPLATE = Path(__file__).resolve().parents[1] / "src/sdlc/review-template.md"
-
-
-def _step7() -> str:
-    return _section(_skill_text(), "### 7. Dispatch reviewer subagents (N per role)")
-
-
-def _step8() -> str:
-    return _section(_skill_text(), "### 8. Consolidate the findings")
-
 
 def test_rereview_should_secure_the_seeded_document_before_dispatching():
     """Test the irreversible step still precedes any reviewer.
@@ -1382,9 +371,15 @@ def test_rereview_should_secure_the_seeded_document_before_dispatching():
 
     # Assert
     assert accounting < copy < dispatch
-    for field in ("attribution", "Tests to add", "Cross-cutting", "pass counter"):
+    for field in (
+        "attribution",
+        "Tests to add",
+        "cross-cutting decisions",
+        "pass counter",
+    ):
         assert field in section[accounting:dispatch], field
     assert "**(re-review)** copy the seeded document first" in _skill_text()
+
 
 
 def test_rereview_should_reconcile_the_seeded_count_against_the_file():
@@ -1407,9 +402,59 @@ def test_rereview_should_reconcile_the_seeded_count_against_the_file():
     assert "Findings (N):" in section
     assert "STOP and name the ids present in the file but missing" in section
     assert "id sets" in section
-    awk = next(b for b in _bash_blocks(section) if b.lstrip().startswith("awk"))
-    assert "fence" in awk
-    assert "Tier" in awk
+    assert "sdlc_review_findings(<the Review document path>, [])" in section
+    assert not any(
+        b.lstrip().startswith(("awk", "grep")) for b in _bash_blocks(section)
+    ), "a hand-written scanner is back; call the parser instead"
+    assert not any("from sdlc import" in b for b in _bash_blocks(section)), (
+        "the enumeration is back on a shell-out. `uv run` resolves against the "
+        "REVIEWED project's environment, where this package is not installed, "
+        "so the step would be unrunnable everywhere but this repository. Prose "
+        "NAMING the pattern is the prohibition and is expected here; an "
+        "executable block carrying it is the defect."
+    )
+
+
+
+def test_the_reviewer_brief_should_be_one_unbroken_blockquote():
+    """Test no pointer splits or contaminates the brief the reviewer receives.
+
+    Given:
+        The brief is a blockquote, copied wholesale into each reviewer's
+        prompt, and the rationale must never be quoted into one.
+    When:
+        Every line between the brief's introduction and its closing bullet is
+        read.
+    Then:
+        Each should be a quote line. A blank line followed by unquoted prose
+        TERMINATES the blockquote — silently dropping every bullet below it,
+        including the `.sdlc/reviews/` prohibition that phase-1 blindness
+        rests on — and an unquoted line with no blank before it is absorbed
+        INTO the preceding bullet, putting orchestrator-directed text in the
+        reviewer's prompt.
+    """
+    # Arrange
+    lines = _skill_text().splitlines()
+    start = next(
+        i for i, l in enumerate(lines) if "Each reviewer's brief MUST include:" in l
+    )
+    end = next(
+        i
+        for i, l in enumerate(lines)
+        if "return your raw findings to the orchestrator" in l
+    )
+
+    # Act
+    body = [l for l in lines[start + 1 : end + 1] if l.strip()]
+
+    # Assert
+    assert body, "the brief is empty"
+    for line in body:
+        assert line.startswith(">"), (
+            f"non-quote line inside the reviewer brief: {line[:120]!r}"
+        )
+    assert any("Do NOT read anything under `.sdlc/reviews/`" in l for l in body)
+
 
 
 def test_phase_one_brief_should_forbid_reading_review_artifacts():
@@ -1432,6 +477,7 @@ def test_phase_one_brief_should_forbid_reading_review_artifacts():
     assert "phase 1 never saw the seeded set" not in _skill_text()
 
 
+
 def test_reviewer_brief_should_not_assert_the_pr_head_unconditionally():
     """Test the brief does not claim a verification that may not have run.
 
@@ -1450,6 +496,7 @@ def test_reviewer_brief_should_not_assert_the_pr_head_unconditionally():
     assert "the orchestrator verified this in step 2" not in section
     assert "**(verified)**" in section
     assert "**(not verified)**" in section
+
 
 
 def test_rejected_findings_should_be_recorded_in_a_ledger():
@@ -1473,9 +520,6 @@ def test_rejected_findings_should_be_recorded_in_a_ledger():
     assert "NEVER to phase 1" in _step8()
 
 
-def _invariants() -> str:
-    return _section(_skill_text(), "## Invariants")
-
 
 def test_invariants_should_carry_the_irreversible_rereview_rules():
     """Test the rules whose omission cannot be undone sit in the leading span.
@@ -1497,33 +541,35 @@ def test_invariants_should_carry_the_irreversible_rereview_rules():
     invariants = _invariants()
 
     # Act & assert
-    assert "read the seeded" in invariants
+    assert "copy the seeded" in invariants
     assert "Retired ids" in invariants
     assert "two reviewers agreeing" in invariants
     assert "explicit user confirmation" in invariants
 
 
-def _step9() -> str:
-    return _section(_skill_text(), "### 9. Finalize the consolidated document")
 
+def test_invariants_should_carry_the_mandatory_fetch():
+    """Test the one mandatory fetch has an invariant and a verification.
 
-# Every phrase in these documents that says the write is ungated. Each MUST be
-# scoped, because an unqualified one is what step 9 carried for four passes
-# while step 8 and step 10 said the opposite.
-_GATE_DENIALS = (
-    "no approval gate",
-    "absence of an approval gate",
-    "without an approval gate",
-)
+    Given:
+        The seeded block is an outline, so every finding body must be fetched
+        with `sdlc_review_findings` before it is acted on.
+    When:
+        The Invariants block and step 9 are read.
+    Then:
+        The invariant should be stated where every other load-bearing MUST is
+        stated, and step 9 should verify it against the dispositioned set.
+        Stated only at its point of use, it was the sole load-bearing rule in
+        this skill that nothing restated and nothing checked.
+    """
+    # Arrange
+    invariants = _invariants()
+    step9 = _section(_skill_text(), "### 9. Finalize the consolidated document")
 
-# A denial is legitimate when it says WHICH path it describes, or names what
-# the exceptions are.
-_DENIAL_QUALIFIERS = (
-    "fresh round",
-    "exception",
-    "per-finding approval gate",
-    "two",
-)
+    # Act & assert
+    assert "sdlc_review_findings" in invariants
+    assert "Reconcile the fetched set" in step9
+
 
 
 @pytest.mark.parametrize("document", [SKILL, AGENTS], ids=lambda p: p.name)
@@ -1538,9 +584,11 @@ def test_the_write_should_never_be_described_as_ungated_without_qualification(
     When:
         Each is read on its own, as an agent retrieving one passage would.
     Then:
-        Each should name the path it describes or the exceptions that apply.
-        The gate is real on a re-review, and a bare denial mid-document is
-        what let three documents disagree about it for four passes.
+        Each should name the path it describes or the exceptions that apply,
+        and the document should still describe the gate somewhere — by a
+        qualified denial or by stating it positively. The gate is real on a
+        re-review, and a bare denial mid-document is what let three documents
+        disagree about it for four passes.
     """
     # Arrange
     text = document.read_text()
@@ -1551,9 +599,12 @@ def test_the_write_should_never_be_described_as_ungated_without_qualification(
     ]
 
     # Act & assert
-    assert sentences, f"{document.name} no longer describes the gate at all"
+    assert "approval gate" in text, (
+        f"{document.name} no longer describes the gate at all"
+    )
     for sentence in sentences:
         assert any(q in sentence for q in _DENIAL_QUALIFIERS), sentence
+
 
 
 def test_the_gate_count_should_agree_across_the_invariants_and_step_10():
@@ -1591,6 +642,7 @@ def test_the_gate_count_should_agree_across_the_invariants_and_step_10():
     assert "unresolved review repository" in opening
 
 
+
 def test_step9_should_route_the_uncorroborated_blocking_disposition_to_the_user():
     """Test the step the gate is routed to actually performs it.
 
@@ -1612,7 +664,70 @@ def test_step9_should_route_the_uncorroborated_blocking_disposition_to_the_user(
     assert "close" in step9 and "reject" in step9
     assert "carry" in step9
     assert "quote" in step9.lower()
-    assert "Reviewers per role" in step9
+    assert "two reviewers that were dispatched that finding" in step9
+    assert "STOP here and wait for the user's answer" in step9
+
+
+
+def test_the_blocking_close_gate_should_count_dispositioning_reviewers_everywhere():
+    """Test all four statements of the close gate name the same predicate.
+
+    Given:
+        The gate appears in review.md's Invariants, step 8 and step 9, and in
+        AGENTS.md.
+    When:
+        Each statement is read.
+    Then:
+        Every one should key on the reviewers that were dispatched the
+        finding, and none should key on glob coverage. "Covers" means glob
+        coverage everywhere else in these documents, and both shipped roles
+        cover every skill file — so the glob-keyed form exempted the gate for
+        essentially every finding in the ordinary two-role composition.
+    """
+    # Arrange
+    predicate = "two reviewers that were dispatched that finding"
+    skill, agents = SKILL.read_text(), AGENTS.read_text()
+
+    # Act & assert
+    assert skill.count(predicate) == 3, "Invariants, step 8 and step 9"
+    assert agents.count(predicate) == 1
+    for text, name in ((skill, "review.md"), (agents, "AGENTS.md")):
+        assert "a single role covers it" not in text, name
+        assert "only one role covers the finding" not in text, name
+        assert "one reviewer of one role covers it" not in text, name
+
+
+
+def test_the_new_id_rule_should_never_be_qualified_by_tier():
+    """Test no statement of the id rule computes the maximum per tier.
+
+    Given:
+        Every place review.md, AGENTS.md and the template state how a new
+        finding's id is chosen.
+    When:
+        Each is read.
+    Then:
+        None should qualify the maximum by tier. Re-tiering keeps a finding's
+        id, so a `B4` re-tiered into Tier 2 is invisible to a maximum taken
+        over Tier 1 and the next blocking finding is issued `B4` again — a
+        live collision with an open finding, which silently re-points every
+        commit-history and implement-loop citation of it at a different
+        defect. Three of five sites carried the tier reading before this.
+    """
+    # Arrange
+    template = (
+        Path(__file__).resolve().parents[1] / "src/sdlc/review-template.md"
+    ).read_text()
+
+    # Act & assert
+    for text, name in (
+        (SKILL.read_text(), "review.md"),
+        (AGENTS.read_text(), "AGENTS.md"),
+        (template, "review-template.md"),
+    ):
+        for phrase in ("in its tier", "in their tier", "in that tier"):
+            assert phrase not in text, f"{name} states the id rule per tier"
+
 
 
 def test_agents_md_should_state_the_same_blocking_safeguards_as_the_skill():
@@ -1643,6 +758,7 @@ def test_agents_md_should_state_the_same_blocking_safeguards_as_the_skill():
     assert "incidental" in paragraph
 
 
+
 def test_step8_should_instruct_the_write_that_the_retired_id_rule_depends_on():
     """Test something actually APPENDS to the Retired ids line.
 
@@ -1667,6 +783,7 @@ def test_step8_should_instruct_the_write_that_the_retired_id_rule_depends_on():
     assert "append" in apply_bullet.lower()
 
 
+
 def test_step8_should_move_the_blocking_marker_with_a_retiered_finding():
     """Test a re-tier is told to strip or add the heading marker.
 
@@ -1689,6 +806,7 @@ def test_step8_should_move_the_blocking_marker_with_a_retiered_finding():
         assert "**(BLOCKING)**" in text
         assert "strip" in text
         assert "re-tier" in text.lower()
+
 
 
 def test_the_disposition_block_should_have_a_slot_for_every_named_disposition():
@@ -1722,6 +840,7 @@ def test_the_disposition_block_should_have_a_slot_for_every_named_disposition():
         assert disposition in sample, disposition
 
 
+
 def test_a_reopened_finding_should_have_an_id_rule():
     """Test re-open says which id the restored finding takes.
 
@@ -1745,6 +864,7 @@ def test_a_reopened_finding_should_have_an_id_rule():
     assert "Retired ids" in bullet
 
 
+
 def test_the_cross_role_merge_should_span_carried_and_new_findings():
     """Test a cross-role rediscovery cannot acquire a second id.
 
@@ -1758,12 +878,13 @@ def test_the_cross_role_merge_should_span_carried_and_new_findings():
         Scoped to new findings alone, one defect ends the pass with two open
         ids, inflating the blocking count that termination depends on.
     """
-    # Arrange
+    # Act
     preamble = _step8().split("\n- ")[0]
 
     # Assert
     assert "carried" in preamble.lower()
     assert "Merge across roles" in preamble
+
 
 
 def test_the_stale_reference_warning_should_reach_the_phase_two_message():
@@ -1788,6 +909,7 @@ def test_the_stale_reference_warning_should_reach_the_phase_two_message():
     assert "not evidence of a close" in step7.lower().replace("**", "")
     assert "re-reference" in step7.lower()
     assert "absence at a line is a carry" in step8.lower().replace("**", "")
+
 
 
 def test_the_unexamined_count_should_carry_both_of_its_causes():
@@ -1819,6 +941,7 @@ def test_the_unexamined_count_should_carry_both_of_its_causes():
     assert "were not in this pass" in step11
 
 
+
 def test_step7_should_persist_the_seeded_document_to_disk():
     """Test the one irreversible read-back has a durable carrier.
 
@@ -1841,6 +964,7 @@ def test_step7_should_persist_the_seeded_document_to_disk():
     # Assert
     assert any("seed=" in block and "cp " in block for block in blocks), blocks
     assert "$seed" in step7
+
 
 
 def test_the_inline_fallback_should_not_claim_the_blindness_guarantee():
@@ -1870,6 +994,7 @@ def test_the_inline_fallback_should_not_claim_the_blindness_guarantee():
     assert "inline" in step8
 
 
+
 def test_step7_should_reconcile_returned_dispositions_against_the_dispatch():
     """Test a reviewer's dropped disposition is noticed rather than counted.
 
@@ -1896,55 +1021,9 @@ def test_step7_should_reconcile_returned_dispositions_against_the_dispatch():
     assert "re-send" in collect.lower()
 
 
-@pytest.mark.parametrize(
-    ("excl", "accepted"),
-    [
-        (".sdlc", True),
-        ("docs/reviews", True),
-        ("_reviews", True),
-        ("/abs/path/.sdlc", False),
-        ("unresolved", False),
-        ("", False),
-        (".", False),
-        ("..", False),
-        ("../x", False),
-        ("a/../b", False),
-    ],
-)
-def test_exclusion_guard_should_accept_only_a_usable_relative_pathspec(
-    excl, accepted, tmp_path
-):
-    """Test the guard rejects every pathspec shape that excludes nothing.
-
-    Given:
-        Step 2's exclusion guard, extracted verbatim.
-    When:
-        It runs against a pathspec shape.
-    Then:
-        It should reject the absolute form the `Review repository:` directive
-        actually emits, the literal `unresolved` that directive carries on
-        every project's first review, and any root-or-ancestor form — while
-        accepting an ordinary relative path. Both rejected shapes exclude
-        NOTHING, so the review repository lands in the snapshot of the code it
-        reviews and the tree SHA churns every pass; no sentinel fires, because
-        the empty-tree check only catches over-exclusion.
-    """
-    # Arrange
-    guards = re.findall(
-        r'^case "\$excl" in\n.*?^esac', _skill_text(), re.DOTALL | re.MULTILINE
-    )
-    assert guards, "the exclusion guard moved"
-    script = f"excl={excl!r}\n" + "\n".join(guards) + '\necho ACCEPTED'
-
-    # Act
-    result = _run(script, tmp_path)
-
-    # Assert
-    assert ("ACCEPTED" in result.stdout) is accepted, result
-
 
 def test_count_reconciliation_should_agree_with_the_parser_on_a_fenced_heading(
-    tmp_path,
+    tmp_path, monkeypatch
 ):
     """Test the id-set gate does not fire on a document that parsed cleanly.
 
@@ -1952,15 +1031,20 @@ def test_count_reconciliation_should_agree_with_the_parser_on_a_fenced_heading(
         A review document whose finding quotes a finding heading inside a
         fence, and which carries a heading outside the severity tiers.
     When:
-        Step 7(0)'s extraction command is run against it.
+        Step 7(0)'s reconciliation route is run against it.
     Then:
-        It should yield exactly the ids `parse_review_document` yields —
-        skipping the fenced sample and the out-of-tier heading. A raw heading
-        count reports a mismatch here on a healthy document, and a MUST-STOP
-        gate that fires on healthy input is one an agent learns to skip.
+        It should yield exactly the ids `parse_review_document` yields — the
+        incidental tier included, the fenced sample and the heading quoted
+        inside a NESTED fence both skipped, and the out-of-tier heading
+        ignored. The scanner this replaced failed all three: it matched only
+        Tiers 1 and 2, and its fence toggle desynced on a nested opener and
+        invented an id. A MUST-STOP gate that fires on healthy input is one
+        an agent learns to skip.
     """
     # Arrange
-    document = tmp_path / "review-1.md"
+    monkeypatch.chdir(tmp_path)
+    document = tmp_path / ".sdlc" / "reviews" / "issue-#1" / "review-1.md"
+    document.parent.mkdir(parents=True)
     document.write_text(
         "# Doc\n\n## Tier 1 — Blocking\n\n"
         "### B1 — Real one **(BLOCKING)** — aie\n"
@@ -1968,26 +1052,33 @@ def test_count_reconciliation_should_agree_with_the_parser_on_a_fenced_heading(
         "**Issue:** quoting a sample:\n\n"
         "```markdown\n### B9 — Phantom **(BLOCKING)** — aie\n```\n\n"
         "**Remediation:**\n- [x] Fix.\n\n"
+        "### B2 — Quoting a nested sample **(BLOCKING)** — aie\n"
+        "**Reference:** `a.py:9`\n\n"
+        "**Issue:** the template heads its findings like this:\n\n"
+        "````markdown\n```\n### B98 — Phantom inside a nested fence\n```\n````\n\n"
+        "**Remediation:**\n- [x] Fix.\n\n"
         "## Tier 2 — Advisory\n\n"
         "### A1 — Real advisory — aie\n"
         "**Reference:** `b.py:2`\n\n"
         "Body.\n- [x] Fix.\n\n"
+        "## Tier 3 — Incidental\n\n"
+        "### I1 — Real incidental — aie\n"
+        "**Reference:** `c.py:3`\n\n"
+        "Body.\n- [x] Fix.\n\n"
         "## Cross-cutting decisions\n\n"
         "### B99 — Outside the tiers — aie\n"
     )
-    awk = next(
-        b for b in _bash_blocks(_step7()) if b.lstrip().startswith("awk")
-    ).replace('"<Review document>"', f'"{document}"')
-
     # Act
-    result = _run(awk, tmp_path)
+    enumeration = render_findings(document, [])
 
     # Assert
-    assert result.stdout.split() == ["B1", "A1"], result
     from sdlc.pr_state import parse_review_document
 
+    ids = enumeration.rpartition("\nIds: ")[2].split()
     parsed = [f.id for f in parse_review_document(document, 1, 1).findings]
-    assert result.stdout.split() == parsed
+    assert ids == ["B1", "B2", "A1", "I1"], enumeration
+    assert ids == parsed
+
 
 
 def test_the_knowledge_graph_mandate_should_be_conditioned_on_freshness():
@@ -2016,6 +1107,7 @@ def test_the_knowledge_graph_mandate_should_be_conditioned_on_freshness():
     assert "analysis commit" in step6
 
 
+
 def test_the_unresolved_rereview_branch_should_still_promote_the_snapshot():
     """Test the document and the snapshot describe the same pass.
 
@@ -2040,6 +1132,7 @@ def test_the_unresolved_rereview_branch_should_still_promote_the_snapshot():
     # Assert
     assert "promote" in clause.lower()
     assert "needs no repository" in clause
+
 
 
 def test_the_git_init_answer_should_get_the_per_mutation_history():
@@ -2067,30 +1160,38 @@ def test_the_git_init_answer_should_get_the_per_mutation_history():
     assert "(c) and (d)" in scope
 
 
+
 def test_readback_fields_should_be_enumerated_in_exactly_one_place():
-    """Test the lossy-block note points at step 7(0) instead of re-listing.
+    """Test both summaries defer to step 7(0) instead of re-listing fields.
 
     Given:
-        Two passages describe what the seeded block drops — the Arguments
-        note and step 7(0).
+        Three passages could describe what the seeded block carries — the
+        Arguments note, the re-review read-back invariant, and step 7(0).
     When:
-        The Arguments note is read.
+        The Arguments note and the invariant are read.
     Then:
-        It should defer to step 7(0) rather than enumerate the fields itself.
-        Two independent lists drift, and they had: the Arguments copy named
-        four fields while step 7(0) named six.
+        Both should defer to step 7(0) rather than enumerate the fields, and
+        neither should call the block lossy. Two independent lists drift, and
+        they had: the Arguments copy inverted the truth in both directions
+        while the invariant listed the exact COMPLEMENT of what is elided.
     """
     # Arrange
+    text = _skill_text()
     note = next(
-        line
-        for line in _skill_text().splitlines()
-        if "The block is **lossy**" in line
+        line for line in text.splitlines() if "The block is an **outline**" in line
+    )
+    invariant = next(
+        line for line in _invariants().splitlines() if "MUST copy the seeded" in line
     )
 
     # Act & assert
-    assert "Step 7(0) enumerates those fields" in note
-    assert "Tests to add" not in note
-    assert "cross-cutting decisions" not in note
+    assert "The block is **lossy**" not in text
+    assert "Step 7(0) enumerates what arrives verbatim" in note
+    for passage in (note, invariant):
+        assert "Tests to add" not in passage
+        assert "cross-cutting decisions" not in passage
+        assert "Step 7(0)" in passage
+
 
 
 def test_step_eleven_should_have_an_uncommitted_rereview_prompt():
@@ -2126,6 +1227,7 @@ def test_step_eleven_should_have_an_uncommitted_rereview_prompt():
     ), "PR-mode fresh has no uncommitted prompt"
 
 
+
 def test_retired_ids_should_be_recorded_so_they_are_not_reused():
     """Test the next id is computed from a high-water mark, not the survivors.
 
@@ -2153,6 +1255,7 @@ def test_retired_ids_should_be_recorded_so_they_are_not_reused():
     assert "read from the document's **Retired ids** line" not in rule
 
 
+
 def test_blocking_rejection_should_require_corroboration():
     """Test one reviewer cannot delete a blocking finding unaided.
 
@@ -2170,7 +1273,7 @@ def test_blocking_rejection_should_require_corroboration():
     rule = next(
         line
         for line in _step8().splitlines()
-        if "rejected only with corroboration" in line
+        if "only with corroboration" in line
     )
 
     # Act & assert
@@ -2180,6 +1283,7 @@ def test_blocking_rejection_should_require_corroboration():
     # `close` also removes a blocking finding, so it is not unconditional.
     assert "`close` and `carry` stay autonomous" not in rule
     assert "quote the remediating text" in rule
+
 
 
 def test_pass_line_should_count_findings_carried_unexamined():
@@ -2200,9 +1304,6 @@ def test_pass_line_should_count_findings_carried_unexamined():
     assert "carried without re-examination" in _step8()
     assert "carried WITHOUT re-examination" in _skill_text()
 
-
-def _scope_section() -> str:
-    return _section(_skill_text(), "## Context and scope")
 
 
 def test_the_skill_should_define_context_and_scope_separately():
@@ -2230,6 +1331,7 @@ def test_the_skill_should_define_context_and_scope_separately():
     assert "responsible for" in section
 
 
+
 def test_scope_should_be_defined_by_the_issue_rather_than_the_diff():
     """Test a change that was never made can still be found.
 
@@ -2253,6 +1355,7 @@ def test_scope_should_be_defined_by_the_issue_rather_than_the_diff():
     assert "expected outcomes" in section
     assert "guide-map.role" in section
     assert "paths mode" in section
+
 
 
 def test_the_confinement_invariant_should_defer_to_the_scope_definition():
@@ -2279,6 +1382,7 @@ def test_the_confinement_invariant_should_defer_to_the_scope_definition():
     assert "Context and scope" in invariant
     assert "guide-map.role" in invariant
     assert "step 8" in invariant
+
 
 
 def test_the_brief_should_seed_scope_rather_than_bound_it():
@@ -2308,6 +1412,7 @@ def test_the_brief_should_seed_scope_rather_than_bound_it():
     assert "guide-map.role" in brief
 
 
+
 def test_the_brief_should_direct_a_sweep_for_changes_that_were_never_made():
     """Test a reviewer is sent looking for what is absent, not just present.
 
@@ -2331,6 +1436,7 @@ def test_the_brief_should_direct_a_sweep_for_changes_that_were_never_made():
     assert "identify the code that should satisfy it" in brief
 
 
+
 def test_step8_should_validate_the_role_a_finding_is_attributed_to():
     """Test the confinement invariant is checked and not merely instructed.
 
@@ -2352,6 +1458,7 @@ def test_step8_should_validate_the_role_a_finding_is_attributed_to():
     assert "sdlc_role_scope" in rule
     assert "NOT dropped" in rule
     assert "re-attribute" in rule.lower()
+
 
 
 def test_a_finding_with_no_owning_commit_should_still_be_attributable():
@@ -2379,6 +1486,7 @@ def test_a_finding_with_no_owning_commit_should_still_be_attributable():
     assert "new commit" in _section(template, "## Fixup mapping")
 
 
+
 def test_the_document_should_record_scope_extensions():
     """Test a widened scope is auditable after the fact.
 
@@ -2399,6 +1507,7 @@ def test_the_document_should_record_scope_extensions():
     assert "globs" in scope_line
     assert "extension" in scope_line
     assert "criterion" in scope_line
+
 
 
 def test_step7_should_fetch_bodies_before_composing_a_phase_two_message():
@@ -2423,6 +1532,7 @@ def test_step7_should_fetch_bodies_before_composing_a_phase_two_message():
     assert "MUST" in step7.split("sdlc_review_findings")[0].rsplit("\n", 3)[0]
 
 
+
 def test_step8_should_forbid_dispositioning_an_unfetched_finding():
     """Test the fetch is a precondition for acting, not a suggestion.
 
@@ -2442,6 +1552,7 @@ def test_step8_should_forbid_dispositioning_an_unfetched_finding():
     # Act & assert
     assert "sdlc_review_findings" in step8
     assert "MUST NOT" in step8
+
 
 
 def test_step7_zero_should_no_longer_read_back_what_the_block_carries():
@@ -2467,6 +1578,7 @@ def test_step7_zero_should_no_longer_read_back_what_the_block_carries():
     assert "verbatim" in section
     assert "body" in section.lower()
     assert "sdlc_review_findings" in section
+
 
 
 def test_the_body_fetch_should_not_use_the_rationale_pointer_idiom():
@@ -2495,9 +1607,6 @@ def test_the_body_fetch_should_not_use_the_rationale_pointer_idiom():
         assert not line.strip().startswith("*Why:"), line
 
 
-def _step2() -> str:
-    return _section(_skill_text(), "### 2. Acquire the review targets")
-
 
 def test_step2_should_capture_the_originating_issue_for_relevance():
     """Test the issue the PR closes is fetched and held for the reviewers.
@@ -2520,6 +1629,7 @@ def test_step2_should_capture_the_originating_issue_for_relevance():
     assert "gh issue view <N> --repo <target> --json title,body" in step2
     assert "step 7" in step2.split("gh issue view")[1]
     assert "unresolved" in step2
+
 
 
 def test_the_reviewer_brief_should_classify_findings_against_the_issue():
@@ -2545,6 +1655,7 @@ def test_the_reviewer_brief_should_classify_findings_against_the_issue():
     # Paths mode has no issue, so it has neither the slot nor the tier.
     assert "**(paths mode)**" in brief
     assert "Incidental" in brief.split("**(paths mode)**")[1]
+
 
 
 def test_severity_definitions_should_agree_between_the_skill_and_the_template():
@@ -2573,6 +1684,7 @@ def test_severity_definitions_should_agree_between_the_skill_and_the_template():
     assert "paths mode" in definitions
 
 
+
 def test_the_template_should_carry_an_incidental_tier():
     """Test the document shape has somewhere to record a deferral.
 
@@ -2594,6 +1706,7 @@ def test_the_template_should_carry_an_incidental_tier():
         "## Tier 3 — Incidental"
     )
     assert "<I> incidental" in template
+
 
 
 def test_the_template_should_define_the_tiers_by_what_a_finding_is():
@@ -2622,6 +1735,7 @@ def test_the_template_should_define_the_tiers_by_what_a_finding_is():
     assert "deferral" in legend and "dismissal" in legend
 
 
+
 def test_the_template_should_give_the_incidental_tier_no_heading_marker():
     """Test the third tier is not given a demoting heading marker.
 
@@ -2646,6 +1760,7 @@ def test_the_template_should_give_the_incidental_tier_no_heading_marker():
     headings = [line for line in template.splitlines() if line.startswith("### ")]
     assert headings
     assert not any("(INCIDENTAL)" in line for line in headings)
+
 
 
 def test_step8_should_resolve_a_blocking_versus_incidental_disagreement():
@@ -2673,6 +1788,7 @@ def test_step8_should_resolve_a_blocking_versus_incidental_disagreement():
     assert "stays blocking" in rule
 
 
+
 def test_retiering_a_blocking_finding_should_require_corroboration():
     """Test the third way out of the termination predicate is gated too.
 
@@ -2690,7 +1806,7 @@ def test_retiering_a_blocking_finding_should_require_corroboration():
     rule = next(
         line
         for line in _step8().splitlines()
-        if "rejected only with corroboration" in line
+        if "only with corroboration" in line
     )
     step9 = _step9()
 
@@ -2699,6 +1815,7 @@ def test_retiering_a_blocking_finding_should_require_corroboration():
     assert "two reviewers agreeing" in rule
     assert "incidental" in step9
     assert "carry" in step9
+
 
 
 def test_pass_line_should_count_incidental_findings():
@@ -2725,6 +1842,7 @@ def test_pass_line_should_count_incidental_findings():
     assert "across all three tiers" in pass_line
 
 
+
 def test_the_dedup_rule_should_carry_the_relevance_exception():
     """Test the document states the split highest-severity-wins cannot settle.
 
@@ -2744,6 +1862,7 @@ def test_the_dedup_rule_should_carry_the_relevance_exception():
     assert "relevance" in dedup
     assert "acceptance criteri" in dedup
     assert "stays blocking" in dedup
+
 
 
 def test_termination_should_report_advisory_and_incidental_separately():
@@ -2771,6 +1890,7 @@ def test_termination_should_report_advisory_and_incidental_separately():
     assert "When `<B>` > 0:" in step11
 
 
+
 def test_the_skill_should_give_the_incidental_tier_no_heading_marker():
     """Test the marker asymmetry is stated where a re-tier is performed.
 
@@ -2793,6 +1913,7 @@ def test_the_skill_should_give_the_incidental_tier_no_heading_marker():
     assert "by section alone" in rule
 
 
+
 def test_paths_mode_edge_case_should_state_the_incidental_tier_is_unavailable():
     """Test the mode without an originating issue says so where it is read.
 
@@ -2813,6 +1934,7 @@ def test_paths_mode_edge_case_should_state_the_incidental_tier_is_unavailable():
     assert "incidental" in entry.lower()
     assert "Advisory" in entry
     assert "Tier 3" in entry
+
 
 
 def test_subagent_brief_should_request_every_declared_artifact():
@@ -2843,6 +1965,7 @@ def test_subagent_brief_should_request_every_declared_artifact():
         assert name in brief, name
 
 
+
 def test_paths_mode_prompt_should_name_the_commit_and_the_chain():
     """Test the paths-mode prompt matches what the skill actually does.
 
@@ -2867,3 +1990,35 @@ def test_paths_mode_prompt_should_name_the_commit_and_the_chain():
     assert "snapshot-<iteration>" in paths_prompt
     assert "sdlc_review --verify <iteration>" in paths_prompt
     assert "SEPARATE chain" in paths_prompt
+
+
+def test_every_cited_rationale_section_should_carry_prose():
+    """Test no `*Why:` pointer resolves to an unwritten section.
+
+    Given:
+        Every `§R<n>` id review.md cites, and the rationale's sections.
+    When:
+        Each cited section is read.
+    Then:
+        It should resolve, and carry prose rather than a placeholder. The
+        `*Why:` idiom is trigger-gated disclosure: an agent that fetches on
+        the stated trigger and finds `_Pending extraction._` proceeds on its
+        own guess, which is the outcome the idiom exists to prevent. A
+        pointer to a placeholder is worse than no pointer.
+    """
+    # Arrange
+    rationale = RATIONALE.read_text()
+    cited = set(re.findall(r"§(R\d+(?:\.\d+)*)", SKILL.read_text()))
+    sections = {
+        match.group(1): match.start()
+        for match in re.finditer(r"^#{2,4} (R\d+(?:\.\d+)*)\.?\s", rationale, re.M)
+    }
+
+    # Act & assert
+    assert cited, "review.md cites no rationale sections at all"
+    for anchor in sorted(cited):
+        assert anchor in sections, f"§{anchor} is cited but has no section"
+    assert "_Pending extraction._" not in rationale, (
+        "a rationale section is still a placeholder; every §R id review.md "
+        "cites must resolve to prose that answers the trigger it names"
+    )

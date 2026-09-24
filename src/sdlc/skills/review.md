@@ -49,7 +49,8 @@ A third, orthogonal axis layers on top of whichever base mode is active:
 - **Re-review** — a `Re-review: review-<#>` directive is present (alongside the active PR-mode or paths-mode target). This is an ordinary review **seeded with an existing round's findings**, not a different kind of pass: the endpoint has already loaded `review-<#>.md` for the target, rendered its findings into the appended block, and named that same document as the write target. Each reviewer reviews the current files exactly as it would on a fresh round — dispatched with the seeded findings withheld entirely, so it forms its own findings before it has seen them — and is then sent the seeded set and reconciles, returning a disposition for each seeded finding: **close** it (the remediation is present), **reject** it (it does not hold up as written), or **carry** it (it still stands). The seeding is context for that reconciliation, not a worklist to walk. The document is rewritten in place, so it is a living record of one review as it evolves rather than a new round that re-derives findings already agreed. A re-review keeps the base mode's target acquisition (PR head contents or paths-mode file contents), role lenses, and `guide-map.role` confinement; it changes every step marked **(re-review)** below — there are several, and they are not confined to the consolidation steps, so read the markers rather than a list here. When no `Re-review` directive is present, ignore every **(re-review)** marker and run a fresh review.
 
 <!-- rereview:end -->
-Where a step below is marked **(PR mode)** or **(paths mode)** it applies only to that base mode; **(re-review)** applies only when the `Re-review` directive is present (layered on whichever base mode is active); unmarked steps apply to all.
+Where a step below is marked **(PR mode)** or **(paths mode)** it applies only to that base mode; unmarked steps apply to all.
+A step or clause marked **(re-review)** applies only when the `Re-review` directive is present, layered on whichever base mode is active. A fresh round is not given those steps at all, so a marker reaching one is a fence placed around a label rather than around the material it governs.
 
 Every round — fresh or re-review — is tracked in git. The document is committed to the repository the `Review repository:` directive names, and in a re-review **each finding-set mutation is its own commit** whose message justifies that state change, so the history records why every finding opened, closed, or was thrown out. Step 10 covers the protocol.
 
@@ -69,8 +70,8 @@ The total number of reviewer subagents is **N × (number of roles)**. Each revie
 
 <!-- rereview:begin -->
 **(re-review)** The same fan-out applies, and every reviewer stays a reviewer, but each is dispatched in two turns. The first carries the ordinary fresh-round brief and no seeded text at all; the reviewer performs its normal lens-driven review of the current files and returns its own findings, settled and recorded. Only then does a second message deliver the subset of the seeded `review-<#>.md` findings its role raised last round, for which it returns a disposition each — close, reject, or carry — with evidence quoted from the current file. The consolidator folds those dispositions and any new findings into the updated finding set.
-<!-- rereview:end -->
 *Why: `sdlc://review-rationale` §R1 — read it if you are unsure why the two turns cannot be collapsed into one.*
+<!-- rereview:end -->
 
 ## Context and scope
 
@@ -100,19 +101,19 @@ Passages below and in the steps cite `sdlc://review-rationale` §`R<n>` for the 
 - When consolidating, each finding MUST be assigned the **highest** severity any role gives it, ranking `blocking > advisory > incidental`; where roles disagree, the dissent MUST be noted on the finding. A **blocking**-versus-**incidental** split is a disagreement about relevance rather than severity: resolve it against the originating issue's acceptance criteria, and until it is resolved the finding stays blocking. **(paths mode)** there is no originating issue, so the incidental tier is unavailable.
 - For each finding, the consolidator MUST pre-select the recommended remediation option with `[x]`, list any alternatives with `[ ]`, and always include an `Other: ___` slot.
 <!-- rereview:begin -->
-- **(re-review)** MUST read the seeded `review-<#>.md` back from disk before dispatching any reviewer, for every field the `Seeded findings` block drops — role / agreement attribution, `Tests to add`, the cross-cutting decisions section, the **Rejected in earlier passes** and **Retired ids** ledgers, the pass counter, and full titles. The block is the authoritative **enumeration** of the finding set; it is not the document. Anything not read back is destroyed by the in-place rewrite, and this is the only instruction in this skill whose omission is irreversible rather than a recoverable wrong action. Step 7(0) holds the procedure.
-<!-- rereview:end -->
-<!-- rereview:begin -->
-- **(re-review)** MUST copy the seeded `review-<#>.md` to the step 7(0) scratch path before dispatching any reviewer, and MUST build step 9's consolidated target by reading that copy rather than by recalling it.
+- **(re-review)** MUST copy the seeded `review-<#>.md` to the step 7(0) scratch path before dispatching any reviewer, and MUST build step 9's consolidated target by reading that copy rather than from the injected block or from recall. The block is an OUTLINE of the document, not a re-render of it, and **Step 7(0) is the one enumeration of what it does and does not carry** — do not restate that list here or anywhere else. What is irreversible is the in-place rewrite: anything not carried into the target is destroyed when the file is overwritten, and no later pass recovers it.
 <!-- rereview:end -->
 <!-- rereview:begin -->
 - **(re-review)** MUST dispatch each reviewer in two turns, and the phase-1 message MUST contain no seeded-finding text, no disposition vocabulary and no content from `review-<#>.md`. MUST keep the phase-1 brief's `.sdlc/reviews/` prohibition bullet verbatim. Step 8's rediscovery-outranks-close weighting is earned by these two together and is unfounded without both.
 <!-- rereview:end -->
 <!-- rereview:begin -->
-- **(re-review)** MUST NOT apply a `reject` to a **blocking** finding, nor re-tier one to **incidental**, without either two reviewers agreeing or explicit user confirmation; with neither, treat it as **carry** and note the dissent. MUST NOT close a **blocking** finding without quoting the remediating text from the current file. All three remove a finding from the single predicate termination depends on, at a default composition of one reviewer per role.
+- **(re-review)** MUST NOT apply a `reject` to a **blocking** finding, nor re-tier one to **incidental**, without either two reviewers agreeing or explicit user confirmation; with neither, treat it as **carry** and note the dissent. MUST NOT close a **blocking** finding without quoting the remediating text from the current file and — unless at least **two reviewers that were dispatched that finding** returned `close` independently — without explicit user confirmation; uncorroborated, treat it as **carry** and note the dissent. All three remove a finding from the single predicate termination depends on, at a default composition of one reviewer per role.
 <!-- rereview:end -->
 <!-- rereview:begin -->
-- **(re-review)** A seeded finding nobody dispositioned MUST carry unchanged, keeping its id, text and severity, and MUST be counted in `<u>`. Ids MUST NOT be renumbered between passes, and a new finding's id is `max(retired ∪ open) + 1` within its tier.
+- **(re-review)** A seeded finding nobody dispositioned MUST carry unchanged, keeping its id, text and severity, and MUST be counted in `<u>`. Ids MUST NOT be renumbered between passes, and a new finding's id is `max(retired ∪ open) + 1` computed over every id carrying that prefix, across BOTH the surviving findings and the `Retired ids` line, regardless of the tier each now sits in. A re-tiered finding keeps its id and moves between the sections, so a `B4` sitting in Tier 2 still counts against the next `B`.
+<!-- rereview:end -->
+<!-- rereview:begin -->
+- **(re-review)** MUST fetch a finding's body with `sdlc_review_findings` before applying any disposition, re-tier or correction to it. The seeded block is an outline: it carries the enumeration, not the bodies, and reasoning about a finding from its heading is reasoning about a title. Step 9 verifies it.
 <!-- rereview:end -->
 - MUST NOT fabricate guide requirements that do not exist in the project's actual guides.
 - MUST use the `understand-chat` skill to query the knowledge graph for context gathering when `.understand-anything/knowledge-graph.json` exists **and is current** for the reviewed tree. A graph whose analysis commit does not descend from the reviewed base, or whose nodes do not cover the files under review, is treated as ABSENT — step 6 has the check. Its summary would otherwise enter every reviewer's brief as architectural ground truth.
@@ -133,9 +134,11 @@ The MCP endpoint appends the following below this skill prompt. **Exactly one** 
 <!-- rereview:begin -->
 - `Re-review: review-<#>` — *(re-review only)* marks the run as a re-review of the existing `review-<#>.md`, present only when the user passed `--verify <#>`. Its presence is what switches the **(re-review)** behavior on.
 <!-- rereview:end -->
+<!-- rereview:begin -->
 - `Seeded findings —` followed by the pre-rendered findings of `review-<#>.md` — *(re-review only)* the endpoint appends the parsed findings of the document being re-reviewed, under that header line. These are the findings each reviewer dispositions; do NOT re-parse the finding set from the file — the block is the authoritative enumeration, and a finding absent from it is absent from this pass. The block opens with its own `Seeded from:` provenance line, deliberately labelled differently from the `Review document:` write target above it so the two cannot be confused.
 
-  The block is **lossy**, and the document is rewritten in place, so anything it drops is destroyed on every pass unless you read it back. Each finding carries only its id, title, severity, `Reference`, issue, remediation and touched commit. You MUST read the existing `review-<#>.md` for every field the block does not carry and preserve it verbatim on each finding you carry. **Step 7(0) enumerates those fields; follow that list, not a recollection of this sentence** — one enumeration, in one place, so the two cannot drift. Reading the file for these is not re-deriving the finding set; the two are different jobs.
+  The block is an **outline** of the document on disk: every field arrives verbatim except each finding's `**Issue:**` paragraph and `**Remediation:**` checklist, which are elided behind one marker apiece and fetched with `sdlc_review_findings` at the point of use. The document is rewritten in place, so anything not carried into step 9's target is destroyed on every pass. **Step 7(0) enumerates what arrives verbatim and what does not; follow that list, not a recollection of this sentence** — one enumeration, in one place, so the two cannot drift. Reading the file is not re-deriving the finding set; the two are different jobs.
+<!-- rereview:end -->
 - `Review repository: <absolute path>` — the repository review-document commits belong in, declared via the `review-repo` config key (never inferred from the filesystem). Present whenever a document will be written. The value `unresolved` means no repository could be determined; step 10 covers the question to ask the user in that case. The repository MUST contain the `Review document:` path, which is hardcoded under `.sdlc/reviews/`; one that does not is REFUSED at resolution and reported here as `unresolved` with the reason, rather than named alongside an unresolved document path.
 *Why: `sdlc://review-rationale` §R3 — read it if a configured repository is refused and you want the reasoning.*
 - `Review document in repository: <path>` — the same file the `Review document:` line names, addressed from the review repository's root instead of the working directory. Every `git` command in step 10 takes THIS path; `Review document:` is where the file is written. This directive and `Review snapshot in repository:` below are **omitted entirely** when `Review repository:` is `unresolved`, and each instead reads `<label>: unresolved` followed by an explanation when the path lies outside the resolved repository. Neither absence nor the literal `unresolved` is a path — step 10(a) stops on either, and the string is never passed to `git`.
@@ -143,7 +146,9 @@ The MCP endpoint appends the following below this skill prompt. **Exactly one** 
 - `Review snapshot directory: <dir>/snapshot-<#>/` — where this pass's capture of the reviewed code state is written, paired 1:1 with the document of the same number. Step 2's capture checks for it before running.
 *Why: `sdlc://review-rationale` §R3 — read it if you expected this directive to track the repository directives.*
 - `Review snapshot in repository: <path>/` — the snapshot directory addressed from the review repository's root, on the same terms as the document's repository-relative path. This is what `git add` takes.
+<!-- rereview:begin -->
 - `Seeded-role coverage warning: …` — *(re-review only)* emitted when this pass's roles do not cover the roles the seeded findings were raised under, either because an explicit `--roles` list narrowed them or because the seeded document's Composition line could not be read. It names the uncovered roles. Every seeded finding from those roles carries unexamined and MUST be counted in `<u>` at step 8 and reported at step 11 — the warning is the only signal that a blocking finding went unlooked-at this pass.
+<!-- rereview:end -->
 - `Review commit branch: <branch>` — *(optional)* the branch review-document commits land on, from the `target` argument or the `review-branch` config key. When the line is absent, commit to the branch already checked out. Note this is a commit destination, unlike the target-branch override of `implement` and `pr`, which names a branch to branch from or base against.
 - The bundled review-document template (also available as the `sdlc://review-template` resource), which defines the exact structure of the document to write. It is the same template on a fresh round and a re-review — one document shape for the whole chain.
 
@@ -176,10 +181,22 @@ This skill MAY itself be executed in an isolated orchestrator subagent to preser
 4. Read project guides and styles
 5. Resolve each role's lens and mapped files
 6. Gather knowledge graph context
-7. Dispatch reviewer subagents (N per role) — **(re-review)** copy the seeded document first, then dispatch in two turns with the seeded set withheld from the first, fetching each role's finding bodies before its phase-2 message
-8. Consolidate the findings — **(re-review)** dispositions folded in first
-9. Finalize the consolidated document — **(re-review)** summarize what moved this pass, and write the target state to disk
-10. Write and commit the review document and its snapshot — **(re-review)** one commit per finding-set mutation
+7. Dispatch reviewer subagents (N per role)
+<!-- rereview:begin -->
+   — **(re-review)** copy the seeded document first, then dispatch in two turns with the seeded set withheld from the first, fetching each role's finding bodies before its phase-2 message
+<!-- rereview:end -->
+8. Consolidate the findings
+<!-- rereview:begin -->
+   — **(re-review)** dispositions folded in first
+<!-- rereview:end -->
+9. Finalize the consolidated document
+<!-- rereview:begin -->
+   — **(re-review)** summarize what moved this pass, and write the target state to disk
+<!-- rereview:end -->
+10. Write and commit the review document and its snapshot
+<!-- rereview:begin -->
+   — **(re-review)** one commit per finding-set mutation
+<!-- rereview:end -->
 11. Prompt the user with next steps
 
 ### 1. Resolve target repository *(PR mode)*
@@ -291,32 +308,46 @@ rm -rf "$staging" && mkdir -p "$staging"
 # `git rev-parse --show-toplevel`.
 excl='<review-repo path relative to the repository root — `.sdlc` unless Review repository: resolves to something else>'
 
-# The guard states what it ACCEPTS, deliberately — a blocklist here has been
-# wrong twice. See `sdlc://review-rationale` §R4.3 and §R4.4 before widening it.
+# The guard states what it ACCEPTS: a non-empty relative path of ordinary
+# components. Anything else is refused, including shapes nobody enumerated.
+# See `sdlc://review-rationale` §R4.3 and §R4.4 before widening it.
+excl="${excl%/}"                       # tolerate one trailing slash
+accepted=1
 case "$excl" in
-    /*)
-        echo "review: exclusion pathspec '$excl' is absolute; :(exclude,top) takes a path RELATIVE to the repository root" >&2
-        exit 1
-        ;;
-    unresolved)
-        echo "review: 'unresolved' is the Review repository: directive's null value, not a path — use .sdlc, the directory the review document is written under" >&2
-        exit 1
-        ;;
+    unresolved) accepted=0 ;;          # a sentinel value, not a path
+    ''|/*|~*|" "*|*" ") accepted=0 ;;
 esac
-case "$excl" in
-    ''|.|./|..|../*|*/..|*/../*|*/.)
-        echo "review: exclusion pathspec '$excl' excludes nothing — the review repository must not be the reviewed tree's root or an ancestor of it" >&2
-        exit 1
-        ;;
-esac
+case "$excl" in *[!\ ]*) ;; *) accepted=0 ;; esac
+IFS=/
+for part in $excl; do
+    case "$part" in ''|.|..) accepted=0 ;; esac
+done
+unset IFS
 
-vcs=git; ref=; base=; tree=; remote=
+if [ "$accepted" != 1 ]; then
+    # One exit; these arms only choose the most useful wording.
+    case "$excl" in
+        unresolved)
+            echo "review: 'unresolved' is the Review repository: directive's null value, not a path — use .sdlc, the directory the review document is written under" >&2 ;;
+        /*|~*)
+            echo "review: exclusion pathspec '$excl' is absolute; :(exclude,top) takes a path RELATIVE to the repository root" >&2 ;;
+        ''|.|./|..|../*|*/..|*/../*|*/.)
+            echo "review: exclusion pathspec '$excl' excludes nothing — the review repository must not be the reviewed tree's root or an ancestor of it" >&2 ;;
+        *)
+            echo "review: exclusion pathspec '$excl' is not a relative path of ordinary components" >&2 ;;
+    esac
+    exit 1
+fi
+
+q() { [ -n "$1" ] && printf '"%s"' "$1" || printf null; }
+vcs=git; ref=; base=; tree=; remote=; head=
 dirty=false
 
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
     vcs=none                                 # not a repository — meta only, null base, no patch
 else
     [ -n "$(git status --porcelain)" ] && dirty=true
+    head=$(git rev-parse --verify -q HEAD) || head=
 
     # `origin` is the FORK when working from a fork, which is the case step 1 exists
     # for, so prefer a distinct `upstream` remote when one is configured. The DEFAULT
@@ -389,10 +420,10 @@ cat > "$staging/meta.json" <<EOF
   "vcs": "$vcs",
   "excluded": ["$excl"],
   "upstream": "$(git remote get-url "$remote" 2>/dev/null)",
-  "anchor_ref": "$ref",
-  "base": "$base",
-  "tree": "$tree",
-  "head": "$(git rev-parse --verify -q HEAD 2>/dev/null)",
+  "anchor_ref": $(q "$ref"),
+  "base": $(q "$base"),
+  "tree": $(q "$tree"),
+  "head": $(q "$head"),
   "worktree_dirty": $dirty,
   "head_matches_target": <true|false — PR mode only; omit this WHOLE LINE in paths mode. See below>,
   "target_head": <the headRefOid sha, quoted — omit this WHOLE LINE, trailing comma included, whenever head_matches_target is true or absent>,
@@ -401,9 +432,9 @@ cat > "$staging/meta.json" <<EOF
 EOF
 ```
 
-Only the `<…>` placeholders are yours to substitute; every `$` field is filled by the shell — `$excl` included, which is why the exclusion is written once in the first block rather than repeated as a literal in three places. On the `none` and `unanchored` paths `base` and `tree` are empty strings and no `review.patch` is written — that is the documented outcome, not a failure to retry. `head` is empty the same way on an unborn `HEAD`: `--verify -q` is what makes that true, since a bare `git rev-parse HEAD` prints the literal string `HEAD` there, which a later reader cannot tell from a real sha.
+Only the `<…>` placeholders are yours to substitute; every `$` field is filled by the shell — `$excl` included, which is why the exclusion is written once in the first block rather than repeated as a literal in three places. On the `none` and `unanchored` paths the `base` and `tree` SHELL variables are empty, which `q()` serialises as JSON `null`, and no `review.patch` is written — that is the documented outcome, not a failure to retry. `head` is empty the same way on an unborn `HEAD`: `--verify -q` is what makes that true, since a bare `git rev-parse HEAD` prints the literal string `HEAD` there, which a later reader cannot tell from a real sha.
 
-`pass` is `<k>`, how many passes have run against this document — `1` on a fresh round, and on a re-review the `<k>` carried in the existing document's pass line, incremented by one. You read that pass line as part of the mandatory read-back of the fields the seeded block does not carry.
+`pass` is `<k>`, how many passes have run against this document — `1` on a fresh round, and on a re-review the `<k>` carried in the existing document's pass line, incremented by one. The seeded block carries the pass line verbatim; read `<k>` from it.
 
 `excluded` records the pathspec the index and the diff both used, so a later restore cannot drift from the capture — which is why the capture writes it down here rather than leaving a restore to repeat a literal. A restore MUST use exactly the pathspec `meta.excluded` records. `worktree_dirty` is `true` when `git status --porcelain` was non-empty.
 
@@ -447,7 +478,7 @@ Review commit branch: <value, or ABSENT>
 EOF
 ```
 
-Record each one exactly as the directive block states it — including `unresolved`, and including the fact that a directive is missing entirely, since step 10(a) branches on both. This is the same reasoning step 9 applies to its consolidated target: ground truth from the filesystem beats the orchestrator's recollection of something it read many tool calls ago.
+Record each one exactly as the directive block states it — including `unresolved`, and including the fact that a directive is missing entirely, since step 10(a) branches on both. The reasoning is the one this step already rests on: ground truth from the filesystem beats the orchestrator's recollection of something it read many tool calls ago.
 
 ### 4. Read project guides and styles
 
@@ -488,14 +519,14 @@ Otherwise, if the graph exists, MUST use the `understand-chat` skill with a quer
 
 For each role, spawn **N independent reviewer subagents** (N = reviewers per role). A reviewer reviews the artifacts (the PR diff in PR mode, or the matched files in paths mode) through exactly one role's lens and returns structured findings — it MUST NOT write any file or post anything.
 
+*Why: `sdlc://review-rationale` §R14.4 — read it before deriving how much scope to hand a reviewer, or before withholding an extension you are unsure of.*
+
 **Claude Code:** Spawn each reviewer using the Agent tool. Run all reviewers concurrently where the tool allows. A reviewer is spawned into a fresh, isolated context: it inherits none of your reads, so every input it needs MUST be interpolated into its brief (replace each `<…>` placeholder with the actual value before spawning). Each reviewer's brief MUST include:
 
 > You are a **reviewer** for the SDLC `review` skill, assigned the **`<role-stem>`** role.
 > - Your lens and blocking policy: `<the role document body>`.
 > - **Context — read anything.** The whole repository is available to you: the module a changed test exercises, a caller, a sibling implementation, a config. Reading is never restricted and is never by itself grounds for a finding.
 > - **Scope — what you are answerable for.** Your **starting point** is this set, the files your role's `guide-map.role` globs match in this PR's diff: `<the role's in-scope changed files>`. It is a starting point and not a boundary, because it can only contain files the PR changed. **(PR mode)** extend it to any file **your role covers** that is logically related to one of the acceptance criteria above — whether or not this PR touched it — and **name the criterion** that puts it in scope when you raise against it. Your role's subject matter is what its document above describes and this list exemplifies; if you are unsure whether a file is yours, raise the finding and say you are unsure, because the orchestrator owns attribution and would rather re-attribute a finding than lose it. Do NOT extend to a file you cannot tie to a criterion: that is scope creep, and an observation you merely noticed while reading belongs in the Incidental tier instead. **(paths mode)** your scope is exactly the files supplied below — the paths the user named are the intent statement, and there is nothing to widen it with.
-
-*Why: `sdlc://review-rationale` §R14.4 — read it before deriving a reviewer's whole scope for it, or before withholding an extension you are unsure of.*
 > - **(PR mode)** The issue this PR closes, whose acceptance criteria are what "on-issue" means: `<the originating issue's title and body, captured in step 2>`.
 > - Classify each finding as **Blocking**, **Advisory** or **Incidental**. Two questions, in this order. **First, does it pertain to the issue above?** A finding traces to an acceptance criterion, or to code this PR introduced, or it does not; one that does not is **Incidental** — a real observation about a file this PR happens to touch, not about the work the issue specified. Say which criterion, or say that none covers it; relevance is a claim you evidence like any other, not an aside. **Then, for an on-issue finding, apply your role's blocking policy**: a correctness defect, or an implementation that does something other than what the issue asked for, is **Blocking**; work that adds to technical debt if it is not addressed now is **Advisory**. An incidental finding is a deferral and not a dismissal — it is recorded with its evidence intact — so hold it to the same standard of proof as the other two, and do NOT use the tier to park a finding you have not evidenced. **(paths mode)** There is no originating issue and therefore no relevance to test, so the Incidental tier is unavailable: classify as **Blocking** or **Advisory** only, and omit the issue slot above.
 > - The artifacts under review — interpolate the slot for the active mode (include exactly one):
@@ -507,12 +538,14 @@ For each role, spawn **N independent reviewer subagents** (N = reviewers per rol
 > - **(PR mode)** Read each in-scope changed file from the local checkout. Interpolate exactly one of these, chosen by whether step 2's PR-head verification actually succeeded: **(verified)** "the checkout is at the PR head `<sha>`, so your `file:line` references line up with the diff above"; **(not verified)** "the checkout is at `<HEAD sha>`, which does **not** match the PR head `<headRefOid>` — line numbers may not correspond to the diff above, so prefer file-level references and say so whenever you cite a line." Never assert the first when step 2 continued past a mismatch: the reviewer has no way to check it, and a wrong reference seeded into the document is cited in commit subjects and costs a later pass a disposition to undo. If a changed file is a test, also read the module it tests (and vice versa). **(paths mode)** Your in-scope files' whole contents are supplied above; you MAY read any other file for context, and if an in-scope file is a test, also read the module it tests (and vice versa). Drop the PR-head / `<sha>` wording in paths mode — there is no PR head.
 > - **(PR mode) Sweep the acceptance criteria before you finish.** For each criterion in the issue above, identify the code that should satisfy it and verify that it does. **A change that should have been made and was not is a first-class finding** — the strongest one a review can make, and the only one a diff cannot show you, because an omission leaves no trace in it. Reference it at the file level, or as `issue acceptance criterion #<n>` where no single file applies, and say what you looked at to conclude the code is absent rather than elsewhere. *(In paths mode there are no criteria to sweep; skip this bullet.)*
 > - Investigate through your assigned lens: apply the focus areas your role's lens / blocking policy defines above. **Only** when your role is `general-purpose` (or its document does not enumerate its own focus) fall back to the generic checklist: guide compliance (cite the specific MUST / SHALL / SHOULD rule), naming and convention drift, coverage regressions (new public APIs without tests, removed tests without justification), correctness bugs (logic errors, race conditions, missing error handling at boundaries, incorrect API use), and code quality (unnecessary complexity, dead code, duplicated logic). Do not pull yourself off your lens to chase items the generic list names but your role does not.
-*Why: `sdlc://review-rationale` §R13.1 — read it if you are tempted to drop an off-issue finding rather than tier it.*
-
 > - Return **structured findings only** — for each: a short title, severity, a reference, the issue with concrete evidence, a recommended remediation (and any alternatives), and optional tests-to-add. The reference is `file:line` when a single line applies; otherwise use a file-level reference (`<file>`) or a cross-cutting one (`(cross-cutting — no single line)`; in PR mode an issue-level `issue acceptance criterion #<n>` is also available). Omissions and file-spanning architectural concerns are first-class findings even without a line — raise them. **(PR mode only)** Do NOT attribute a commit sha — the orchestrator owns commit attribution in step 8. *(In paths mode there are no commits to attribute, so there is nothing to omit here.)* Do NOT write a file, do NOT post to GitHub, do NOT consolidate — return your raw findings to the orchestrator.
 
+*Why: `sdlc://review-rationale` §R13.1 — read it before dropping an off-issue finding a reviewer returned, rather than tiering it.*
+
 <!-- rereview:begin -->
-**(re-review) 0. Know what the seeded block carries, and what it does not.** The block is the document's own structure with each finding's issue text and remediation checklist elided. Everything else arrives **verbatim** and needs no read-back: each finding's role / agreement attribution and full title (they are in the heading, not reconstructed from it), each `Tests to add` line, the **Cross-cutting decisions** section, the **Rejected in earlier passes** and **Retired ids** ledgers, and the header's pass counter `<k>`.
+**(re-review) 0. Know what the seeded block carries, and what it does not.** The block is the document's own structure with each finding's issue text and remediation checklist elided. Everything else arrives **verbatim** and needs no read-back: each finding's role / agreement attribution and full title (they are in the heading, not reconstructed from it), each `Tests to add` line, **this pass's** `## Pass <k> — cross-cutting decisions` section, the **Rejected in earlier passes** and **Retired ids** ledgers, and the header's pass counter `<k>`.
+
+A **second** class of content is elided besides the finding bodies, and this is the one enumeration that says so: every EARLIER pass's `## Pass <k> — cross-cutting decisions` section is replaced by a supersession marker, keyed on its pass number. Those sections are not lost — step 9 builds the target from the `$seed` copy on disk, where they are intact — but they are not in front of you, and appending this pass's section rather than editing the last one is what keeps that true.
 
 *Why: `sdlc://review-rationale` §R15.1 — read it before reading the document back for a field the block already carries.*
 
@@ -530,21 +563,15 @@ echo "$seed"
 Derived from `Review document:` alone — the working-directory path, present whenever a document will be written at all — for the same reason step 9's target is: the repository-relative directives are absent exactly on the unresolved-repository branch, which is the branch where there is no git history to recover from either. Preserve all of it verbatim on every finding you carry, and build step 9's consolidated target by reading `$seed` rather than by recalling it.
 *Why: `sdlc://review-rationale` §R7.1 — read it if you are about to key the scratch path on a repository-relative directive.*
 
-Note that "preserve verbatim" is not uniform across these. The **Cross-cutting decisions** section, each finding's `Tests to add` line, the role attributions and the full titles are preserved **unchanged**. The two ledgers are preserved **and extended**: step 8 appends every id that leaves the tiers to `Retired ids`, appends every rejection to **Rejected in earlier passes**, and removes an id from `Retired ids` when a finding is re-opened. The pass counter is preserved **and incremented**.
+Note that "preserve verbatim" is not uniform across these. Each finding's `Tests to add` line, the role attributions and the full titles are preserved **unchanged**. Earlier passes' `## Pass <k> — cross-cutting decisions` sections are preserved **in place** — step 9 appends a NEW section for this pass rather than rewriting the last one, so nothing here is edited and nothing is removed. The two ledgers are preserved **and extended**: step 8 appends every id that leaves the tiers to `Retired ids`, appends every rejection to **Rejected in earlier passes**, and removes an id from `Retired ids` when a finding is re-opened. The pass counter is preserved **and incremented**.
 
-**Reconcile the counts while you are here.** Compare the file's finding ids against the ids in the block, whose `Findings (N):` line states the count. Compare **id sets**, not counts, and compute the file's set the way the parser does — outside fenced code blocks, and inside the Tier 1 / Tier 2 regions only:
+**Reconcile the counts while you are here.** Compare the file's finding ids against the ids in the block, whose `Findings (N):` line states the count. Compare **id sets**, not counts, and get the file's set from the parser itself — across all three tiers, and outside fenced code blocks — by calling the fetch tool with an EMPTY id list:
 
-```bash
-awk '
-  /^([`]{3,}|[~]{3,})/ { fence = 1 - fence; next }
-  fence             { next }
-  /^## +Tier +[12]/ { tier = 1; next }
-  /^## /            { tier = 0; next }
-  tier && /^### /   { print $2 }
-' "<Review document>"
-```
+`sdlc_review_findings(<the Review document path>, [])`
 
-A naive `grep -c '^### '` is **wrong here**, and wrong in the direction that costs the round: `pr_state.parse_review_document` skips fenced headings deliberately, and the reviewed artifacts in this chain ARE review documents, so findings about them routinely quote finding headings — this instruction's own document does. On a real mismatch, STOP and name the ids present in the file but missing from the block.
+It returns one `id / severity / reference / title` line per finding and a trailing `Ids:` line; compare that line against the block's ids.
+
+**Call the parser; do not re-implement it.** The tool runs the same `parse_review_document` that produced the seeded enumeration, so the two cannot disagree by construction. Do NOT substitute `grep -c '^### '`, a hand-written `awk`, or a shell-out to `uv run python -c "from sdlc import ..."`: every hand-rolled scanner here has been wrong in the direction that costs the round, and the shell-out resolves against the REVIEWED project's environment, where this package is not installed. On a real mismatch, STOP and name the ids present in the file but missing from the block.
 *Why: `sdlc://review-rationale` §R7.2 — read it if the reconciliation reports ids you cannot find.*
 
 **(re-review)** Each reviewer stays a reviewer and performs the full review above — it hunts for defects in the current files exactly as it would on a fresh round. The seeded findings are **context for reconciliation, not a worklist**, and the order the reviewer works in decides which of those it actually is: a reviewer that reads the prior findings first tends to confirm them rather than review the code, and a remediation that resolved every prior finding while introducing a new one sails through that.
@@ -563,12 +590,12 @@ That ordering is **structural, not an instruction**. A brief is read as a single
 4. Collect its dispositions, and **reconcile them against the subset you dispatched.** Compare the returned ids against the ids you sent that reviewer. Re-send any missing ids to the same reviewer once, then fall back to carry, recording which ids took that path so the pass header's `<u>` can distinguish them.
 *Why: `sdlc://review-rationale` §R7.4 — read it if a reviewer returns fewer dispositions than you dispatched.*
 
-**Claude Code:** spawn with the Agent tool for phase 1, then continue that same agent with `SendMessage` for phase 2. Here the guarantee is **structural**, and it is worth stating precisely rather than overstating: **the phase-1 prompt contains no seeded-finding text, and the phase-1 brief forbids reading `.sdlc/reviews/`**.
+**Claude Code:** spawn a **`general-purpose`** subagent with the Agent tool for phase 1 — **never a fork**, which inherits this context including the seeded block and voids the blindness this dispatch exists to create — then continue that same agent with `SendMessage` for phase 2. Here the guarantee is **structural**, and it is worth stating precisely rather than overstating: **the phase-1 prompt contains no seeded-finding text, and the phase-1 brief forbids reading `.sdlc/reviews/`**. Both halves rest on the reviewer starting from a fresh context, so the type is named here rather than left to the harness default.
 
 **Other LLM assistants:** where agent messaging is unavailable, run the two phases as two separate inline passes per role, and do not read the seeded set until the phase-1 findings are written down. **The guarantee is NOT the same on this path, and this skill will not claim it is.** The ordering here is instructional, and instructional ordering is better than none, but it is not blindness. Two consequences follow and both are mandatory: step 8's rediscovery-outranks-close weighting does NOT apply to a role run inline — treat such a rediscovery as ordinary agreement — and the pass header MUST record that phase-1 blindness was unavailable for those roles, so a later pass reading the document knows which weighting was in force.
 *Why: `sdlc://review-rationale` §R7.3 — read it if you are running inline and unsure what the ordering does and does not buy.*
 
-**Scoping the seeded subset.** Route each seeded finding to the reviewers of its **originating role**, which the document records on every finding, rather than by matching its `Reference` against a file set. A seeded finding whose originating role is not in this pass's role list has no reviewer at all; step 8 carries it unchanged and records that it was not re-examined.
+**Scoping the seeded subset.** Route each seeded finding to the reviewers of **every role recorded on it** that is in this pass's role list, rather than by matching its `Reference` against a file set. The document records `<role(s) / reviewer agreement>` and step 8 deliberately produces multi-role entries, so "the originating role" is not always singular: routing such a finding to one role arbitrarily halves the corroboration the step-8 and step-9 gates count. A seeded finding is unexamined only when **none** of its recorded roles ran; step 8 then carries it unchanged and records that it was not re-examined.
 *Why: `sdlc://review-rationale` §R7.4 — read it if you are about to route seeded findings by their file reference.*
 
 The phase-2 message to each reviewer:
@@ -610,12 +637,12 @@ The phase-2 message to each reviewer:
 - **A disposition whose only evidence is absence at a line is a carry** — "nothing at `<file>:<line>`" says the reference drifted, which it did for every finding the last remediation touched; it does not say the defect is gone. Treat such a `close` or `reject` as **carry**, and update the finding's `Reference` to where the defect actually stands now.
 - **Fold phase-1 rediscoveries into the seeded finding** — where a reviewer reported that one of its phase-1 findings describes the same defect as a seeded finding, the seeded finding **carries** and the phase-1 finding is NOT added as a separate entry. Record the independent rediscovery as agreement on the carried finding: a reviewer that found the defect without being told about it is stronger evidence it remains than one that read the finding and agreed, so it outranks any **close** disposition on that finding. **Corroborate the claim before granting it that weight.** Match the claimed rediscovery against them yourself; where none matches, treat it as ordinary agreement rather than as the upgraded signal. This weighting is earned by the two-turn dispatch in step 7 — the phase-1 prompt carried no seeded-finding text, and the phase-1 brief forbade seeking it out on disk — and would be unfounded without both; it therefore does NOT apply to a role run inline, where neither condition holds.
 *Why: `sdlc://review-rationale` §R8.3 — read it before granting a rediscovery more weight than ordinary agreement.*
-- **A blocking finding is rejected only with corroboration** — `reject` removes a blocking finding outright, it applies only when no reviewer carried it, and `Reviewers per role` defaults to 1, so without a gate one agent's judgement deletes a blocking finding on the single predicate termination depends on. Require either **two reviewers agreeing** on the rejection or an explicit user confirmation before applying it to a **blocking** finding; with neither, treat it as **carry** and note the dissent. `carry` stays autonomous — it keeps the finding open, so the worst case is a wasted pass. So closing a **blocking** finding MUST quote the remediating text from the current file rather than assert its presence, and when `Reviewers per role` is 1 and a single role covers it, the closures MUST be surfaced for explicit user confirmation at step 9 rather than as an informational summary. **Re-tiering a blocking finding to incidental takes the same gate**, on the same reasoning and by the same route: declaring a finding off-issue removes it from the termination predicate exactly as a `reject` does, and gating only the two dispositions named by word would leave the outcome reachable through a third door. Uncorroborated, the finding stays **blocking** with the dissent noted.
+- **A blocking finding leaves the termination predicate only with corroboration** — `reject` applies only when no reviewer carried it, and requires either **two reviewers agreeing** or an explicit user confirmation; with neither, treat it as **carry** and note the dissent. Closing a **blocking** finding MUST quote the remediating text from the current file rather than assert its presence, and unless at least **two reviewers that were dispatched that finding** returned `close` independently, the closures MUST be surfaced for explicit user confirmation at step 9 rather than as an informational summary. The count is over the reviewers that actually judged the finding, NOT over the roles whose globs cover its file: seeded findings are routed by role, so glob coverage can be two while the number of agents that ever saw the finding is `Reviewers per role` — which defaults to 1. **Re-tiering a blocking finding to incidental takes the same gate**, by the same route. Uncorroborated, the finding stays **blocking** with the dissent noted. `carry` stays autonomous.
 *Why: `sdlc://review-rationale` §R13.3 — read it before re-tiering a blocking finding off-issue on one reviewer's judgement.*
 *Why: `sdlc://review-rationale` §R8.3 — read it before removing a blocking finding on one reviewer's judgement.*
 - **Record every rejection in the ledger** — a rejected finding leaves the document, so without a record the next pass's phase-1 reviewers, working in fresh contexts with the seeded set deliberately withheld, have every reason to raise the same claim again; step 8 below then classifies it as new and gives it a fresh id, and a blocking finding rejected each pass blocks forever. Append it to the document's **Rejected in earlier passes** ledger — id, title, reference, the pass that rejected it, and the rationale — and preserve the ledger across passes. It is supplied to the **phase-2** message only, NEVER to phase 1, so blindness is untouched. A phase-1 finding matching a ledger entry is folded into that entry rather than admitted as a new id.
 - **A re-opened finding RECLAIMS its original id** — `reopen` is a normal disposition and it needs an id rule, because the finding's id is sitting in `Retired ids` while `max(retired ∪ open) + 1` would hand it a fresh one. It is the same defect, and the commit history already cites the original, so the original is what it takes: restore the finding to its tier under its old id, **remove that id from `Retired ids`**, and leave the ledger entry in place annotated with the pass that re-opened it and what the rejection missed. This is the one case where an id leaves the retired line, and it is why that line is a ledger rather than an append-only log.
-- **Keep finding IDs stable** — a carried or corrected finding KEEPS its original id. Ids are cited in the commit history and in `sdlc_implement --review <#>`, so they MUST NOT be renumbered between passes. New findings take the next id **above the highest id in that tier across BOTH the surviving findings and the `Retired ids` line** — that is, `max(retired ∪ open) + 1`. Neither source alone is the maximum.
+- **Keep finding IDs stable** — a carried or corrected finding KEEPS its original id. Ids are cited in the commit history and in `sdlc_implement --review <#>`, so they MUST NOT be renumbered between passes. New findings take the next id **computed over every id carrying that prefix, across BOTH the surviving findings and the `Retired ids` line, regardless of the tier each now sits in** — that is, `max(retired ∪ open) + 1`. Neither source alone is the maximum, and the tier is not part of the computation: a re-tiered finding keeps its id, so a `B4` in Tier 2 still blocks `B4` from being reissued.
 *Why: `sdlc://review-rationale` §R8.1 — read it if you are about to compute the next id from one source alone.*
 - **Count what changed** — record how many findings were closed (`<c>`), rejected (`<r>`) and added (`<a>`) this pass, how many blocking (`<B>`), advisory (`<A>`) and incidental (`<I>`) findings remain open, and how many were **carried without re-examination** (`<u>`) — which has **two** causes and they are not interchangeable: the finding's originating role was absent from this pass, or a reviewer that WAS dispatched returned no disposition for it. Record the split, because step 11's prompt for the first tells the user to re-run with the missing roles, and telling them that when the role already ran is a false diagnosis with an inapplicable remedy. Those are the symbols the template's pass line and step 11's prompts use; `<u>` in particular is the one number that keeps an unexamined blocking finding from being reported as a reviewed one. These fill the template's pass header, drive the commits in step 10, and decide the prompt in step 11.
 
@@ -625,13 +652,13 @@ The main session agent (NOT a reviewer) merges every reviewer's findings into on
 - **Dedup within a role** — collapse findings from the same role that name the same defect at the same reference into a single finding, recording the reviewer agreement (e.g. `4/5 reviewers`).
 - **Merge across roles** — combine findings about the same defect raised by different roles into one entry that records every role that raised it.
 - **Highest severity wins** — assign each finding the highest severity any role gave it, ranking `blocking > advisory > incidental`. Where roles disagree (one rated it Blocking, another Advisory or did not raise it), NOTE the dissent on the finding. **Blocking versus Incidental is the one disagreement this rule does not settle by itself**: it is not a disagreement about severity but about **relevance** — whether the issue asked for the work at all — and relevance is not role-relative, so neither lens outranks the other. Resolve it against the originating issue's acceptance criteria, state which criterion the finding traces to or that none does, and record the resolution on the finding. Until it is resolved the finding **stays blocking**, so nothing leaves the termination predicate by default while the question is open. *Why: `sdlc://review-rationale` §R13.2 — read it if you are about to settle a blocking-versus-incidental split by ranking the tiers.*
-- **Assign stable IDs** — `B1, B2, …` for blocking findings, `A1, A2, …` for advisory, `I1, I2, …` for incidental, in a stable order. The prefix records where a finding was FIRST raised, not where it sits now: a re-tiered finding keeps its id, so `max(retired ∪ open) + 1` is computed per PREFIX rather than per section. **(re-review)** Only NEW findings are assigned here, taking the next unused id in their tier; findings carried over from the seeded set keep the ids they already have.
+- **Assign stable IDs** — `B1, B2, …` for blocking findings, `A1, A2, …` for advisory, `I1, I2, …` for incidental, in a stable order. The prefix records where a finding was FIRST raised, not where it sits now: a re-tiered finding keeps its id, so `max(retired ∪ open) + 1` is computed per PREFIX rather than per section. **(re-review)** Only NEW findings are assigned here, by that same per-prefix rule; findings carried over from the seeded set keep the ids they already have.
 - **Pre-select remediation** — for each finding, choose the recommended remediation and mark it `[x]`, list reasonable alternatives as `[ ]`, and always append an `Other: ___` slot.
 - **Group by severity tier, blocking first** — Tier 1 (Blocking), Tier 2 (Advisory), then Tier 3 (Incidental). **(paths mode)** omit Tier 3 entirely; it has no originating issue to test relevance against.
 - **(PR mode) Attribute each finding to a commit** — using the **branch commit map** built in step 2, match each finding's `file:line` (or file-level reference) against the commit that touched that file to set its `Touched commit`. The consolidator owns this attribution; do not rely on any sha from a reviewer (the reviewers were told not to supply one). A finding with no single file (cross-cutting / issue-level) maps to the commit(s) most responsible, or is grouped under the relevant commit in the fixup mapping with a note. **A finding that reports a change which was never made has no commit that touched its file** — that is what the finding says. Map it to the commit most responsible for the related criterion where one exists, so the remediation lands beside the work it completes; where none does, write `(no commit — omission)` and group it in the fixup mapping under a **new commit**, since `git commit --fixup` against a sha that does not exist is not a thing the user can run. **(paths mode) Skip this bullet entirely** — there is no commit map, so findings carry no `Touched commit`.
 - **Validate each finding's attribution** — call `sdlc_role_scope([<the finding's file>], "<the raising role>")` for every finding with a file-level or `file:line` reference. An empty result means the file is outside that role's `guide-map.role` map, which reviewers can now reach by extending their own scope. The finding is **NOT dropped**: re-attribute it to a role in this pass whose globs DO cover the file, folding it into that role's finding on the same defect if there is one; where no role in this pass covers it, keep the finding and note in the header that it fell outside every role's map, which tells the user a glob is missing. Dropping it would trade a real defect for a bookkeeping rule, and the rule exists to keep a role's findings reflecting its lens — not to discard evidence. *(A cross-cutting or issue-level finding has no file to check; skip it.)*
 *Why: `sdlc://review-rationale` §R14.3 — read it if you are tempted to drop a finding that fell outside the raising role's map.*
-- Populate the document header and fill the **cross-cutting decisions** section — a NEW one for this pass, headed `## Pass <k> — cross-cutting decisions`, leaving earlier passes' sections in place. The seeded block elides the superseded ones, so only this pass's is in front of you; that is by design and not a sign the others were lost. *Why: `sdlc://review-rationale` §R15.4 — read it if a past pass's cross-cutting section is missing from your context.* Fill it following the bundled template appended below this prompt exactly. **(PR mode)** The header carries roles used, reviewers per role, target HEAD sha, dedup approach, severity legend, and the branch commit map from step 2; also fill the **fixup mapping** section. **(paths mode)** The header carries roles used, reviewers per role, dedup approach, and severity legend, and identifies the reviewed paths in place of the PR / HEAD-sha / Closes line; **omit the branch-commit-map line, every finding's `Touched commit`, and the entire fixup-mapping section** — none of them have meaning without a PR. Keep the severity tiers, stable IDs, references, evidence, and remediation checklists exactly as in PR mode.
+- Populate the document header and fill the **cross-cutting decisions** section — a NEW one for this pass, headed `## Pass <k> — cross-cutting decisions`, leaving earlier passes' sections in place. The seeded block elides the superseded ones, so only this pass's is in front of you; that is by design and not a sign the others were lost. *Why: `sdlc://review-rationale` §R15.4 — read it if a past pass's cross-cutting section is missing from your context.* Fill it following the bundled template appended below this prompt exactly. **The template is the one enumeration of the header's shape** — fill every field it carries and do not work from a list restated here. A local enumeration outcompetes a general "follow the template" directive, and the two that used to be here were each shorter than the template by several load-bearing fields. **(PR mode)** also fill the **fixup mapping** section, and take the branch commit map from step 2. **(paths mode)** identify the reviewed paths in place of the PR / HEAD-sha / Closes line; **omit the branch-commit-map line, every finding's `Touched commit`, and the entire fixup-mapping section** — none of them have meaning without a PR. Keep the severity tiers, stable IDs, references, evidence, and remediation checklists exactly as in PR mode.
 
   **The Composition line is machine-read, so its shape is a contract.** `sdlc_review --verify` parses it to inherit the roles this round ran under, so the next pass dispatches them without the user restating `--roles`. Render the role stems **backticked and comma-separated, immediately after the literal `role(s)`**, and put nothing but stems between that literal and the opening parenthesis. A line it cannot read yields no roles, and the pass falls back to `general-purpose`: every seeded finding raised by another role then carries unexamined while the pass still reports progress. The endpoint says so when it happens (`Seeded-role coverage warning`), but the cheap fix is upstream — **(re-review)** step 7(0) preserves this line verbatim along with the rest of the header.
 
@@ -660,10 +687,11 @@ Fold any such adjustments into the document, then proceed straight to writing it
 
 **This is the step the blocking-disposition gate fires at.** Step 8 requires corroboration before a **blocking** finding may be removed from the termination predicate, and routes the uncorroborated case here. So, before going to step 10:
 
-- List every **blocking** `close` whose corroboration is a single reviewer of a single role — that is, where `Reviewers per role` is 1 and only one role covers the finding. Quote, for each, the remediating text from the current file. Ask the user to confirm the closures explicitly, and treat anything they do not confirm as **carry**.
+- List every **blocking** `close` that fewer than **two reviewers that were dispatched that finding** returned independently. Quote, for each, the remediating text from the current file. Ask the user to confirm the closures explicitly. **STOP here and wait for the user's answer.** Do not infer it, and do not proceed on the assumption that they would confirm. Anything they do not confirm explicitly is **carry** with the dissent noted.
 - List every **blocking** `reject` that neither two reviewers agreed on nor the user has already confirmed. Ask for that confirmation, and treat anything unconfirmed as **carry** with the dissent noted.
 - List every **blocking** finding this pass would re-tier to **incidental**, with the criterion it was judged not to trace to. That move removes it from the termination predicate as surely as a reject does, so it takes the same corroboration; anything unconfirmed stays **blocking** with the dissent noted.
-- Where none of the three lists has an entry — the ordinary case at a composition of several reviewers per role — say so in one line and continue without a gate. The gate is a function of the composition, not a step to perform ceremonially.
+- **Reconcile the fetched set against the dispositioned set.** Every finding this pass closes, rejects, re-tiers or corrects MUST appear in the set of ids passed to `sdlc_review_findings` during step 7. Where an id was dispositioned without being fetched, STOP and say which: the disposition rests on a heading, and no marker in the outline can tell you what the body said. Fetch it and re-derive that one disposition before continuing. This is the same read-back-from-ground-truth the id reconciliation, the empty-tree sentinel and the terminal diff each perform; without it the fetch is the one load-bearing rule in this skill that nothing verifies.
+- Where none of the three lists has an entry — the case at a composition of several reviewers per role; at the default of one reviewer per role, expect entries — say so in one line and continue without a gate. The gate is a function of the composition, not a step to perform ceremonially.
 
 Everything else about step 9 is unchanged: fold in any adjustment the user offers, then go to step 10. Advisory dispositions, and blocking `carry`, never gate — `carry` keeps the finding open, so its worst case is a wasted pass.
 
@@ -681,7 +709,7 @@ Step 10(d) walks the real document toward this file one commit at a time and dif
 
 The document is written AND committed autonomously — neither has an approval gate. There are **two** exceptions, both questions only the user can answer: an unresolved review repository (10(a) below), and — on a re-review — rejecting, closing or re-tiering to incidental a **blocking** finding without the corroboration step 8 requires.
 
-**Read the commit destinations back from disk first.** Step 3(b) wrote the five values to a scratch file precisely so this step does not interpolate them from recollection across the reviewer dispatch and the seeded dump. Read that file now and use what it says — it is ground truth, in the same way step 9's target file is:
+**Read the commit destinations back from disk first.** Step 3 wrote the five values to a scratch file precisely so this step does not interpolate them from recollection across the reviewer dispatch and the seeded dump. Read that file now and use what it says — it is ground truth, for the same reason the rest of this step reads from disk rather than from recall:
 
 ```bash
 cat "$(cd "${TMPDIR:-/tmp}" && pwd -P)/sdlc-review-$(printf '%s' "<Review document>" | shasum | cut -c1-12).directives"
@@ -816,9 +844,10 @@ Do NOT regenerate the capture here — recapturing at this point would record th
 *Why: `sdlc://review-rationale` §R15.3 — read it before splitting the review document into one file per finding.*
 
 
-- **(fresh round)** Write the full document at `Review document:`, following the bundled template structure exactly: the header — including the pass line carrying the open counts and this pass's deltas — the severity-tiered findings (blocking, then advisory, then — PR mode only — incidental) with stable IDs / titles / severities / `Reference` (`file:line`, or a file-level / issue-level reference for a line-less finding) / Issue + evidence / Remediation checklist (`[x]` recommended, `[ ]` alternatives, `Other: ___`) / optional Tests-to-add, plus the cross-cutting-decisions section. **(PR mode)** also include each finding's `Touched commit` and the fixup-mapping section; **(paths mode)** omit both — there are no commits to attribute or fold into.
+- **(fresh round)** Write the full document at `Review document:`, following the bundled template structure exactly: the header, every field of it, as the template enumerates them — the severity-tiered findings (blocking, then advisory, then — PR mode only — incidental) with stable IDs / titles / severities / `Reference` (`file:line`, or a file-level / issue-level reference for a line-less finding) / Issue + evidence / Remediation checklist (`[x]` recommended, `[ ]` alternatives, `Other: ___`) / optional Tests-to-add, plus the cross-cutting-decisions section. **(PR mode)** also include each finding's `Touched commit` and the fixup-mapping section; **(paths mode)** omit both — there are no commits to attribute or fold into.
 <!-- rereview:begin -->
-- **(re-review)** Write NOTHING to `review-<#>.md` here **except the pass-header bump**, which is instructed here rather than left to be inferred from (d)'s rationale: edit the pass line to `**Pass <k+1>**`, leave `<B>`, `<A>` and `<I>` at the SEEDED counts, and set `<c>`, `<r>` and `<a>` to `0` with `<u>` at its final value. That is the one mutation (d)'s snapshot-and-header commit carries; without it that commit has nothing staged and fails on a pass where the capture was also skipped. The zeroes are not a placeholder — invariant :73 requires the header to agree with the document at every commit, and at this commit no disposition has been applied yet, so the deltas ARE zero and (d)'s mutation commits walk them up one at a time. Otherwise leave the document on disk at the seeded content this pass found, because (d) walks it forward one finding-set mutation at a time and each of those mutations is its own commit. Writing the reconciled document now would leave (d) with no residual change to apply, collapsing the pass into a single commit and defeating the per-mutation history. Step 9's consolidated document is the **target state** (d) walks toward — it is already on disk at the scratch path step 9 wrote it to, and is not something to write here.
+- **(re-review)** Write NOTHING to `review-<#>.md` here **except the pass-header bump**, which is instructed here rather than left to be inferred from (d)'s rationale: edit the pass line to `**Pass <k+1>**`, leave `<B>`, `<A>` and `<I>` at the SEEDED counts, and set `<c>`, `<r>` and `<a>` to `0` with `<u>` at its final value. That is the one mutation (d)'s snapshot-and-header commit carries; without it that commit has nothing staged and fails on a pass where the capture was also skipped. The zeroes are not a placeholder — the "MUST leave the document internally consistent" invariant requires the header to agree with the document at every commit, and at this commit no disposition has been applied yet, so the deltas ARE zero and (d)'s mutation commits walk them up one at a time. Otherwise leave the document on disk at the seeded content this pass found, because (d) walks it forward one finding-set mutation at a time and each of those mutations is its own commit. Writing the reconciled document now would leave (d) with no residual change to apply, collapsing the pass into a single commit and defeating the per-mutation history. Step 9's consolidated document is the **target state** (d) walks toward — it is already on disk at the scratch path step 9 wrote it to, and is not something to write here.
+<!-- rereview:end -->
 
 **Where it is written depends on the branch resolved in (b).**
 
@@ -832,8 +861,9 @@ Do NOT regenerate the capture here — recapturing at this point would record th
   cp "<Review snapshot directory>"/* "$worktree/<Review snapshot in repository>"
   ```
 
-<!-- rereview:end -->
+<!-- rereview:begin -->
   On a re-review, repeat the document `cp` before **every** commit in (d) — the snapshot-and-header commit included, since that one carries the pass-header bump — so the committed copy tracks the working-directory copy commit by commit. Without it the bump is committed from stale content, or rides along with the first mutation commit whose message justifies a different state change; and on a pass where every finding carries there is no mutation commit at all, so the bump is never committed and the committed document permanently disagrees with the working one. The terminal check at the end of (d) cannot catch any of that — it compares two working-directory copies.
+<!-- rereview:end -->
 
 Do NOT post anything to GitHub.
 
@@ -863,7 +893,6 @@ review: Add review-1 with 3 blocking and 2 advisory findings
 
 <!-- rereview:begin -->
 **(re-review)** The snapshot is committed FIRST, before any finding mutation, because the dispositions in this pass were derived from it. This commit also carries the **pass-header bump**: `<k>` counts passes, not finding changes, so it belongs to no mutation below — editing the pass line here gives it a home, and gives a pass in which nothing changed a coherent round of its own.
-<!-- rereview:end -->
 
 ```bash
 # in place
@@ -908,6 +937,7 @@ diff -u "$target" "<Review document>" && rm -f "$target"   # diff MUST produce n
 
 If `diff` reports a difference, a mutation was missed — apply the remainder as one further commit rather than amending the history, then run the check again.
 *Why: `sdlc://review-rationale` §R10.4 — read it if the terminal diff keeps reporting a difference.*
+<!-- rereview:end -->
 
 Finally, when (b) created a worktree, remove it — after the LAST commit above, never earlier:
 
@@ -947,6 +977,7 @@ When the review repository was unresolved and the user has not yet answered the 
 **(re-review)** Use this instead, which says what was actually lost. The finding set is current, but the per-mutation history — the thing a re-review chain exists to produce — was not written, and no later pass can reconstruct it:
 
 > `review-<#>.md` rewritten in place — `<B>` blocking, `<A>` advisory, `<I>` incidental remaining. Closed `<c>`, rejected `<r>`, added `<a>` this pass. The round is **not committed** and has no per-finding history — no review repository is resolved, so the document was written in one pass rather than walked forward one mutation at a time. Answer the question above and the NEXT pass will be committed; this one's history cannot be recovered. Nothing was posted to GitHub.
+<!-- rereview:end -->
 
 **(paths mode):**
 
@@ -958,11 +989,11 @@ When the review repository was unresolved in paths mode, use this instead — pa
 
 The committed variant above continues: This document is a local artifact — nothing was posted to GitHub, and the `implement` skill does not read it automatically. Read it yourself (or with the user) and use each finding's pre-selected remediation as the work list, applying the fixups directly to the reviewed files. To continue this review once they are fixed, run `sdlc_review --verify <iteration> --roles <the roles this pass used>` over the same paths — that seeds this document's findings and rewrites it in place. Running a bare `review` over the same paths instead starts a SEPARATE chain at a new iteration. There is no PR or fixup mapping in this mode.
 
+<!-- rereview:begin -->
 **(re-review):** After the document is written and committed, prompt based on the remaining blocking count:
 
 > `review-<#>.md` rewritten in place — `<B>` blocking, `<A>` advisory, `<I>` incidental remaining. Closed `<c>`, rejected `<r>`, added `<a>` this pass, each as its own commit in `<repo>`. Nothing was posted to GitHub.
 
-<!-- rereview:end -->
 When `<u>` is non-zero, say which of its two causes applied, so an unexamined blocking finding is never reported as a reviewed one and the remedy offered is the one that fits. Emit whichever variants have entries — both, if the pass hit both:
 
 > `<n>` finding(s) were carried WITHOUT re-examination — their originating role(s) `<roles>` were not in this pass. Re-run with `--roles <those roles>` to have them looked at.
@@ -974,6 +1005,7 @@ The second variant exists because the first one's remedy is actively wrong for i
 When `<c>`, `<r>` and `<a>` are all zero, no finding changed and there are no per-mutation commits to report. Use this instead, then continue with the blocking/non-blocking branch below:
 
 > `review-<#>.md` unchanged this pass — `<B>` blocking, `<A>` advisory, `<I>` incidental still open. Every seeded finding carried, so only the reviewed-state capture and the pass header were committed. Nothing was posted to GitHub.
+<!-- rereview:end -->
 
 - When `<B>` > 0:
   > `<B>` blocking finding(s) remain. Re-enter the implement loop to address them: `sdlc_implement <target> --review <#>` (the same target, with the review iteration `<#>`). After fixing, re-run `sdlc_review --verify <#> --roles <the roles this pass used>` for the next pass.
@@ -987,21 +1019,23 @@ DO NOT proceed on your own.
 ## Edge Cases
 
 **Paths mode runs no `gh` and posts nothing:** In paths mode the skill performs no repo resolution, no PR fetch, and no commit-map enumeration — there is no GitHub interaction at all. The document lands under the endpoint-computed `.sdlc/reviews/<slug>/` directory.
-*Why: `sdlc://review-rationale` §R12 — read it if this branch does not behave as described.*
+*Why: `sdlc://review-rationale` §R12 — read it before running any `gh` command in paths mode.*
 
 **No files matched the paths/globs (paths mode):** If expanding the `Target paths:` entries against the working tree yields no files (every literal path is missing and every glob matches nothing), inform the user that nothing matched, list the entries you tried, and stop — there is nothing to review and no document is written. If only some entries are empty, note the misses and proceed with the files that did match.
 
 **PR is already merged or closed (PR mode):** Inform the user that the PR is not open and stop.
 
 **No findings:** If every reviewer returns clean, present the empty-findings document (header plus empty severity tiers) as informational (step 9) and write and commit it autonomously (step 10) so the round is recorded; inform the user that no issues were found and the target looks clean. On a fresh round there is no approval gate on the review (produce) document — the empty-findings document is written the same way a document with findings is.
-*Why: `sdlc://review-rationale` §R12 — read it if this branch does not behave as described.*
+*Why: `sdlc://review-rationale` §R12 — read it before treating a clean round as a reason to skip the document.*
 
 <!-- rereview:begin -->
 **A finding heading the parser cannot read (re-review):** `sdlc_review --verify` fails before this skill is dispatched, with `ValueError: … unparsed finding heading in a severity tier: '### B2 - …'`. The document has been hand-edited into a heading that is not `### <id> — <title>` with a spaced em dash — an en dash or a hyphen is the usual cause.
+*Why: `sdlc://review-rationale` §R12 — read it before trying to repair a seeded document the parser refused.*
 <!-- rereview:end -->
-*Why: `sdlc://review-rationale` §R12 — read it if this branch does not behave as described.*
 
+<!-- rereview:begin -->
 **Re-review target has no review document:** This is raised upstream by the tool before this skill runs — when the target has no `review-<#>.md` (the directory is absent or that iteration is missing), `sdlc_review --verify <#>` raises a `ValueError` and the skill is never dispatched. You will not reach this skill with a missing review document, so there is no in-skill fallback to handle; the user sees the tool's error and runs a fresh `review` first.
+<!-- rereview:end -->
 
 <!-- rereview:begin -->
 **Every seeded finding closes (re-review):** When every seeded finding is closed and no new one is raised, the document is rewritten with empty severity tiers and a pass header recording the closures. Write and commit it exactly as usual — one commit per closure — so the chain's completion is recorded in the history, then give the `<B>` == 0 next-step prompt.
@@ -1009,8 +1043,8 @@ DO NOT proceed on your own.
 
 <!-- rereview:begin -->
 **Every seeded finding carries (re-review):** The opposite extreme, and the common one early in a fix loop. When nothing closes, is rejected, or is added, there is no finding-set mutation and therefore no per-mutation commit.
+*Why: `sdlc://review-rationale` §R12 — read it before manufacturing a commit for a pass where nothing changed.*
 <!-- rereview:end -->
-*Why: `sdlc://review-rationale` §R12 — read it if this branch does not behave as described.*
 
 **No originating issue in paths mode (the incidental tier is unavailable):** Paths mode reviews files as they stand, with no PR and no linked issue, so there is nothing for a finding's relevance to be tested against. Tier 3 is omitted from the document, the reviewer brief drops both the issue slot and the third classification, and an observation that would have been incidental in PR mode is **Advisory** there — it is still real, it still does not gate, and it is still recorded. Do not invent a stand-in for the issue: the paths a run was given say which files to read, not what work was asked for.
 *Why: `sdlc://review-rationale` §R13.5 — read it if you are about to substitute something for the missing issue in paths mode.*
@@ -1026,6 +1060,6 @@ DO NOT proceed on your own.
 **Binary files:** Binary files MUST be skipped during analysis — in both the PR diff and a paths-mode match. Note their presence to the user but do not attempt to review them.
 
 **Very large diffs (PR mode):** For PRs with more than 20 changed files or more than 1000 lines changed, the agent SHOULD summarize the scope to the user and ask whether to review the full diff, focus on specific files, or decline the review entirely. On a decline the run ends: no document and no snapshot are written, and whatever step 2 staged is left in `$staging` for the next run's `rm -rf` — this is the **declined-large-diff branch** the earlier steps refer to.
-*Why: `sdlc://review-rationale` §R12 — read it if this branch does not behave as described.*
+*Why: `sdlc://review-rationale` §R12 — read it before deciding how much of a large diff to put in each brief.*
 
 **Files outside the repository's guide coverage:** If reviewed files are in a language or domain not covered by any project guide, review them for general correctness and code quality only. Do not fabricate guide requirements that do not exist.

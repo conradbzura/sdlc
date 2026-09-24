@@ -53,7 +53,7 @@ cd sdlc
 pip install -e .
 ```
 
-You now have eleven tools available: the pipeline stages `sdlc_issue`, `sdlc_implement`, `sdlc_test`, `sdlc_commit`, `sdlc_pr`, and `sdlc_review`, plus the supporting tools `sdlc_understand_chat`, `sdlc_guides_for`, `sdlc_roles`, `sdlc_role_scope`, and `sdlc_role`.
+You now have twelve tools available: the pipeline stages `sdlc_issue`, `sdlc_implement`, `sdlc_test`, `sdlc_commit`, `sdlc_pr`, and `sdlc_review`, plus the supporting tools `sdlc_review_findings`, `sdlc_understand_chat`, `sdlc_guides_for`, `sdlc_roles`, `sdlc_role_scope`, and `sdlc_role`.
 
 ### End-to-End Example
 
@@ -131,6 +131,7 @@ sdlc/
         │   └── understand-chat.md
         ├── role-template.md        # Bundled role-document template
         ├── review-template.md      # Bundled consolidated-review-document template
+        ├── review-rationale.md     # Design rationale for the review skill (served as an MCP resource)
         ├── test-guides/            # Testing conventions (served as MCP resources)
         │   └── python.md
         ├── style-guides/           # Style conventions (served as MCP resources)
@@ -150,9 +151,10 @@ sdlc/
 | `sdlc_commit` | Stage and commit changes with atomic commits |
 | `sdlc_pr` | Review changes and create a draft pull request |
 | `sdlc_review` | Review an open PR (diff) or a set of local file paths/globs, writing a consolidated local review document under `.sdlc/reviews/`; `--verify <review #>` instead re-reviews an existing review, rewriting it in place with findings closed, rejected, or added and each mutation committed separately |
+| `sdlc_review_findings` | Return the full text of named findings from a review document — the endpoints inject the document as an outline with every finding body elided, and this fetches the ones you act on |
 | `sdlc_understand_chat` | Query the codebase knowledge graph |
 | `sdlc_roles` | List the available review roles |
-| `sdlc_role_scope` | Reverse-lookup the changed files a role's findings are confined to |
+| `sdlc_role_scope` | Reverse-lookup the changed files that SEED a role's review scope (over the merged `guide-map.role`) |
 | `sdlc_role` | Author a review role document |
 
 ### MCP Resources
@@ -165,6 +167,7 @@ sdlc/
 | `sdlc://guides/role/aie` | AI-engineering review role (agent-facing prompt and skill content) |
 | `sdlc://role-template` | Role-document template |
 | `sdlc://review-template` | Consolidated-review-document template |
+| `sdlc://review-rationale` | Why the `review` skill's blocks are shaped as they are; read on demand, carries no rules |
 | `sdlc://agents-md` | Project-level agent instructions |
 | `sdlc://knowledge-graph` | Codebase knowledge graph (if generated) |
 

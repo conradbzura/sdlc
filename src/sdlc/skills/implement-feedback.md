@@ -107,11 +107,13 @@ If the working tree has uncommitted changes that would conflict with the checkou
 
 ### 3. Verify findings
 
-The server-supplied enumeration is the starting point but MUST be verified against its source — the LOCAL review document named in the appended block. Read it in full:
+The server-supplied enumeration is the starting point but MUST be verified against its source — the LOCAL review document named in the appended block. Read its **finding enumeration**, not the whole file:
 
-```bash
-cat .sdlc/reviews/issue-#<N>/review-<iteration>.md
-```
+`sdlc_review_findings(".sdlc/reviews/issue-#<N>/review-<iteration>.md", [])`
+
+An empty id list returns the enumeration alone — one `id / severity / reference / title` line per finding, no bodies — which is exactly what this step needs. It runs the same parser that produced the injected block, so the two cannot disagree by construction.
+
+Do **not** `cat` the document here, and do **not** shell out to `uv run python -c "from sdlc import ..."`: `uv run` resolves against the REVIEWED project's environment, and this package is installed out of process, so the import fails in every project but the one that develops it. The injected block already elides every finding's body precisely so this walk pays for a finding when it reaches it; reading the file whole puts all of them back in context, makes step 7's fetch redundant ceremony, and gives up the saving on the larger of the two consumers. Step 7 fetches each body at its point of use.
 
 This is a local artifact `sdlc_review` (or a `--review <pr-url>` conversion) wrote; nothing is re-queried from GitHub. The document is the authoritative finding set for this round — there is no GitHub `isResolved` state to consult, because the review was never posted to GitHub.
 
@@ -121,7 +123,7 @@ The findings are recorded in the document under up to three severity tiers and A
 - **Tier 2 — Advisory** — on-issue work that adds to technical debt if it is not addressed now; the user elects which to fix.
 - **Tier 3 — Incidental** — a real observation about a file this PR happens to touch, not about the work the issue specified. Recorded as a deferral, carried as a candidate for a future issue, and not remediated here. Absent from documents written before this tier existed, and from paths-mode documents, which have no originating issue.
 
-Each finding carries a stable id, a `Reference` (a `file:line` citation, a whole-file path, or an issue-level reference for line-less findings), an `Issue` section with evidence, and a `Remediation` checklist whose pre-selected `[x]` option is the consolidator's recommendation. The rendered block carries the ids, references and titles; the `Issue` and `Remediation` are fetched per finding in step 7. Use this read to confirm the block enumerates every finding the document holds — if the two disagree, the document is the source of truth and the disagreement is worth saying out loud before you walk anything.
+Each finding carries a stable id, a `Reference` (a `file:line` citation, a whole-file path, or an issue-level reference for line-less findings), an `Issue` section with evidence, and a `Remediation` checklist whose pre-selected `[x]` option is the consolidator's recommendation. The rendered block carries the ids, references and titles; the `Issue` and `Remediation` are fetched per finding in step 7. Use this enumeration to confirm the block names every finding the document holds — if the two disagree, the document is the source of truth and the disagreement is worth saying out loud before you walk anything.
 
 ### 4. Order findings by severity
 

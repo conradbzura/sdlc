@@ -20,13 +20,14 @@ from pathlib import Path
 import pytest
 
 from sdlc.pr_state import parse_review_document
-from sdlc.server import _review_skill, _strip_rereview, sdlc_review
+from sdlc.server import review_skill, sdlc_review
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILLS = ROOT / "src/sdlc/skills"
 SKILL = SKILLS / "review.md"
 RATIONALE = ROOT / "src/sdlc/review-rationale.md"
 AGENTS = ROOT / "src/sdlc/AGENTS.md"
+README = ROOT / "README.md"
 SERVER = ROOT / "src/sdlc/server.py"
 
 # The assembled prompt a fresh round pays. This is the number that matters:
@@ -45,10 +46,27 @@ SERVER = ROOT / "src/sdlc/server.py"
 # Raised a second time, for the context/scope definitions. Worth recording
 # what the two raises have cost together: #37 cut the assembled fresh prompt
 # from 138,587 to 85,790 bytes, and the two features since have spent most of
-# that back. If a third feature needs a third raise, the answer is another
-# extraction pass, not another number.
+# that back. That entry then said a third raise should be answered with an
+# extraction pass rather than another number.
+#
+# Raised a third time anyway, for the review-2 pass-2 remediation, and the
+# reasoning is recorded here rather than left to contradict the line above.
+# The re-review budget is the one that moved; the fresh one did not, because
+# the same pass REMOVED 2,233 bytes of re-review-only material that had been
+# leaking into every fresh round. What pushed the re-review assembly over was
+# not regrowth of the kind this guard exists to catch: it is the gate wording
+# the pass's own findings required — a close gate restated over the reviewers
+# that judged a finding rather than over glob coverage, a STOP that step 9
+# never carried, and routing defined over every role recorded on a finding
+# instead of one. Those are rules, and rules belong in the skill; the
+# rationale resource cannot absorb them. Two enumerations were collapsed into
+# template pointers in the same pass to pay part of it back.
+#
+# The extraction pass that entry asks for is still the right answer to the
+# NEXT raise. This one bought correctness in the approval gates, which is the
+# thing the budget is protecting the agent's attention for.
 FRESH_PROMPT_BUDGET = 106_000
-REREVIEW_PROMPT_BUDGET = 130_000
+REREVIEW_PROMPT_BUDGET = 132_000
 
 # The rationale's own size. This REPLACES a combined skill-plus-rationale cap,
 # and the replacement is a real loosening, so here is the argument for it.
@@ -118,7 +136,7 @@ def test_review_skill_should_stay_within_the_rereview_budget():
         skill on every call, the rationale only when an agent fetches it.
     """
     # Act
-    rereview = len(_review_skill(rereview=True))
+    rereview = len(review_skill(rereview=True))
     rationale = RATIONALE.stat().st_size
 
     # Assert
@@ -134,8 +152,112 @@ def test_review_skill_should_stay_within_the_rereview_budget():
     )
 
 
+# Content belonging to the re-review protocol alone. A fresh round has no
+# seeded findings and no prior pass, so each of these describes a state it can
+# never reach. Every entry is also asserted PRESENT in the re-review assembly,
+# so the list cannot rot into strings that match nothing and pass vacuously —
+# which is how the six-literal sample this replaced went green while the whole
+# of step 10(d)'s commit protocol leaked into a fresh round.
+REREVIEW_ONLY = (
+    "MUST copy the seeded",
+    "Phase 2 — reconcile",
+    "Fold the seeded findings' dispositions",
+    "Retired ids",
+    "rediscovered",
+    "disposition block",
+    "Each finding-set mutation is then its OWN commit",
+    "When every seeded finding carries",
+    ".target.md",
+    "On a re-review, repeat the document",
+    "carried WITHOUT re-examination",
+    "Every seeded finding carried",
+)
+
+# A line OPENING with the marker is a block only a re-review can act on — a
+# paragraph, bullet or command block that inherits the label. An inline
+# `**(re-review)**` clause inside a rule both modes need is a different thing
+# and stays: fencing those would fragment rules that have to be read whole.
+_OPENS_REREVIEW = re.compile(r"^\s*(?:[-*]|\d+\.)?\s*(?:—\s*)?\*\*\(re-review\)\*\*")
+
+# Content BOTH assemblies need. A fence that swallows one of these DELETES it
+# from the fresh prompt, and no absence check can see a deletion — which is
+# why this list exists alongside the one above rather than instead of it.
+MODE_INDEPENDENT = (
+    "**(paths mode):**",
+    'mkdir -p "$worktree/$(dirname "<Review document in repository>")"',
+    'cp "<Review snapshot directory>"/*',
+    "The committed variant above continues",
+    'git -C "<repo>" worktree remove --force "$worktree"',
+)
+
+
+# A line that opens a new block element, so a line break before it is Markdown
+# structure rather than a wrap. `*Why:` is this repository's rationale-pointer
+# idiom, which always follows the sentence it annotates as its own block.
+_BLOCK_START = re.compile(r"^(\||#|>|<!--|\*Why:|([-*+]|\d+\.)\s)")
+
+
+def _wrapped_paragraphs(text: str) -> list[list[tuple[int, str]]]:
+    """Return runs of consecutive prose lines that look hard-wrapped."""
+    runs: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] = []
+    in_fence = in_frontmatter = False
+    for number, line in enumerate(text.splitlines(), 1):
+        if number == 1 and line.strip() == "---":
+            in_frontmatter = True
+            continue
+        if in_frontmatter:
+            in_frontmatter = line.strip() != "---"
+            continue
+        if re.match(r"^\s*(`{3,}|~{3,})", line):
+            in_fence = not in_fence
+            current = []
+            continue
+        stripped = line.strip()
+        if in_fence or not stripped or _BLOCK_START.match(stripped):
+            if len(current) > 1:
+                runs.append(current)
+            current = []
+            continue
+        current.append((number, line))
+    if len(current) > 1:
+        runs.append(current)
+    # A run is a wrap only if every line but the last stopped short of the
+    # width a deliberate long line would have run past.
+    return [r for r in runs if all(len(l) < 100 for _, l in r[:-1])]
+
+
+@pytest.mark.parametrize(
+    "document",
+    sorted((ROOT / "src/sdlc").rglob("*.md")),
+    ids=lambda p: str(p.relative_to(ROOT)),
+)
+def test_bundled_markdown_should_never_hard_wrap_prose(document):
+    """Test no bundled document wraps a paragraph at a fixed column.
+
+    Given:
+        The Markdown style guide's only MUST NOT: prose is never arbitrarily
+        hard-wrapped, and each block-level element is a single long line.
+    When:
+        Every bundled document is scanned outside fences and frontmatter.
+    Then:
+        No run of consecutive prose lines should look wrapped. The convention
+        is load-bearing here beyond the rule: this suite and the skill tests
+        assert on block-level elements by line, so a wrapped paragraph
+        silently breaks the assertions that read them.
+    """
+    # Act
+    runs = _wrapped_paragraphs(document.read_text())
+
+    # Assert
+    assert not runs, "\n".join(
+        f"{document.name}:{r[0][0]}-{r[-1][0]} looks hard-wrapped: {r[0][1][:70]!r}"
+        for r in runs
+    )
+
+
 def test_the_rereview_fences_should_be_balanced_and_flat():
-    """Test the mode fences are well formed and the assemblies agree.
+    """Test the mode fences are well formed and the assemblies nest.
 
     Given:
         The review skill, whose re-review spans are fenced with paired HTML
@@ -143,10 +265,11 @@ def test_the_rereview_fences_should_be_balanced_and_flat():
     When:
         Both assemblies are built.
     Then:
-        Fences should be balanced and non-nested, the re-review assembly
-        should equal the source minus the fence lines, and the fresh assembly
-        should be strictly smaller. An unbalanced fence would silently delete
-        the rest of the document from a fresh round.
+        Fences should be balanced and non-nested, neither assembly should
+        emit a marker, and the fresh assembly should be the re-review one
+        with whole spans removed — every fresh line present, in order. An
+        unbalanced fence would silently delete the rest of the document from
+        a fresh round.
     """
     # Arrange
     raw = SKILL.read_text()
@@ -161,43 +284,157 @@ def test_the_rereview_fences_should_be_balanced_and_flat():
             assert depth >= 0, "re-review fence closed before it opened"
 
     # Act
-    fresh = _review_skill(rereview=False)
-    rereview = _review_skill(rereview=True)
+    fresh = review_skill(rereview=False)
+    rereview = review_skill(rereview=True)
 
     # Assert
     assert depth == 0, "a re-review fence was opened and never closed"
-    assert rereview == raw.replace("<!-- rereview:begin -->\n", "").replace(
-        "<!-- rereview:end -->\n", ""
-    )
+    assert "<!-- rereview:" not in fresh
+    assert "<!-- rereview:" not in rereview
     assert len(fresh) < len(rereview)
-    assert _strip_rereview(raw) == fresh
+    remaining = iter(rereview.splitlines())
+    for line in fresh.splitlines():
+        assert line in remaining, (
+            f"fresh assembly line is not in the re-review assembly, in order: "
+            f"{line!r}. The two must differ only by whole fenced spans."
+        )
 
 
 def test_the_fresh_assembly_should_carry_no_rereview_protocol():
     """Test a fresh round is not handed instructions it cannot act on.
 
     Given:
-        The fresh assembly.
+        Both assemblies.
     When:
-        It is searched for the re-review protocol.
+        They are searched for the re-review protocol.
     Then:
-        None of it should be present. A fresh round has no seeded findings, so
-        a disposition rule or a seeded read-back is not merely wasted context
-        — it describes a state the run can never reach.
+        None of it should reach the fresh assembly, and all of it should be
+        in the re-review one. A fresh round has no seeded findings, so a
+        disposition rule or a per-mutation commit recipe is not merely wasted
+        context — it describes a state the run can never reach.
     """
     # Act
-    fresh = _review_skill(rereview=False)
+    fresh = review_skill(rereview=False)
+    rereview = review_skill(rereview=True)
 
     # Assert
-    for protocol in (
-        "Read the seeded document back",
-        "Phase 2 — reconcile",
-        "Fold the seeded findings' dispositions",
-        "Retired ids",
-        "rediscovered",
-        "disposition block",
-    ):
+    for protocol in REREVIEW_ONLY:
+        assert protocol in rereview, (
+            f"{protocol!r} is in neither assembly, so the check below is "
+            "vacuous. Update the list to track the skill."
+        )
         assert protocol not in fresh, protocol
+    for line in fresh.splitlines():
+        assert not _OPENS_REREVIEW.match(line), (
+            f"a re-review-only block reached the fresh assembly: {line[:120]!r}. "
+            "A fence is enclosing the label rather than the material it governs."
+        )
+
+
+def test_the_fresh_assembly_should_orphan_no_rationale_pointer():
+    """Test no `*Why:` pointer survives the stripping of what it points at.
+
+    Given:
+        Both assemblies. A `*Why:` line is trigger-gated disclosure: it names
+        an observable symptom and the block it sits under is what the symptom
+        is about.
+    When:
+        Each pointer's preceding non-blank line is compared between them.
+    Then:
+        It should be the same line in both. A pointer whose subject block is
+        fenced while the pointer is not lands in the fresh prompt attached to
+        whatever happens to precede it — advice about a state that round
+        cannot reach, filed under an unrelated instruction.
+
+        This is a property rather than a list, so unlike `REREVIEW_ONLY` it
+        cannot rot: a fence added anywhere is checked the moment it lands.
+    """
+    # Arrange
+    fresh = review_skill(rereview=False).splitlines()
+    rereview = review_skill(rereview=True).splitlines()
+
+    def preceding(lines, index):
+        cursor = index - 1
+        while cursor >= 0 and not lines[cursor].strip():
+            cursor -= 1
+        return lines[cursor] if cursor >= 0 else ""
+
+    subjects = {}
+    for index, line in enumerate(rereview):
+        if line.startswith("*Why:"):
+            subjects.setdefault(line, []).append(preceding(rereview, index))
+
+    # Act & assert
+    for index, line in enumerate(fresh):
+        if not line.startswith("*Why:"):
+            continue
+        assert line in subjects, (
+            f"a pointer is in the fresh assembly but not the re-review one, "
+            f"which cannot happen unless the fences are unbalanced: {line[:90]!r}"
+        )
+        assert preceding(fresh, index) in subjects[line], (
+            f"orphaned rationale pointer in the fresh assembly: {line[:90]!r}\n"
+            f"  it follows: {preceding(fresh, index)[:90]!r}\n"
+            f"  but in the re-review assembly it follows: "
+            f"{subjects[line][0][:90]!r}\n"
+            "The fence encloses the subject block but not the pointer."
+        )
+
+
+def test_the_fresh_assembly_should_define_every_marker_it_carries():
+    """Test no `**(re-review)**` marker outlives its own definition.
+
+    Given:
+        The fresh assembly, and the two sentences in the source that say what
+        the marker means.
+    When:
+        The assembly is searched for the marker.
+    Then:
+        Either no marker should survive, or the sentence defining it should
+        survive with them. An inline marker is deliberately left unfenced —
+        fencing it would fragment a rule both modes need — but that only works
+        while the fresh prompt still says what the label means. One of the
+        markers that leaked was on the approval-gate invariant, pointing at an
+        invariant that had itself been fenced away.
+    """
+    # Act
+    fresh = review_skill(rereview=False)
+
+    # Assert
+    if "**(re-review)**" in fresh:
+        assert "applies only when the `Re-review` directive is present" in fresh, (
+            f"the fresh assembly carries {fresh.count('**(re-review)**')} "
+            "`**(re-review)**` marker(s) while every sentence defining the "
+            "marker is fenced out of it. Either fence the clauses carrying "
+            "the marker, or leave an unfenced gloss of what it means."
+        )
+
+
+def test_the_fresh_assembly_should_keep_every_mode_independent_block():
+    """Test a fence has not swallowed a block a fresh round needs.
+
+    Given:
+        Both assemblies.
+    When:
+        They are searched for blocks neither mode can do without — the
+        worktree mirror that step 10(d) stages from, the paths-mode
+        next-steps prompt, and the worktree teardown.
+    Then:
+        Each should be present in both. A fence misplaced around a label
+        rather than around the material it governs deletes these from the
+        fresh prompt silently, and an absence check cannot detect a deletion.
+    """
+    # Act
+    fresh = review_skill(rereview=False)
+    rereview = review_skill(rereview=True)
+
+    # Assert
+    for block in MODE_INDEPENDENT:
+        assert block in rereview, f"{block!r} is missing from the skill entirely"
+        assert block in fresh, (
+            f"{block!r} was stripped from the fresh assembly. A re-review "
+            "fence is enclosing material that is not re-review-only."
+        )
 
 
 def _cited_anchors() -> set[str]:
@@ -314,6 +551,27 @@ def test_the_rationale_should_carry_no_rules():
     assert "**This document carries NO rules.**" in RATIONALE.read_text()
 
 
+def _registered(kind: str) -> set[str]:
+    """Names registered with `@mcp.<kind>()` in server.py.
+
+    Resources are keyed by their URI argument; tools have none, so they are
+    keyed by the decorated function's name.
+    """
+    tree = ast.parse(SERVER.read_text())
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for d in node.decorator_list:
+            if not (isinstance(d, ast.Call) and getattr(d.func, "attr", None) == kind):
+                continue
+            if d.args and isinstance(d.args[0], ast.Constant):
+                found.add(d.args[0].value)
+            else:
+                found.add(node.name)
+    return found
+
+
 def test_every_registered_resource_should_be_documented():
     """Test AGENTS.md's resource table lists every registered resource.
 
@@ -325,19 +583,16 @@ def test_every_registered_resource_should_be_documented():
     Then:
         Each URI should appear in the table, so adding a resource without
         documenting it fails here rather than going unnoticed.
+
+        This deliberately does NOT also run over README.md yet: the README
+        documents templated URIs by concrete instance rather than by pattern,
+        and it is missing `sdlc://config/default` — a finding recorded as
+        incidental (it predates this branch), so it is deferred rather than
+        fixed here. The tool check below DOES cover both documents, which is
+        the half that matters: a tool a consumer is required to call.
     """
     # Arrange
-    tree = ast.parse(SERVER.read_text())
-    uris = {
-        d.args[0].value
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        for d in node.decorator_list
-        if isinstance(d, ast.Call)
-        and getattr(d.func, "attr", None) == "resource"
-        and d.args
-        and isinstance(d.args[0], ast.Constant)
-    }
+    uris = _registered("resource")
     agents = AGENTS.read_text()
 
     # Act
@@ -346,6 +601,31 @@ def test_every_registered_resource_should_be_documented():
     # Assert
     assert uris, "no resources found in server.py"
     assert not undocumented, f"undocumented resources: {undocumented}"
+
+
+@pytest.mark.parametrize("document", [AGENTS, README], ids=lambda p: p.name)
+def test_every_registered_tool_should_be_documented(document):
+    """Test both user-facing documents list every registered tool.
+
+    Given:
+        The `@mcp.tool` registrations in server.py.
+    When:
+        They are checked against AGENTS.md and README.md.
+    Then:
+        Each tool name should appear in both. A tool a consumer is REQUIRED
+        to call is the one whose absence costs most, and that is exactly the
+        one that shipped undocumented.
+    """
+    # Arrange
+    tools = _registered("tool")
+    text = document.read_text()
+
+    # Act
+    undocumented = sorted(t for t in tools if f"`{t}`" not in text)
+
+    # Assert
+    assert tools, "no tools found in server.py"
+    assert not undocumented, f"undocumented in {document.name}: {undocumented}"
 
 
 def test_the_excluded_pathspec_argument_should_appear_once():
