@@ -2346,6 +2346,148 @@ def test_the_template_should_give_the_incidental_tier_no_heading_marker():
     assert not any("(INCIDENTAL)" in line for line in headings)
 
 
+def test_step8_should_resolve_a_blocking_versus_incidental_disagreement():
+    """Test the consolidator is told how to settle a relevance disagreement.
+
+    Given:
+        One role calls a finding blocking and another calls it incidental.
+        Highest-severity-wins treats that as a severity disagreement, but it
+        is a disagreement about whether the issue asked for the work at all.
+    When:
+        Step 8's merge rules are read.
+    Then:
+        They should rank the three tiers, and route a blocking-versus-
+        incidental split to the acceptance criteria rather than to tier
+        arithmetic — keeping the finding blocking until it is resolved, so
+        nothing leaves the predicate by default.
+    """
+    # Arrange
+    rule = _line(_step8(), "- **Highest severity wins**")
+
+    # Act & assert
+    assert "blocking > advisory > incidental" in rule
+    assert "acceptance criteri" in rule
+    assert "relevance" in rule
+    assert "stays blocking" in rule
+
+
+def test_retiering_a_blocking_finding_should_require_corroboration():
+    """Test the third way out of the termination predicate is gated too.
+
+    Given:
+        `close` and `reject` are gated because each removes a blocking
+        finding from the single predicate termination depends on. Moving one
+        to Tier 3 has the same effect by a different door.
+    When:
+        Step 8's corroboration rule and step 9's gate are read.
+    Then:
+        Both should name the re-tier alongside close and reject, and treat an
+        uncorroborated one as carry.
+    """
+    # Arrange
+    rule = next(
+        line
+        for line in _step8().splitlines()
+        if "rejected only with corroboration" in line
+    )
+    step9 = _step9()
+
+    # Act & assert
+    assert "incidental" in rule
+    assert "two reviewers agreeing" in rule
+    assert "incidental" in step9
+    assert "carry" in step9
+
+
+def test_pass_line_should_count_incidental_findings():
+    """Test a deferral is counted where a debt item is counted.
+
+    Given:
+        The pass header states the open counts the document carries.
+    When:
+        The template's pass line and step 8's counting rule are read.
+    Then:
+        Both should carry an incidental count, so a reader can size the
+        deferral backlog without reading the tier.
+    """
+    # Arrange
+    template = TEMPLATE.read_text()
+    counting = _line(_step8(), "- **Count what changed**")
+
+    # Act & assert
+    assert "<I> incidental" in template
+    assert "incidental (`<I>`)" in counting
+
+
+def test_termination_should_report_advisory_and_incidental_separately():
+    """Test the completion prompt distinguishes debt from deferral.
+
+    Given:
+        Termination gates on blocking alone, and the two non-gating tiers
+        mean different things — work to do later against work for another
+        issue entirely.
+    When:
+        Step 11's no-blocking-findings prompt is read.
+    Then:
+        It should still gate on blocking alone and report the other two
+        counts as separate numbers rather than a single carried total.
+    """
+    # Arrange
+    step11 = _section(_skill_text(), "### 11. Prompt the user with next steps")
+    prompt = _line(step11, "  > No blocking findings remain")
+
+    # Act & assert
+    assert "`<A>` advisory" in prompt
+    assert "`<I>` incidental" in prompt
+    assert "When `<B>` == 0:" in step11
+    # The gate itself is unchanged: blocking alone.
+    assert "When `<B>` > 0:" in step11
+
+
+def test_the_skill_should_give_the_incidental_tier_no_heading_marker():
+    """Test the marker asymmetry is stated where a re-tier is performed.
+
+    Given:
+        The template forbids an INCIDENTAL marker, but step 8 is where the
+        consolidator actually moves a finding between tiers.
+    When:
+        Step 8's re-tier rule is read.
+    Then:
+        It should cover the move to Tier 3 and forbid inventing a marker for
+        it, so the rule is present at the point of use rather than only in
+        the document the consolidator is filling in.
+    """
+    # Arrange
+    rule = _line(_step8(), "- **A re-tier MUST move the `**(BLOCKING)**` marker")
+
+    # Act & assert
+    assert "Tier 3" in rule
+    assert "**(INCIDENTAL)**" in rule
+    assert "by section alone" in rule
+
+
+def test_paths_mode_edge_case_should_state_the_incidental_tier_is_unavailable():
+    """Test the mode without an originating issue says so where it is read.
+
+    Given:
+        Paths mode has no linked issue, so there is nothing to test a
+        finding's relevance against.
+    When:
+        The Edge Cases section is read.
+    Then:
+        It should state that the incidental tier is unavailable there and
+        say what becomes of an off-issue observation instead.
+    """
+    # Arrange
+    edge_cases = _section(_skill_text(), "## Edge Cases")
+    entry = _line(edge_cases, "**No originating issue in paths mode")
+
+    # Act & assert
+    assert "incidental" in entry.lower()
+    assert "Advisory" in entry
+    assert "Tier 3" in entry
+
+
 def test_subagent_brief_should_request_every_declared_artifact():
     """Test the brief asks for what the frontmatter promises.
 

@@ -30,10 +30,20 @@ SERVER = ROOT / "src/sdlc/server.py"
 
 # The assembled prompt a fresh round pays. This is the number that matters:
 # what a caller is charged, not what is on disk.
-FRESH_PROMPT_BUDGET = 95_000
+#
+# Raised once, for the third severity tier (#36), which added protocol rather
+# than rationale: a classification step in the reviewer brief, a relevance
+# rule and a third gated removal path in step 8, a third list at step 9's
+# gate, and a tier section in the template. That is new required content, and
+# compressing it to hold a number would have meant paraphrasing rules that
+# have to be unambiguous. The guard is against *regrowth* — a justification
+# promoted into the skill because a rule was missed mid-document — which is
+# what the rationale resource exists to absorb. A raise is a deliberate,
+# reviewable act; that is the whole point of the budget, not a defect in it.
+FRESH_PROMPT_BUDGET = 100_000
 REREVIEW_PROMPT_BUDGET = 130_000
 # Splitting the file is not licence to write more prose overall.
-COMBINED_BUDGET = 145_000
+COMBINED_BUDGET = 160_000
 
 REMEDY = (
     "Design rationale belongs in src/sdlc/review-rationale.md "
