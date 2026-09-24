@@ -1357,29 +1357,34 @@ def _step8() -> str:
     return _section(_skill_text(), "### 8. Consolidate the findings")
 
 
-def test_rereview_should_read_the_document_back_before_dispatching():
-    """Test the lossy-block read-back is wired into an actual step.
+def test_rereview_should_secure_the_seeded_document_before_dispatching():
+    """Test the irreversible step still precedes any reviewer.
 
     Given:
-        Step 7, which the checklist presents as the agent's plan skeleton.
+        Step 7, which the checklist presents as the agent's plan skeleton,
+        and an in-place rewrite that destroys whatever was not secured.
     When:
         The re-review path is read.
     Then:
-        It should require reading the seeded document back, name the fields
-        the block drops, and do so before any reviewer is dispatched.
+        It should account for what the seeded block carries and copy the
+        document, both before any reviewer is dispatched. The fields the
+        block once dropped are still enumerated — now as what it carries
+        rather than as what must be recovered — so a later change that makes
+        the block lossy again cannot pass silently.
     """
     # Arrange
     section = _step7()
 
     # Act
-    readback = section.index("Read the seeded document back")
+    accounting = section.index("Know what the seeded block carries")
+    copy = section.index("Copy the file before you do anything else")
     dispatch = section.index("Phase 1 — review.")
 
     # Assert
-    assert readback < dispatch
+    assert accounting < copy < dispatch
     for field in ("attribution", "Tests to add", "Cross-cutting", "pass counter"):
-        assert field in section[readback:dispatch], field
-    assert "**(re-review)** read the seeded document back" in _skill_text()
+        assert field in section[accounting:dispatch], field
+    assert "**(re-review)** copy the seeded document first" in _skill_text()
 
 
 def test_rereview_should_reconcile_the_seeded_count_against_the_file():
@@ -2394,6 +2399,100 @@ def test_the_document_should_record_scope_extensions():
     assert "globs" in scope_line
     assert "extension" in scope_line
     assert "criterion" in scope_line
+
+
+def test_step7_should_fetch_bodies_before_composing_a_phase_two_message():
+    """Test a reviewer is never handed a finding with its body elided.
+
+    Given:
+        The seeded block now carries each finding's heading and reference
+        with the issue text and remediation held back.
+    When:
+        Step 7's phase-2 dispatch is read.
+    Then:
+        It should require fetching the role's subset with
+        `sdlc_review_findings` before the message is composed — a reviewer
+        cannot disposition a finding whose body it was not shown.
+    """
+    # Arrange
+    step7 = _step7()
+
+    # Act & assert
+    assert "sdlc_review_findings" in step7
+    assert "elided" in step7
+    assert "MUST" in step7.split("sdlc_review_findings")[0].rsplit("\n", 3)[0]
+
+
+def test_step8_should_forbid_dispositioning_an_unfetched_finding():
+    """Test the fetch is a precondition for acting, not a suggestion.
+
+    Given:
+        A disposition is judged against a finding's body, which the outline
+        does not carry.
+    When:
+        Step 8 is read.
+    Then:
+        It should forbid applying a disposition to a finding whose body was
+        never fetched — the failure that would make disclosure worse than no
+        disclosure.
+    """
+    # Arrange
+    step8 = _step8()
+
+    # Act & assert
+    assert "sdlc_review_findings" in step8
+    assert "MUST NOT" in step8
+
+
+def test_step7_zero_should_no_longer_read_back_what_the_block_carries():
+    """Test the read-back shrank to what the outline cannot supply.
+
+    Given:
+        The seeded block is the document's own structure now, so role
+        attribution, full titles, `Tests to add`, both ledgers and the
+        cross-cutting sections arrive verbatim.
+    When:
+        Step 7(0) is read.
+    Then:
+        It should say those arrive in the block and name finding bodies as
+        what still has to be fetched — an instruction that still claims to
+        recover them is an instruction nobody will follow twice.
+    """
+    # Arrange
+    step7 = _step7()
+    start = step7.index("**(re-review) 0. Know what the seeded block carries")
+    section = step7[start : step7.index("\n\n**Copy the file", start)]
+
+    # Act & assert
+    assert "verbatim" in section
+    assert "body" in section.lower()
+    assert "sdlc_review_findings" in section
+
+
+def test_the_body_fetch_should_not_use_the_rationale_pointer_idiom():
+    """Test a required fetch is not written as an optional one.
+
+    Given:
+        `sdlc://review-rationale` pointers are italic, trigger-gated and
+        skippable by design.
+    When:
+        The skill's `sdlc_review_findings` mentions are read.
+    Then:
+        None should be written in that idiom. The two look alike, and a
+        later pass that harmonizes them turns a required read into an
+        optional one.
+    """
+    # Arrange
+    mentions = [
+        line
+        for line in _skill_text().splitlines()
+        if "sdlc_review_findings" in line
+    ]
+
+    # Act & assert
+    assert mentions
+    for line in mentions:
+        assert not line.strip().startswith("*Why:"), line
 
 
 def _step2() -> str:

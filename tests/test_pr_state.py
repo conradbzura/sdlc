@@ -1932,6 +1932,101 @@ def test_render_findings_should_match_the_full_render_for_the_same_finding(
         assert line in result
 
 
+def test_disclose_should_carry_the_enumeration_without_the_bodies(
+    tmp_path, monkeypatch
+):
+    """Test the injected block names every finding and elides every body.
+
+    Given:
+        A parsed review document with findings in three tiers.
+    When:
+        disclose is called, as both endpoints now call it.
+    Then:
+        It should keep the provenance header, carry every finding's heading
+        and reference, and elide the issue text — so the enumeration a pass
+        depends on is inline while the bulk is not.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    path = _reviews_document(
+        tmp_path,
+        _review_document(
+            blocking=_BLOCKING_FINDING,
+            advisory=_ADVISORY_FINDING,
+            incidental=_INCIDENTAL_FINDING,
+        ),
+    )
+    parsed = parse_review_document(path, issue_number=42, iteration=1)
+
+    # Act
+    block = parsed.disclose()
+
+    # Assert
+    assert f"Review document: {path}" in block
+    assert "Issue: #42" in block
+    assert "Findings (3)" in block
+    for heading in ("### B1 —", "### A1 —", "### I1 —"):
+        assert heading in block, heading
+    assert "**Issue:**" not in block
+    assert "The symbol `foo` should be `bar`" not in block
+    assert block.count("sdlc_review_findings") >= 3
+
+
+def test_disclose_should_carry_what_format_drops(tmp_path, monkeypatch):
+    """Test the outline block preserves the fields the rendered one loses.
+
+    Given:
+        `format` re-renders parsed fields, so role attribution, the ledgers
+        and the cross-cutting section never reach a consumer through it.
+    When:
+        Both renderings of the same document are compared.
+    Then:
+        disclose should carry the role attribution and the trailing
+        sections that format does not — which is what removes the
+        read-back obligation, not just the token cost.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    path = _reviews_document(tmp_path, _review_document(blocking=_BLOCKING_FINDING))
+    parsed = parse_review_document(path, issue_number=42, iteration=1)
+
+    # Act
+    block = parsed.disclose()
+    rendered = parsed.format()
+
+    # Assert
+    assert "aie (3/10 aie)" in block
+    assert "aie (3/10 aie)" not in rendered
+    assert "## Cross-cutting decisions" in block
+    assert "## Cross-cutting decisions" not in rendered
+
+
+def test_disclose_should_label_the_header_when_a_label_is_given(
+    tmp_path, monkeypatch
+):
+    """Test a re-review's provenance line cannot be read as a write target.
+
+    Given:
+        A re-review injects both a `Review document:` write-target directive
+        and the seeded document's provenance.
+    When:
+        disclose is called with the seeded label.
+    Then:
+        The header should use that label, keeping the two apart exactly as
+        the full rendering does.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    path = _reviews_document(tmp_path, _review_document(blocking=_BLOCKING_FINDING))
+    parsed = parse_review_document(path, issue_number=42, iteration=1)
+
+    # Act
+    block = parsed.disclose(label="Seeded from")
+
+    # Assert
+    assert block.startswith(f"Seeded from: {path}")
+
+
 def test_iterations_should_be_empty_when_no_review_dir(tmp_path, monkeypatch):
     """Test the iteration helper returns nothing when no review dir exists.
 

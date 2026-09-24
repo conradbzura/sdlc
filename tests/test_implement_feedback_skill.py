@@ -109,3 +109,45 @@ def test_a_remediation_with_no_owning_commit_should_get_a_new_commit():
     assert "no commit — omission" in step
     assert "--fixup" in step
     assert "new commit" in step
+
+
+def test_the_walk_should_fetch_a_finding_body_before_restating_it():
+    """Test the walk reads a finding before it proposes work on it.
+
+    Given:
+        The endpoint now injects the document as an outline, with each
+        finding's issue text and remediation checklist elided.
+    When:
+        The sequential walk is read.
+    Then:
+        It should fetch the body with `sdlc_review_findings` when it reaches
+        a finding, before restating it or presenting a remediation — the
+        pre-selected option lives in the body, so an unfetched finding has
+        no remediation to present.
+    """
+    # Arrange
+    walk = _section(_skill_text(), "### 7. Walk through findings sequentially")
+
+    # Act & assert
+    assert "sdlc_review_findings" in walk
+    assert "MUST" in walk
+
+
+def test_incidental_findings_should_need_no_fetch():
+    """Test a deferral costs nothing to report.
+
+    Given:
+        Incidental findings are listed, not walked, and the outline already
+        carries every id, title and reference.
+    When:
+        The deferral report is read.
+    Then:
+        It should say no fetch is needed for them, so the one part of the
+        document that is never acted on is never paid for either.
+    """
+    # Arrange
+    walk = _section(_skill_text(), "### 7. Walk through findings sequentially")
+    report = walk[walk.index("After the walk"):]
+
+    # Act & assert
+    assert "no fetch" in report.lower() or "without fetching" in report.lower()

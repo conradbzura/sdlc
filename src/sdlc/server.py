@@ -423,7 +423,10 @@ async def sdlc_implement(
         return "".join(parts)
     if isinstance(state, pr_state.ReviewFindings):
         skill = _read_skill("implement-feedback")
-        return f"{skill}\n---\n\nTarget: #{number}\n{state.format()}{repo_suffix}"
+        return (
+            f"{skill}\n---\n\nTarget: #{number}\n"
+            f"{state.disclose()}{repo_suffix}"
+        )
     skill = _read_skill("implement-continue")
     return (
         f"{skill}\n---\n\n"
@@ -636,12 +639,15 @@ def _render_rereview(
     parts.append(
         "\n\nSeeded findings — the authoritative FINDING-SET enumeration for "
         "this pass: a finding absent here is absent from this pass, and the "
-        "set is not re-derived from the file. It is lossy in every other "
-        "respect, so step 7(0) still reads the document back from disk for "
-        "the fields it drops — role attribution, Tests to add, cross-cutting "
-        "decisions, both ledgers, the pass counter and full titles — before "
-        "any reviewer is dispatched.\n"
-        f"{findings.format(label='Seeded from')}"
+        "set is not re-derived from the file. This is the document's own "
+        "structure with each finding's issue text and remediation checklist "
+        "elided: headings, references, touched commits, both ledgers, the "
+        "cross-cutting sections and the pass header are all present verbatim, "
+        "so there is nothing to read back for them. Fetch the bodies you act "
+        "on with `sdlc_review_findings` — a disposition is judged against a "
+        "body, so applying one to a finding you have not fetched is applying "
+        "it to text you never read.\n"
+        f"{findings.disclose(label='Seeded from')}"
     )
     return "".join(parts)
 

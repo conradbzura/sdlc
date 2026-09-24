@@ -270,7 +270,7 @@ async def test_sdlc_implement_with_no_feedback_pr(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sdlc_implement_with_review_findings(monkeypatch):
+async def test_sdlc_implement_with_review_findings(tmp_path, monkeypatch):
     """Test sdlc_implement returns the feedback skill when review findings exist.
 
     Given:
@@ -278,25 +278,13 @@ async def test_sdlc_implement_with_review_findings(monkeypatch):
     When:
         sdlc_implement(number=42) is called.
     Then:
-        It should return the feedback skill with the rendered review document.
+        It should return the feedback skill with the document disclosed as an
+        outline — every finding named, each body held back for a fetch.
     """
     # Arrange
-    review_findings = ReviewFindings(
-        issue_number=7,
-        iteration=2,
-        path=".sdlc/reviews/issue-#7/review-2.md",
-        findings=[
-            ReviewFinding(
-                id="B1",
-                title="Rename foo to bar",
-                severity="blocking",
-                reference="`src/sdlc/server.py:64`",
-                issue="The symbol foo should be bar.",
-                remediation="- [x] Rename foo to bar. *(Recommended.)*",
-                touched_commit="`abc1234`",
-            ),
-        ],
-    )
+    monkeypatch.chdir(tmp_path)
+    path = _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 2)
+    review_findings = pr_state.parse_review_document(path, issue_number=7, iteration=2)
     monkeypatch.setattr(
         pr_state, "dispatch", lambda number, repo=None, review=None: review_findings
     )
@@ -309,6 +297,8 @@ async def test_sdlc_implement_with_review_findings(monkeypatch):
     assert "src/sdlc/server.py:64" in result
     assert "Rename foo to bar" in result
     assert "Iteration: 2" in result
+    assert "sdlc_review_findings" in result
+    assert "The symbol `foo` should be `bar`." not in result
 
 
 @pytest.mark.asyncio
@@ -1631,7 +1621,9 @@ async def test_sdlc_implement_should_inject_target_repo_on_continue_path(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_sdlc_implement_should_inject_target_repo_on_feedback_path(monkeypatch):
+async def test_sdlc_implement_should_inject_target_repo_on_feedback_path(
+    tmp_path, monkeypatch
+):
     """Test sdlc_implement injects the target-repo directive on the feedback path.
 
     Given:
@@ -1642,22 +1634,9 @@ async def test_sdlc_implement_should_inject_target_repo_on_feedback_path(monkeyp
         It should append the target-repo directive alongside the findings.
     """
     # Arrange
-    review_findings = ReviewFindings(
-        issue_number=7,
-        iteration=1,
-        path=".sdlc/reviews/issue-#7/review-1.md",
-        findings=[
-            ReviewFinding(
-                id="B1",
-                title="Rename foo to bar",
-                severity="blocking",
-                reference="`src/sdlc/server.py:64`",
-                issue="The symbol foo should be bar.",
-                remediation="- [x] Rename foo to bar.",
-                touched_commit="`abc1234`",
-            ),
-        ],
-    )
+    monkeypatch.chdir(tmp_path)
+    path = _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 1)
+    review_findings = pr_state.parse_review_document(path, issue_number=7, iteration=1)
     monkeypatch.setattr(
         pr_state, "dispatch", lambda number, repo=None, review=None: review_findings
     )
@@ -3876,3 +3855,39 @@ async def test_sdlc_review_findings_should_name_an_id_the_document_lacks(
     # Assert
     assert "B4" in result
     assert "NOT FOUND" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_implement_should_say_so_when_the_document_cannot_be_reread(
+    tmp_path, monkeypatch
+):
+    """Test a document that vanished degrades loudly, not silently.
+
+    Given:
+        A parsed review document whose file is gone by the time the block is
+        rendered.
+    When:
+        sdlc_implement renders it.
+    Then:
+        It should fall back to the full rendering and SAY the outline was
+        unavailable, naming what the fallback does not carry. A consumer that
+        believes it holds the ledgers when it does not will rewrite the
+        document over them.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    path = _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 1)
+    review_findings = pr_state.parse_review_document(path, issue_number=7, iteration=1)
+    path.unlink()
+    monkeypatch.setattr(
+        pr_state, "dispatch", lambda number, repo=None, review=None: review_findings
+    )
+
+    # Act
+    result = await sdlc_implement(number=42)
+
+    # Assert
+    assert "could not be re-read" in result
+    assert "ledgers" in result
+    # The full rendering is what arrived, so the body IS present.
+    assert "The symbol `foo` should be `bar`." in result

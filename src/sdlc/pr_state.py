@@ -161,6 +161,59 @@ class ReviewFindings:
             lines.extend(_render_finding(index, finding))
         return "\n".join(lines)
 
+    def disclose(self, label: str = "Review document") -> str:
+        """Render the document for injection, with every finding body elided.
+
+        What both endpoints inject. The header is `format`'s, so the
+        provenance lines a consumer reads are unchanged; the body is
+        `render_outline` over the document on disk rather than a re-render of
+        parsed fields.
+
+        Two things follow, and the second is the reason to prefer this over
+        `format` regardless of size. The **enumeration stays inline** — every
+        id, severity, reference and title is present, so nothing can be lost
+        to the disclosure. And the block stops being **lossy**: role
+        attribution, untruncated titles, `Tests to add`, both ledgers and the
+        cross-cutting sections arrive verbatim, where `format` drops all of
+        them and leaves a consumer to read them back off disk before it
+        rewrites the document over them.
+
+        Only each finding's issue text and remediation checklist are held
+        back, behind a per-finding marker naming `sdlc_review_findings`.
+        """
+        header = [f"{label}: {self.path}"]
+        if self.issue_number:
+            header.append(f"Issue: #{self.issue_number}")
+        header += [
+            f"Iteration: {self.iteration}",
+            f"Path: {self.path}",
+            f"Findings ({len(self.findings)}): every finding's heading, "
+            "reference and touched commit are below, in the document's own "
+            "structure. Each body is elided behind a marker — fetch the ones "
+            "you act on with `sdlc_review_findings`, and do not act on a "
+            "finding whose body you have not read.",
+            "",
+        ]
+        try:
+            return "\n".join(header) + render_outline(self.path)
+        except OSError as exc:
+            # The document was parsed from disk, so it existed a moment ago;
+            # if it does not now, the outline cannot be built. Fall back to
+            # the full rendering rather than failing the call — but SAY so,
+            # because the fallback is the lossy one and a consumer that
+            # believes it holds the ledgers when it does not will rewrite the
+            # document over them.
+            return "\n".join(
+                header[:-1]
+                + [
+                    f"NOTE: {self.path} could not be re-read ({exc.strerror}), "
+                    "so the full rendering follows instead of the document "
+                    "outline. It does NOT carry role attribution, the "
+                    "ledgers or the cross-cutting sections — read them off "
+                    "disk before rewriting the document.",
+                ]
+            ) + "\n" + self.format(label=label)
+
 
 @dataclass(frozen=True)
 class _Repo:
