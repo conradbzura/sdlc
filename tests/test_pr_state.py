@@ -14,6 +14,7 @@ from sdlc.pr_state import (
     ReviewFinding,
     ReviewFindings,
     parse_review_document,
+    render_outline,
     resolve_repo,
 )
 
@@ -1600,6 +1601,180 @@ def test_parse_review_document_should_keep_an_em_dash_inside_a_blocking_title(
         "Empty patch claim is false — the usual case"
     )
 
+
+
+def test_render_outline_should_keep_the_enumeration_and_drop_the_bodies(tmp_path):
+    """Test the outline carries every finding but none of their prose.
+
+    Given:
+        A review document with a finding in each severity tier.
+    When:
+        render_outline is called.
+    Then:
+        It should keep every heading and single-line labelled field and drop
+        every Issue paragraph and remediation checkbox, so the finding-set
+        enumeration survives while the bulk does not.
+    """
+    # Arrange
+    path = tmp_path / "review-1.md"
+    path.write_text(
+        _review_document(
+            blocking=_BLOCKING_FINDING,
+            advisory=_ADVISORY_FINDING,
+            incidental=_INCIDENTAL_FINDING,
+        )
+    )
+
+    # Act
+    outline = render_outline(path)
+
+    # Assert
+    for heading in ("### B1 —", "### A1 —", "### I1 —"):
+        assert heading in outline, heading
+    assert outline.count("**Reference:**") == 3
+    assert outline.count("**Touched commit:**") == 3
+    assert "**Issue:**" not in outline
+    assert "- [x]" not in outline
+    assert "The symbol `foo` should be `bar`" not in outline
+
+
+def test_render_outline_should_mark_each_elided_body_once(tmp_path):
+    """Test a removed body leaves a visible, countable gap.
+
+    Given:
+        Three findings whose bodies are elided.
+    When:
+        render_outline is called.
+    Then:
+        It should emit exactly one marker per finding, naming the fetch. A
+        silent gap is what would let a consumer work from the outline and
+        invent a body it never read.
+    """
+    # Arrange
+    path = tmp_path / "review-1.md"
+    path.write_text(
+        _review_document(
+            blocking=_BLOCKING_FINDING,
+            advisory=_ADVISORY_FINDING,
+            incidental=_INCIDENTAL_FINDING,
+        )
+    )
+
+    # Act
+    outline = render_outline(path)
+
+    # Assert
+    assert outline.count("sdlc_review_findings") == 3
+
+
+def test_render_outline_should_pass_the_non_finding_sections_through(tmp_path):
+    """Test the ledgers and cross-cutting decisions survive verbatim.
+
+    Given:
+        A document whose header and trailing sections carry the state a
+        re-review must preserve across an in-place rewrite.
+    When:
+        render_outline is called.
+    Then:
+        Those regions should appear byte-for-byte, since the outline exists
+        partly to stop a consumer having to read them back from disk.
+    """
+    # Arrange
+    path = tmp_path / "review-1.md"
+    document = _review_document(blocking=_BLOCKING_FINDING)
+    path.write_text(document)
+    header = document.split("## Tier 1")[0]
+
+    # Act
+    outline = render_outline(path)
+
+    # Assert
+    assert outline.startswith(header)
+    assert "## Cross-cutting decisions" in outline
+    assert "## Tier 1 — Blocking" in outline
+    assert "## Tier 2 — Advisory" in outline
+
+
+def test_render_outline_should_round_trip_as_a_review_document(tmp_path):
+    """Test the outline is itself parseable, with the same enumeration.
+
+    Given:
+        A review document with three findings.
+    When:
+        The outline is parsed as a review document in its own right.
+    Then:
+        It should yield the same ids, severities, references and titles with
+        empty remediations — the property every consumer of the outline
+        depends on, since a lost id is a finding deleted with no disposition.
+    """
+    # Arrange
+    path = tmp_path / "review-1.md"
+    path.write_text(
+        _review_document(
+            blocking=_BLOCKING_FINDING,
+            advisory=_ADVISORY_FINDING,
+            incidental=_INCIDENTAL_FINDING,
+        )
+    )
+    outline_path = tmp_path / "outline.md"
+    outline_path.write_text(render_outline(path))
+
+    # Act
+    original = parse_review_document(path, issue_number=42, iteration=1)
+    echoed = parse_review_document(outline_path, issue_number=42, iteration=1)
+
+    # Assert
+    fields = lambda r: [
+        (f.id, f.severity, f.reference, f.title, f.touched_commit) for f in r.findings
+    ]
+    assert fields(echoed) == fields(original)
+    assert all(not f.remediation.strip() for f in echoed.findings)
+
+
+def test_render_outline_should_ignore_a_finding_heading_inside_a_fence(tmp_path):
+    """Test a quoted heading is not treated as a finding to elide.
+
+    Given:
+        A finding whose Issue text quotes a heading in a fenced block — which
+        this project's own review documents routinely do, since the artifacts
+        under review are review documents.
+    When:
+        render_outline is called.
+    Then:
+        It should elide the whole body including the fence, and emit one
+        marker rather than treating the quoted heading as a second finding.
+    """
+    # Arrange
+    finding = textwrap.dedent(
+        """\
+        ### B1 — Quoting a heading **(BLOCKING)** — aie (1/10 aie)
+        **Reference:** `src/sdlc/server.py:64`
+
+        **Issue:** The document renders this:
+
+        ```
+        ### B9 — A quoted finding **(BLOCKING)** — aie
+        **Reference:** `nowhere.py:1`
+        ```
+
+        **Remediation:**
+        - [x] Fence it. *(Recommended — the parser skips fenced headings.)*
+        - [ ] Other: ________________________________________________
+
+        **Touched commit:** `abc1234`
+        """
+    )
+    path = tmp_path / "review-1.md"
+    path.write_text(_review_document(blocking=finding))
+
+    # Act
+    outline = render_outline(path)
+
+    # Assert
+    assert outline.count("sdlc_review_findings") == 1
+    assert "### B9" not in outline
+    assert "`nowhere.py:1`" not in outline
+    assert outline.count("**Reference:**") == 1
 
 
 def test_iterations_should_be_empty_when_no_review_dir(tmp_path, monkeypatch):

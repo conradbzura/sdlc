@@ -693,6 +693,90 @@ def parse_review_document(
     )
 
 
+# Single-line labelled fields kept in an outline. Each is one line — this
+# project's markdown style forbids hard-wrapping prose — and each is something
+# a consumer routes, orders or attributes on without reading the finding.
+_OUTLINE_KEEP = ("**Reference:**", "**Touched commit:**", "**Tests to add:**")
+
+# What replaces an elided body. Deliberately visible and deliberately one per
+# finding: a silent gap is what would let a consumer work from the outline and
+# supply a body it never read.
+_ELIDED = "_(body elided — fetch with `sdlc_review_findings`)_"
+
+
+def render_outline(path: str | Path) -> str:
+    """Return the review document with every finding's body elided.
+
+    The outline keeps each ``### <id> — <title>`` heading and the single-line
+    labelled fields beneath it, and replaces each finding's ``**Issue:**``
+    paragraph and ``**Remediation:**`` checklist with one ``_ELIDED`` marker.
+    Everything outside a finding block — the header, both ledgers, the
+    cross-cutting sections and the fixup mapping — passes through byte for
+    byte.
+
+    This is what the endpoints inject in place of ``ReviewFindings.format()``.
+    Two properties make it safe to substitute, and both are tested:
+
+    * The **enumeration is whole.** Every id, severity, reference and title
+      survives, so no consumer can lose a finding to the disclosure — which is
+      the failure every guard in this module exists to prevent.
+    * The outline is **itself a valid review document**. Parsing it yields the
+      same findings with empty bodies, so a consumer that re-parses what it was
+      given is not handed a different shape from the file on disk.
+
+    Unlike ``format()``, which re-renders parsed fields, this elides from the
+    real text — so role attribution, untruncated titles and the ledgers arrive
+    verbatim rather than having to be read back from disk afterwards.
+    """
+    text = Path(path).read_text()
+    lines = text.splitlines(keepends=True)
+    fence_mask, unclosed_at = _fence_scan(lines)
+    if unclosed_at is not None:
+        # Same refusal as the parser, for the same reason: an opener still open
+        # at EOF marks every later line as fenced, so every finding below it
+        # would be passed through as if it were body text of the one above.
+        raise ValueError(
+            f"{path}: unclosed code fence opened at line {unclosed_at}: "
+            f"{lines[unclosed_at - 1]!r}. Every finding below it would be "
+            "swallowed into the preceding finding's body."
+        )
+
+    out: list[str] = []
+    in_tier = False
+    in_finding = False
+    elided = False
+    for line, in_fence in zip(lines, fence_mask):
+        if in_fence:
+            # A fenced line is sample text. Inside a finding it is part of the
+            # body being elided; outside one it passes through untouched.
+            if not in_finding:
+                out.append(line)
+            continue
+        if _TIER_BLOCKING.match(line) or _TIER_ADVISORY.match(line):
+            in_tier, in_finding = True, False
+        elif _TIER_INCIDENTAL.match(line):
+            in_tier, in_finding = True, False
+        elif line.startswith("## "):
+            in_tier, in_finding = False, False
+        elif in_tier and line.startswith("### "):
+            in_finding, elided = True, False
+        elif in_finding and line.rstrip("\n").rstrip() == "---":
+            in_finding = False
+        if not in_finding:
+            out.append(line)
+            continue
+        if line.startswith("### ") or line.startswith(_OUTLINE_KEEP):
+            out.append(line)
+            continue
+        if not line.strip():
+            out.append(line)
+            continue
+        if not elided:
+            out.append(f"{_ELIDED}\n")
+            elided = True
+    return "".join(out)
+
+
 def load_review_findings(
     issue_number: int,
     iteration: int | None = None,
