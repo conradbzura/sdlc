@@ -91,12 +91,12 @@ def _stub_gh_unavailable(monkeypatch):
 
 def _fork_repo():
     """A resolved repo standing in for a fork whose upstream is upstream/sdlc."""
-    return pr_state._Repo(owner="upstream", name="sdlc", repo_flag="upstream/sdlc")
+    return pr_state.Repo(owner="upstream", name="sdlc", repo_flag="upstream/sdlc")
 
 
 def _current_repo():
     """A resolved repo standing in for a non-fork (current repo applies)."""
-    return pr_state._Repo(owner="conradbzura", name="sdlc", repo_flag=None)
+    return pr_state.Repo(owner="conradbzura", name="sdlc", repo_flag=None)
 
 
 def _patch_resolve_repo(monkeypatch, repo):

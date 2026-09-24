@@ -93,9 +93,11 @@ Generated from a `<reviewers-per-role>`-reviewer review of PR #<N> (`<head-ref>`
 
 - `<id>` — <title> (`<reference>`) — rejected pass <k>: <rationale>
 
-## Cross-cutting decisions
+## Pass <k> — cross-cutting decisions
 
 <Themes that span multiple findings or a single root cause behind several of them — e.g. a doc-vs-reality mismatch repeated across files, an architectural choice that several findings orbit, or a tension between two roles' lenses that the consolidator resolved a particular way. Record the resolution and its rationale so the fixup pass applies it uniformly. Omit this section if there are no cross-cutting themes.>
+
+<The heading carries the pass number, and each pass APPENDS a new section rather than rewriting the last one — earlier passes' sections stay where they are. The number is what lets the injection elide a superseded section while keeping the operative one, so a heading written without it is never elided and the sections accumulate unbounded. Keying on the number rather than on position means a document whose sections were reordered still loses the right ones.>
 
 ## Fixup mapping
 

@@ -123,6 +123,27 @@ def _render_finding(index: int, finding: ReviewFinding) -> list[str]:
     return lines
 
 
+def _render_enumeration(findings: list[ReviewFinding]) -> list[str]:
+    """Render every finding as one line: id, severity, reference, title.
+
+    The enumeration half of the fetch tool. A consumer that needs to know
+    WHICH findings a document holds — reconciling a seeded block against the
+    file, or listing a walk's work — needs no body, and paying for 41 bodies
+    to learn 41 ids is the cost incremental disclosure exists to avoid.
+
+    The trailing ``Ids:`` line is the reconciliation surface: a caller
+    comparing id sets compares that one line rather than parsing the table,
+    which is what the hand-written scanners this replaced kept getting wrong.
+    """
+    lines = [""]
+    lines.extend(
+        f"  {f.id}\t{f.severity}\t{f.reference}\t{f.title}"
+        for f in _by_severity(findings)
+    )
+    lines += ["", f"Ids: {' '.join(f.id for f in _by_severity(findings))}"]
+    return lines
+
+
 @dataclass(frozen=True)
 class ReviewFindings:
     """A parsed local review document: its provenance and its findings."""
@@ -216,7 +237,14 @@ class ReviewFindings:
 
 
 @dataclass(frozen=True)
-class _Repo:
+class Repo:
+    """The repository ``gh`` commands address, as `resolve_repo` resolved it.
+
+    ``repo_flag`` is the ``--repo`` value when the current checkout is a fork
+    and issues or PRs belong to the upstream, and ``None`` when the current
+    repo applies and no flag is needed.
+    """
+
     owner: str
     name: str
     repo_flag: str | None
@@ -267,10 +295,10 @@ def _run_gh(args: list[str], allow_failure: bool = False) -> str | None:
     return result.stdout
 
 
-def resolve_repo() -> _Repo:
+def resolve_repo() -> Repo:
     """Resolve the target repository for ``gh`` commands.
 
-    Returns a ``_Repo`` whose ``repo_flag`` is the ``--repo`` value
+    Returns a ``Repo`` whose ``repo_flag`` is the ``--repo`` value
     (``"<owner>/<name>"``) when the current repo is a fork — so that issues
     and PRs are addressed against the upstream — and ``None`` otherwise (the
     current repo applies and no ``--repo`` flag is needed).
@@ -285,8 +313,8 @@ def resolve_repo() -> _Repo:
             parent = data["parent"]
             owner = parent["owner"]["login"]
             name = parent["name"]
-            return _Repo(owner=owner, name=name, repo_flag=f"{owner}/{name}")
-        return _Repo(
+            return Repo(owner=owner, name=name, repo_flag=f"{owner}/{name}")
+        return Repo(
             owner=data["owner"]["login"], name=data["name"], repo_flag=None
         )
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
@@ -548,7 +576,7 @@ def _extract_issue(body: str) -> str:
             continue
         if capturing:
             if not in_fence and (
-                line.startswith("**") or line.lstrip().startswith("- [")
+                line.startswith(_FIELD_LABELS) or line.lstrip().startswith("- [")
             ):
                 break
             # A fenced line is code: keep its indentation, and let no `**bold**`
@@ -569,7 +597,7 @@ def _extract_issue(body: str) -> str:
         if not in_fence:
             if line.lstrip().startswith("- ["):
                 break
-            if line.startswith("**"):
+            if line.startswith(_FIELD_LABELS):
                 break
         bare.append(line.rstrip() if in_fence else line.strip())
     return "\n".join(bare).strip()
@@ -704,6 +732,25 @@ def parse_review_document(
     current_severity: _Severity | None = None
     pending: tuple[str, str, _Severity] | None = None
     body_lines: list[str] = []
+    # A tier heading is a section, not a label: a document carrying two of the
+    # same one has a second, stray section whose findings a READER files under
+    # the wrong severity while this parser, which prefers the `**(BLOCKING)**`
+    # marker, reports them correctly. That divergence is invisible to every
+    # check that goes through this function — which is every check there is —
+    # so it is caught here or not at all.
+    seen_tiers: set[_Severity] = set()
+
+    def enter_tier(severity: _Severity, line: str) -> None:
+        nonlocal current_severity
+        if severity in seen_tiers:
+            raise ValueError(
+                f"{path}: duplicate tier heading {line.strip()!r}. A second "
+                f"heading for the {severity} tier opens a stray section, and "
+                "findings under it are read by severity marker here but by "
+                "enclosing heading anywhere a human looks. Merge the sections."
+            )
+        seen_tiers.add(severity)
+        current_severity = severity
 
     def flush() -> None:
         nonlocal pending, body_lines
@@ -723,15 +770,15 @@ def parse_review_document(
         if not in_fence:
             if _TIER_BLOCKING.match(line):
                 flush()
-                current_severity = "blocking"
+                enter_tier("blocking", line)
                 continue
             if _TIER_ADVISORY.match(line):
                 flush()
-                current_severity = "advisory"
+                enter_tier("advisory", line)
                 continue
             if _TIER_INCIDENTAL.match(line):
                 flush()
-                current_severity = "incidental"
+                enter_tier("incidental", line)
                 continue
             heading = _FINDING_HEADING.match(line)
             if heading is not None and current_severity is not None:
@@ -780,7 +827,28 @@ _OUTLINE_KEEP = ("**Reference:**", "**Touched commit:**", "**Tests to add:**")
 # What replaces an elided body. Deliberately visible and deliberately one per
 # finding: a silent gap is what would let a consumer work from the outline and
 # supply a body it never read.
-_ELIDED = "_(body elided — fetch with `sdlc_review_findings`)_"
+# The labelled fields that close a finding's issue text. An earlier form
+# terminated on ANY line opening `**`, which cannot tell a label from prose
+# that merely begins with a bold span. A body whose first paragraph opened
+# `**Criterion #15**` was therefore dropped in full, and one whose second
+# opened `**(a) The third door.**` lost everything from there down — measured
+# at 6 of 36 findings on a real document, including every Tier 3 finding,
+# whose `**Off-issue:**` paragraph is the evidence the tier requires. The
+# fetch that serves these bodies is mandatory, so a truncated one is evidence
+# the consumer never learns is missing. Extend this tuple, never the test.
+_FIELD_LABELS = (
+    "**Issue:**",
+    "**Reference:**",
+    "**Remediation:**",
+    "**Tests to add:**",
+    "**Touched commit:**",
+    "**Corroboration:**",
+    "**Relevance dissent:**",
+    "**Severity dissent:**",
+    "**Elided:**",
+)
+
+_ELIDED = "**Elided:** _(body elided — fetch with `sdlc_review_findings`)_"
 
 # `## Pass <k> — cross-cutting decisions`. These accumulate: a chain writes one
 # per pass and they roughly double each round, so by the time a review has run
@@ -861,8 +929,15 @@ def render_outline(path: str | Path) -> str:
         if in_fence:
             # A fenced line is sample text. Inside an elided region it is part
             # of what is being elided; outside one it passes through untouched.
+            # Elision inside a finding is announced here as well as below: a
+            # body with no unfenced prose and no checklist would otherwise be
+            # dropped with no marker at all, and a silent gap is what lets a
+            # consumer work from the outline and supply a body it never read.
             if not in_finding and not in_superseded:
                 out.append(line)
+            elif in_finding and not elided:
+                out.append(f"{_ELIDED}\n")
+                elided = True
             continue
         if _TIER_BLOCKING.match(line) or _TIER_ADVISORY.match(line):
             in_tier, in_finding, in_superseded = True, False, False
@@ -916,6 +991,15 @@ def render_findings(path: str | Path, ids: list[str]) -> str:
     consumer ends up dispositioning a finding it was never shown, which is the
     failure the whole enumeration discipline in this module guards against.
 
+    An **empty** ``ids`` returns the enumeration instead: every finding as one
+    ``id / severity / reference / title`` line, no bodies, with a trailing
+    ``Ids:`` line to compare id sets against. That is the whole of what a
+    reconciliation or a walk-ordering needs, and routing it through this tool
+    is what lets the skills stop shelling out to ``uv run python -c "from
+    sdlc import ..."`` — which resolves against the REVIEWED project's
+    environment and therefore fails everywhere the server is installed out of
+    process, which is everywhere but this repository.
+
     ``path`` is REFUSED unless it resolves inside ``.sdlc/reviews`` under the
     working directory. It reaches the filesystem and it arrives from a prompt
     — an agent interpolating an injected directive — so the location is
@@ -932,6 +1016,12 @@ def render_findings(path: str | Path, ids: list[str]) -> str:
             "directory is a misdirected fetch rather than a review document."
         )
     parsed = parse_review_document(resolved, issue_number=0, iteration=0)
+    if not ids:
+        header = (
+            f"Findings from {parsed.path} ({len(parsed.findings)} total — "
+            "enumeration only, no bodies):"
+        )
+        return "\n".join([header] + _render_enumeration(parsed.findings))
     wanted = list(dict.fromkeys(ids))
     found = {f.id: f for f in parsed.findings}
     ordered = [f for f in _by_severity(parsed.findings) if f.id in wanted]
@@ -1115,7 +1205,7 @@ def _render_github_findings_as_document(
 
 
 def convert_pr_review_to_document(
-    pr_url: str, repo: _Repo | None = None
+    pr_url: str, repo: Repo | None = None
 ) -> ReviewFindings:
     """Convert a GitHub PR's review feedback into a new local review document.
 
@@ -1157,7 +1247,7 @@ def convert_pr_review_to_document(
 
 
 def _classify_number(
-    repo: _Repo, number: int
+    repo: Repo, number: int
 ) -> tuple[Literal["pr", "issue", "missing"], dict | None]:
     pr_args = ["pr", "view", str(number)]
     pr_args = _with_repo(pr_args, repo.repo_flag)
@@ -1172,7 +1262,7 @@ def _classify_number(
     return "missing", None
 
 
-def _find_linked_pr(repo: _Repo, issue_number: int) -> dict | None:
+def _find_linked_pr(repo: Repo, issue_number: int) -> dict | None:
     args = ["pr", "list"]
     args = _with_repo(args, repo.repo_flag)
     args += [
@@ -1187,7 +1277,7 @@ def _find_linked_pr(repo: _Repo, issue_number: int) -> dict | None:
     return json.loads(stripped)
 
 
-def _find_closing_issue(repo: _Repo, pr_number: int) -> int | None:
+def _find_closing_issue(repo: Repo, pr_number: int) -> int | None:
     """Return the issue number PR ``pr_number`` closes, or ``None``.
 
     Queries GitHub's ``closingIssuesReferences`` connection — the authoritative
@@ -1227,7 +1317,7 @@ def _find_closing_issue(repo: _Repo, pr_number: int) -> int | None:
 
 
 def _query_review_state(
-    repo: _Repo, pr_number: int
+    repo: Repo, pr_number: int
 ) -> tuple[list[Finding], list[Finding]]:
     graphql_args = [
         "api", "graphql",
@@ -1289,7 +1379,7 @@ def _query_review_state(
 
 def dispatch(
     number: int,
-    repo: _Repo | None = None,
+    repo: Repo | None = None,
     review: int | str | None = None,
 ) -> ReviewFindings | PrContext | None:
     """Classify ``number`` and resolve the review work to perform.

@@ -4,8 +4,11 @@ import json
 import textwrap
 
 import pytest
+from hypothesis import assume, given, settings
+from hypothesis import strategies as st
 
 from sdlc import pr_state
+from sdlc.server import REVIEW_TEMPLATE_PATH
 from sdlc.pr_state import (
     Finding,
     Findings,
@@ -1092,6 +1095,102 @@ class TestReviewFindings:
         )
         assert "Review document:" not in rendered
 
+    def test_disclose_should_carry_the_enumeration_without_the_bodies(
+        self,
+        tmp_path, monkeypatch
+    ):
+        """Test the injected block names every finding and elides every body.
+
+        Given:
+            A parsed review document with findings in three tiers.
+        When:
+            disclose is called, as both endpoints now call it.
+        Then:
+            It should keep the provenance header, carry every finding's heading
+            and reference, and elide the issue text — so the enumeration a pass
+            depends on is inline while the bulk is not.
+        """
+        # Arrange
+        monkeypatch.chdir(tmp_path)
+        path = _reviews_document(
+            tmp_path,
+            _review_document(
+                blocking=_BLOCKING_FINDING,
+                advisory=_ADVISORY_FINDING,
+                incidental=_INCIDENTAL_FINDING,
+            ),
+        )
+        parsed = parse_review_document(path, issue_number=42, iteration=1)
+
+        # Act
+        block = parsed.disclose()
+
+        # Assert
+        assert f"Review document: {path}" in block
+        assert "Issue: #42" in block
+        assert "Findings (3)" in block
+        for heading in ("### B1 —", "### A1 —", "### I1 —"):
+            assert heading in block, heading
+        assert "**Issue:**" not in block
+        assert "The symbol `foo` should be `bar`" not in block
+        assert block.count("sdlc_review_findings") >= 3
+
+
+    def test_disclose_should_carry_what_format_drops(self, tmp_path, monkeypatch):
+        """Test the outline block preserves the fields the rendered one loses.
+
+        Given:
+            `format` re-renders parsed fields, so role attribution, the ledgers
+            and the cross-cutting section never reach a consumer through it.
+        When:
+            Both renderings of the same document are compared.
+        Then:
+            disclose should carry the role attribution and the trailing
+            sections that format does not — which is what removes the
+            read-back obligation, not just the token cost.
+        """
+        # Arrange
+        monkeypatch.chdir(tmp_path)
+        path = _reviews_document(tmp_path, _review_document(blocking=_BLOCKING_FINDING))
+        parsed = parse_review_document(path, issue_number=42, iteration=1)
+
+        # Act
+        block = parsed.disclose()
+        rendered = parsed.format()
+
+        # Assert
+        assert "aie (3/10 aie)" in block
+        assert "aie (3/10 aie)" not in rendered
+        assert "## Cross-cutting decisions" in block
+        assert "## Cross-cutting decisions" not in rendered
+
+
+    def test_disclose_should_label_the_header_when_a_label_is_given(
+        self,
+        tmp_path, monkeypatch
+    ):
+        """Test a re-review's provenance line cannot be read as a write target.
+
+        Given:
+            A re-review injects both a `Review document:` write-target directive
+            and the seeded document's provenance.
+        When:
+            disclose is called with the seeded label.
+        Then:
+            The header should use that label, keeping the two apart exactly as
+            the full rendering does.
+        """
+        # Arrange
+        monkeypatch.chdir(tmp_path)
+        path = _reviews_document(tmp_path, _review_document(blocking=_BLOCKING_FINDING))
+        parsed = parse_review_document(path, issue_number=42, iteration=1)
+
+        # Act
+        block = parsed.disclose(label="Seeded from")
+
+        # Assert
+        assert block.startswith(f"Seeded from: {path}")
+
 
 def test_parse_review_document_should_extract_a_blocking_finding(tmp_path):
     """Test parse_review_document extracts a blocking finding's fields.
@@ -1705,8 +1804,10 @@ def test_render_outline_should_round_trip_as_a_review_document(tmp_path):
         The outline is parsed as a review document in its own right.
     Then:
         It should yield the same ids, severities, references and titles with
-        empty remediations — the property every consumer of the outline
-        depends on, since a lost id is a finding deleted with no disposition.
+        empty issues AND empty remediations — the property every consumer of
+        the outline depends on, since a lost id is a finding deleted with no
+        disposition, and a marker captured as issue text is a body a consumer
+        can mistake for one it has read.
     """
     # Arrange
     path = tmp_path / "review-1.md"
@@ -1730,6 +1831,82 @@ def test_render_outline_should_round_trip_as_a_review_document(tmp_path):
     ]
     assert fields(echoed) == fields(original)
     assert all(not f.remediation.strip() for f in echoed.findings)
+    assert all(not f.issue.strip() for f in echoed.findings)
+
+
+def test_render_outline_should_mark_an_elided_body_that_is_entirely_fenced(tmp_path):
+    """Test a body with nothing outside a fence still announces its elision.
+
+    Given:
+        A finding whose whole body is a fenced sample, with no unfenced prose
+        and no remediation checklist to stand in for one.
+    When:
+        The outline is rendered.
+    Then:
+        It should still carry exactly one marker for that finding. The marker
+        is the mechanism: a body dropped without one reads as a finding that
+        simply has no body, so nothing tells a consumer to fetch it.
+    """
+    # Arrange
+    fenced = (
+        "### A1 — a fenced-only body — reviewer (1/1)\n"
+        "**Reference:** `b.py:2`\n"
+        "\n"
+        "```python\n"
+        'offending = "code"\n'
+        "```\n"
+        "\n"
+        "**Touched commit:** `def5678`\n"
+    )
+    path = tmp_path / "review-1.md"
+    path.write_text(_review_document(blocking=_BLOCKING_FINDING, advisory=fenced))
+
+    # Act
+    outline = render_outline(path)
+
+    # Assert
+    parsed = parse_review_document(path, issue_number=42, iteration=1)
+    assert outline.count("body elided") == len(parsed.findings)
+    assert 'offending = "code"' not in outline
+
+
+def test_parse_review_document_should_keep_a_body_opening_with_a_bold_span(tmp_path):
+    """Test prose that begins in bold is not mistaken for a field label.
+
+    Given:
+        A finding whose body opens with `**Criterion #15**` and continues in
+        a later paragraph opening `**(a) …**` — ordinary emphasis, not a
+        labelled field.
+    When:
+        The document is parsed.
+    Then:
+        The whole body should survive. Terminating on any bold-leading line
+        drops evidence out of the body that the mandatory fetch serves, and
+        it does so silently.
+    """
+    # Arrange
+    bold = (
+        "### A1 — a body that opens in bold — reviewer (1/1)\n"
+        "**Reference:** `b.py:2`\n"
+        "\n"
+        "**Criterion #15** says the non-repository case writes a null base.\n"
+        "\n"
+        "**(a) The third door.** The gate names two dispositions, not three.\n"
+        "\n"
+        "- [x] Emit `null` for the absent fields.\n"
+        "\n"
+        "**Touched commit:** `def5678`\n"
+    )
+    path = tmp_path / "review-1.md"
+    path.write_text(_review_document(blocking=_BLOCKING_FINDING, advisory=bold))
+
+    # Act
+    parsed = parse_review_document(path, issue_number=42, iteration=1)
+
+    # Assert
+    issue = next(f.issue for f in parsed.findings if f.id == "A1")
+    assert "Criterion #15" in issue
+    assert "The third door" in issue
 
 
 def test_render_outline_should_ignore_a_finding_heading_inside_a_fence(tmp_path):
@@ -1932,99 +2109,48 @@ def test_render_findings_should_match_the_full_render_for_the_same_finding(
         assert line in result
 
 
-def test_disclose_should_carry_the_enumeration_without_the_bodies(
-    tmp_path, monkeypatch
+def test_the_bundled_template_should_head_cross_cutting_sections_with_a_pass(
+    tmp_path,
 ):
-    """Test the injected block names every finding and elides every body.
+    """Test a document built from the shipped template can be elided.
 
     Given:
-        A parsed review document with findings in three tiers.
+        The template is appended verbatim to every review prompt and the
+        skill tells the consolidator to follow it exactly, so its heading is
+        the one an agent copies.
     When:
-        disclose is called, as both endpoints now call it.
+        A two-pass document is built using that heading and rendered.
     Then:
-        It should keep the provenance header, carry every finding's heading
-        and reference, and elide the issue text — so the enumeration a pass
-        depends on is inline while the bulk is not.
+        The superseded section's body should go and the operative one should
+        stay. An unnumbered heading matches nothing, so no section is ever
+        elided and they accumulate for the life of the chain — while three
+        documents claim the opposite.
     """
     # Arrange
-    monkeypatch.chdir(tmp_path)
-    path = _reviews_document(
-        tmp_path,
-        _review_document(
-            blocking=_BLOCKING_FINDING,
-            advisory=_ADVISORY_FINDING,
-            incidental=_INCIDENTAL_FINDING,
-        ),
+    template = (REVIEW_TEMPLATE_PATH).read_text()
+    heading = next(
+        line
+        for line in template.splitlines()
+        if line.startswith("## ") and "cross-cutting" in line.lower()
     )
-    parsed = parse_review_document(path, issue_number=42, iteration=1)
+    path = tmp_path / "review-1.md"
+    document = _review_document(blocking=_BLOCKING_FINDING).replace(
+        "# PR #42 — Round 1 Review\n",
+        "# PR #42 — Round 1 Review\n\n**Pass 2** — 1 blocking, 0 advisory, 0 incidental open.\n",
+        1,
+    )
+    path.write_text(
+        document
+        + f"\n{heading.replace('<k>', '1')}\n\nSuperseded reasoning.\n"
+        + f"\n{heading.replace('<k>', '2')}\n\nOperative reasoning.\n"
+    )
 
     # Act
-    block = parsed.disclose()
+    outline = render_outline(path)
 
     # Assert
-    assert f"Review document: {path}" in block
-    assert "Issue: #42" in block
-    assert "Findings (3)" in block
-    for heading in ("### B1 —", "### A1 —", "### I1 —"):
-        assert heading in block, heading
-    assert "**Issue:**" not in block
-    assert "The symbol `foo` should be `bar`" not in block
-    assert block.count("sdlc_review_findings") >= 3
-
-
-def test_disclose_should_carry_what_format_drops(tmp_path, monkeypatch):
-    """Test the outline block preserves the fields the rendered one loses.
-
-    Given:
-        `format` re-renders parsed fields, so role attribution, the ledgers
-        and the cross-cutting section never reach a consumer through it.
-    When:
-        Both renderings of the same document are compared.
-    Then:
-        disclose should carry the role attribution and the trailing
-        sections that format does not — which is what removes the
-        read-back obligation, not just the token cost.
-    """
-    # Arrange
-    monkeypatch.chdir(tmp_path)
-    path = _reviews_document(tmp_path, _review_document(blocking=_BLOCKING_FINDING))
-    parsed = parse_review_document(path, issue_number=42, iteration=1)
-
-    # Act
-    block = parsed.disclose()
-    rendered = parsed.format()
-
-    # Assert
-    assert "aie (3/10 aie)" in block
-    assert "aie (3/10 aie)" not in rendered
-    assert "## Cross-cutting decisions" in block
-    assert "## Cross-cutting decisions" not in rendered
-
-
-def test_disclose_should_label_the_header_when_a_label_is_given(
-    tmp_path, monkeypatch
-):
-    """Test a re-review's provenance line cannot be read as a write target.
-
-    Given:
-        A re-review injects both a `Review document:` write-target directive
-        and the seeded document's provenance.
-    When:
-        disclose is called with the seeded label.
-    Then:
-        The header should use that label, keeping the two apart exactly as
-        the full rendering does.
-    """
-    # Arrange
-    monkeypatch.chdir(tmp_path)
-    path = _reviews_document(tmp_path, _review_document(blocking=_BLOCKING_FINDING))
-    parsed = parse_review_document(path, issue_number=42, iteration=1)
-
-    # Act
-    block = parsed.disclose(label="Seeded from")
-
-    # Assert
-    assert block.startswith(f"Seeded from: {path}")
+    assert "Superseded reasoning." not in outline
+    assert "Operative reasoning." in outline
 
 
 def test_render_outline_should_elide_a_superseded_cross_cutting_section(tmp_path):
@@ -2373,7 +2499,7 @@ def test_convert_pr_review_to_document_should_write_and_round_trip(
         ("pr", "view", "42", "--json", "reviews"): _reviews_payload(reviews),
     }
     monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
-    repo = pr_state._Repo(owner="conradbzura", name="sdlc", repo_flag=None)
+    repo = pr_state.Repo(owner="conradbzura", name="sdlc", repo_flag=None)
 
     # Act
     result = pr_state.convert_pr_review_to_document(
@@ -2413,7 +2539,7 @@ def test_convert_pr_review_to_document_should_carry_an_empty_incidental_tier(
         ("pr", "view", "42", "--json", "reviews"): _reviews_payload(reviews),
     }
     monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
-    repo = pr_state._Repo(owner="conradbzura", name="sdlc", repo_flag=None)
+    repo = pr_state.Repo(owner="conradbzura", name="sdlc", repo_flag=None)
 
     # Act
     pr_state.convert_pr_review_to_document(
@@ -2452,7 +2578,7 @@ def test_convert_pr_review_to_document_should_use_the_next_iteration(
         ("pr", "view", "42", "--json", "reviews"): _reviews_payload([]),
     }
     monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
-    repo = pr_state._Repo(owner="conradbzura", name="sdlc", repo_flag=None)
+    repo = pr_state.Repo(owner="conradbzura", name="sdlc", repo_flag=None)
 
     # Act
     result = pr_state.convert_pr_review_to_document(
@@ -2570,7 +2696,7 @@ def test_convert_pr_review_to_document_should_raise_for_non_pr_url(monkeypatch):
         It should raise ValueError without touching gh.
     """
     # Arrange
-    repo = pr_state._Repo(owner="conradbzura", name="sdlc", repo_flag=None)
+    repo = pr_state.Repo(owner="conradbzura", name="sdlc", repo_flag=None)
 
     # Act & assert
     with pytest.raises(ValueError, match="not a GitHub PR URL"):
@@ -2618,7 +2744,7 @@ def test_convert_pr_review_to_document_should_not_leak_separators(
         ("pr", "view", "42", "--json", "reviews"): _reviews_payload([]),
     }
     monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
-    repo = pr_state._Repo(owner="conradbzura", name="sdlc", repo_flag=None)
+    repo = pr_state.Repo(owner="conradbzura", name="sdlc", repo_flag=None)
 
     # Act
     result = pr_state.convert_pr_review_to_document(
@@ -2665,7 +2791,7 @@ def test_convert_pr_review_to_document_should_round_trip_a_fenced_heading(
         ("pr", "view", "42", "--json", "reviews"): _reviews_payload([]),
     }
     monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
-    repo = pr_state._Repo(owner="conradbzura", name="sdlc", repo_flag=None)
+    repo = pr_state.Repo(owner="conradbzura", name="sdlc", repo_flag=None)
 
     # Act
     result = pr_state.convert_pr_review_to_document(
@@ -2777,7 +2903,7 @@ def test_convert_pr_review_to_document_should_round_trip_an_unfenced_heading(
         ("pr", "view", "42", "--json", "reviews"): _reviews_payload([]),
     }
     monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
-    repo = pr_state._Repo(owner="conradbzura", name="sdlc", repo_flag=None)
+    repo = pr_state.Repo(owner="conradbzura", name="sdlc", repo_flag=None)
 
     # Act
     result = pr_state.convert_pr_review_to_document(
@@ -2790,144 +2916,296 @@ def test_convert_pr_review_to_document_should_round_trip_an_unfenced_heading(
     assert "C9 — Phantom" in result.findings[0].issue
 
 
-class TestParseCompositionRoles:
-    """Tests for `parse_composition_roles`."""
+def test_parse_composition_roles_should_return_the_documented_roles(tmp_path):
+    """Test the roles a round ran under are recovered from the header.
 
-    def test_parse_composition_roles_should_return_the_documented_roles(self, tmp_path):
-        """Test the roles a round ran under are recovered from the header.
+    Given:
+        A review document whose Composition line names two roles.
+    When:
+        parse_composition_roles is called on it.
+    Then:
+        It should return both stems in order.
+    """
+    # Arrange
+    document = tmp_path / "review-1.md"
+    document.write_text(
+        "# PR #1 — Round 1 Review\n\n"
+        "Generated from a `5`-reviewer review. Composition: 5 reviewer(s) "
+        "per role across role(s) `aie`, `architect` (5 × 2 = 10 reviewer "
+        "subagents total). Findings are deduped.\n"
+    )
 
-        Given:
-            A review document whose Composition line names two roles.
-        When:
-            parse_composition_roles is called on it.
-        Then:
-            It should return both stems in order.
-        """
-        # Arrange
-        document = tmp_path / "review-1.md"
-        document.write_text(
-            "# PR #1 — Round 1 Review\n\n"
-            "Generated from a `5`-reviewer review. Composition: 5 reviewer(s) "
-            "per role across role(s) `aie`, `architect` (5 × 2 = 10 reviewer "
-            "subagents total). Findings are deduped.\n"
-        )
+    # Act
+    result = pr_state.parse_composition_roles(document)
 
-        # Act
-        result = pr_state.parse_composition_roles(document)
+    # Assert
+    assert result == ["aie", "architect"]
 
-        # Assert
-        assert result == ["aie", "architect"]
+def test_parse_composition_roles_should_return_empty_without_the_line(tmp_path):
+    """Test a document predating the Composition line yields nothing.
 
-    def test_parse_composition_roles_should_return_empty_without_the_line(
-        self, tmp_path
-    ):
-        """Test a document predating the Composition line yields nothing.
+    Given:
+        A review document with no Composition line.
+    When:
+        parse_composition_roles is called on it.
+    Then:
+        It should return an empty list rather than raising, so the caller
+        can fall back instead of failing an older document.
+    """
+    # Arrange
+    document = tmp_path / "review-1.md"
+    document.write_text("# PR #1 — Round 1 Review\n\nNo composition here.\n")
 
-        Given:
-            A review document with no Composition line.
-        When:
-            parse_composition_roles is called on it.
-        Then:
-            It should return an empty list rather than raising, so the caller
-            can fall back instead of failing an older document.
-        """
-        # Arrange
-        document = tmp_path / "review-1.md"
-        document.write_text("# PR #1 — Round 1 Review\n\nNo composition here.\n")
+    # Act
+    result = pr_state.parse_composition_roles(document)
 
-        # Act
-        result = pr_state.parse_composition_roles(document)
+    # Assert
+    assert result == []
 
-        # Assert
-        assert result == []
+def test_parse_composition_roles_should_return_empty_when_unbackticked(tmp_path):
+    """Test a paraphrased Composition line names no roles.
 
-    def test_parse_composition_roles_should_return_empty_when_unbackticked(
-        self, tmp_path
-    ):
-        """Test a paraphrased Composition line names no roles.
+    Given:
+        A review document whose Composition line names its roles in prose,
+        with no backticked stems for the parser to collect.
+    When:
+        parse_composition_roles is called on it.
+    Then:
+        It should return an empty list. The caller treats that as nothing
+        to inherit, so this is the branch a re-review's silent fallback to
+        general-purpose runs through.
+    """
+    # Arrange
+    document = tmp_path / "review-1.md"
+    document.write_text(
+        "# PR #1 — Round 1 Review\n\n"
+        "Composition: 3 reviewer(s) per role across role(s) aie and "
+        "general-purpose, six reviewers in total.\n"
+    )
 
-        Given:
-            A review document whose Composition line names its roles in prose,
-            with no backticked stems for the parser to collect.
-        When:
-            parse_composition_roles is called on it.
-        Then:
-            It should return an empty list. The caller treats that as nothing
-            to inherit, so this is the branch a re-review's silent fallback to
-            general-purpose runs through.
-        """
-        # Arrange
-        document = tmp_path / "review-1.md"
-        document.write_text(
-            "# PR #1 — Round 1 Review\n\n"
-            "Composition: 3 reviewer(s) per role across role(s) aie and "
-            "general-purpose, six reviewers in total.\n"
-        )
+    # Act
+    result = pr_state.parse_composition_roles(document)
 
-        # Act
-        result = pr_state.parse_composition_roles(document)
-
-        # Assert
-        assert result == []
+    # Assert
+    assert result == []
 
 
-class TestParseReviewDocumentTitles:
-    """Tests for title handling in `parse_review_document`."""
+def _titles_document(heading: str) -> str:
+    return (
+        "# PR #1 — Round 1 Review\n\n"
+        "## Tier 2 — Advisory\n\n"
+        f"### {heading}\n"
+        "**Reference:** `src/a.py:1`\n\n"
+        "Something is off.\n\n"
+        "**Remediation:**\n"
+        "- [x] Fix it. *(Recommended.)*\n"
+    )
 
-    def _document(self, heading: str) -> str:
-        return (
-            "# PR #1 — Round 1 Review\n\n"
-            "## Tier 2 — Advisory\n\n"
-            f"### {heading}\n"
-            "**Reference:** `src/a.py:1`\n\n"
-            "Something is off.\n\n"
-            "**Remediation:**\n"
-            "- [x] Fix it. *(Recommended.)*\n"
-        )
 
-    def test_parse_review_document_should_keep_an_em_dash_inside_a_title(
-        self, tmp_path
-    ):
-        """Test only the trailing attribution is stripped from a title.
+def test_parse_review_document_should_keep_an_em_dash_inside_a_title(tmp_path):
+    """Test only the trailing attribution is stripped from a title.
 
-        Given:
-            An advisory finding whose own title contains a spaced em dash,
-            followed by the usual role attribution.
-        When:
-            The document is parsed.
-        Then:
-            The full title should survive, since the parsed title is written
-            back to the document on the next in-place re-review.
-        """
-        # Arrange
-        document = tmp_path / "review-1.md"
-        document.write_text(
-            self._document("A1 — Empty patch claim is false — the usual case — aie (1/5)")
-        )
+    Given:
+        An advisory finding whose own title contains a spaced em dash,
+        followed by the usual role attribution.
+    When:
+        The document is parsed.
+    Then:
+        The full title should survive, since the parsed title is written
+        back to the document on the next in-place re-review.
+    """
+    # Arrange
+    document = tmp_path / "review-1.md"
+    document.write_text(
+        _titles_document("A1 — Empty patch claim is false — the usual case — aie (1/5)")
+    )
 
-        # Act
-        result = pr_state.parse_review_document(document, 1, 1)
+    # Act
+    result = pr_state.parse_review_document(document, 1, 1)
 
-        # Assert
-        assert result.findings[0].title == (
-            "Empty patch claim is false — the usual case"
-        )
+    # Assert
+    assert result.findings[0].title == (
+        "Empty patch claim is false — the usual case"
+    )
 
-    def test_parse_review_document_should_raise_on_an_unparsed_heading(self, tmp_path):
-        """Test a malformed finding heading is surfaced, not silently dropped.
+def test_parse_review_document_should_raise_on_an_unparsed_heading(tmp_path):
+    """Test a malformed finding heading is surfaced, not silently dropped.
 
-        Given:
-            A finding heading using a hyphen where the em dash belongs.
-        When:
-            The document is parsed.
-        Then:
-            It should raise, because a dropped finding is deleted from the
-            document with no disposition on the next in-place re-review.
-        """
-        # Arrange
-        document = tmp_path / "review-1.md"
-        document.write_text(self._document("A1 - Hyphen where an em dash belongs"))
+    Given:
+        A finding heading using a hyphen where the em dash belongs.
+    When:
+        The document is parsed.
+    Then:
+        It should raise, because a dropped finding is deleted from the
+        document with no disposition on the next in-place re-review.
+    """
+    # Arrange
+    document = tmp_path / "review-1.md"
+    document.write_text(_titles_document("A1 - Hyphen where an em dash belongs"))
 
-        # Act & assert
-        with pytest.raises(ValueError, match="unparsed finding heading"):
-            pr_state.parse_review_document(document, 1, 1)
+    # Act & assert
+    with pytest.raises(ValueError, match="unparsed finding heading"):
+        pr_state.parse_review_document(document, 1, 1)
+
+
+# --- Property-based coverage for the outline ------------------------------
+#
+# `render_outline` is all three cases the test guide names a MUST for property
+# testing: it states invariants, it round-trips, and its input domain is
+# arbitrary Markdown. Every defect this module has carried was found by
+# reading rather than by a test — a body terminated on ANY line opening `**`,
+# costing 6 of 36 findings on a real document; an elision marker skipped when
+# a body opened with a fence; a stray tier heading that made a document's
+# visible structure disagree with its parse. Fixed examples missed all three.
+
+_ID_PREFIX = {"blocking": "B", "advisory": "A", "incidental": "I"}
+
+
+@st.composite
+def _review_documents(draw):
+    """Draw a review document over the shapes that have actually broken it."""
+    counts = {
+        tier: draw(st.integers(min_value=0, max_value=3))
+        for tier in ("blocking", "advisory", "incidental")
+    }
+    assume(sum(counts.values()) > 0)
+
+    bodies = []
+    for tier, count in counts.items():
+        rendered = []
+        for index in range(1, count + 1):
+            finding_id = f"{_ID_PREFIX[tier]}{index}"
+            # A blocking marker may appear on any tier's finding; on a
+            # non-blocking tier it re-tiers the finding, which is legal and is
+            # how a re-tier is recorded.
+            marker = " **(BLOCKING)**" if draw(st.booleans()) else ""
+            issue = draw(
+                st.sampled_from(
+                    [
+                        "Plain prose that says what is wrong.",
+                        "**Reference:** is a label, this is prose opening bold.",
+                        "Quoting a sample:\n\n```markdown\n### B99 — Phantom\n```",
+                        "The template heads findings like this:\n\n"
+                        "````markdown\n```\n### B98 — Nested phantom\n```\n````",
+                    ]
+                )
+            )
+            commit = draw(st.sampled_from(["`abc1234`", "(no commit — omission)"]))
+            rendered.append(
+                f"### {finding_id} — Title {index}{marker} — aie (1/3)\n"
+                f"**Reference:** `src/mod.py:{index}`\n\n"
+                f"**Issue:** {issue}\n\n"
+                f"**Remediation:**\n- [x] Fix it.\n"
+                f"- [ ] Other: ____\n\n"
+                f"**Touched commit:** {commit}\n"
+            )
+        bodies.append("\n".join(rendered))
+
+    return _review_document(
+        blocking=bodies[0],
+        advisory=bodies[1],
+        incidental=bodies[2] if counts["incidental"] else None,
+    )
+
+
+@settings(max_examples=75, deadline=None)
+@given(document=_review_documents())
+def test_render_outline_should_preserve_every_finding_identity(
+    document, tmp_path_factory
+):
+    """Test the outline enumerates exactly what the document does.
+
+    Given:
+        Any review document over the shapes that have broken this parser —
+        fenced bodies, nested fences, paragraphs opening with a bold span,
+        blocking markers on any tier, and an absent incidental tier.
+    When:
+        The document is rendered as an outline and both are parsed.
+    Then:
+        Each finding's identity tuple should be unchanged. The outline is what
+        every endpoint injects, so a finding it drops or re-tiers is a finding
+        the consumer never learns exists.
+    """
+    # Arrange
+    directory = tmp_path_factory.mktemp("outline")
+    source = directory / "review-1.md"
+    source.write_text(document)
+
+    # Act
+    outline = directory / "outline.md"
+    outline.write_text(render_outline(source))
+
+    # Assert
+    def identity(path):
+        return [
+            (f.id, f.severity, f.reference, f.title, f.touched_commit)
+            for f in parse_review_document(path, issue_number=1, iteration=1).findings
+        ]
+
+    assert identity(outline) == identity(source)
+
+
+@settings(max_examples=75, deadline=None)
+@given(document=_review_documents())
+def test_render_outline_should_leave_every_body_empty(document, tmp_path_factory):
+    """Test the outline holds back every body it claims to hold back.
+
+    Given:
+        Any review document over the same generated domain.
+    When:
+        The outline is parsed.
+    Then:
+        Every finding should carry an empty issue and an empty remediation. A
+        body that survives is the saving silently not taken; one that survives
+        PARTLY is worse, because the consumer cannot tell it is reading a
+        fragment.
+    """
+    # Arrange
+    directory = tmp_path_factory.mktemp("outline")
+    source = directory / "review-1.md"
+    source.write_text(document)
+
+    # Act
+    outline = directory / "outline.md"
+    outline.write_text(render_outline(source))
+
+    # Assert
+    parsed = parse_review_document(outline, issue_number=1, iteration=1)
+    assert parsed.findings
+    for finding in parsed.findings:
+        assert not finding.issue.strip(), finding.id
+        assert not finding.remediation.strip(), finding.id
+
+
+@settings(max_examples=50, deadline=None)
+@given(
+    document=_review_documents(),
+    tier=st.sampled_from(
+        ["## Tier 1 — Blocking", "## Tier 2 — Advisory", "## Tier 3 — Incidental"]
+    ),
+)
+def test_parse_review_document_should_refuse_a_duplicate_tier_heading(
+    document, tier, tmp_path_factory
+):
+    """Test a second heading for one tier is refused rather than absorbed.
+
+    Given:
+        Any review document, with one tier heading appended a second time.
+    When:
+        It is parsed.
+    Then:
+        It should raise. A stray second heading files its findings under the
+        wrong tier for every human reader while this parser, which prefers the
+        `**(BLOCKING)**` marker, reports them correctly — so no check that
+        goes through the parser can see the divergence. A real pass shipped 6
+        blocking findings under an Advisory heading this way.
+    """
+    # Arrange
+    assume(tier in document)
+    directory = tmp_path_factory.mktemp("dup")
+    source = directory / "review-1.md"
+    source.write_text(document + f"\n\n{tier}\n\n")
+
+    # Act & assert
+    with pytest.raises(ValueError, match="duplicate tier heading"):
+        parse_review_document(source, issue_number=1, iteration=1)

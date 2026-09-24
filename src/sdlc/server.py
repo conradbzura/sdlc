@@ -258,7 +258,7 @@ def _review_commit_directives(
     return parts
 
 
-def _target_repo_directive(repo: pr_state._Repo) -> str:
+def _target_repo_directive(repo: pr_state.Repo) -> str:
     """Render the target-repo directive for a resolved repository.
 
     The wording is identical across every tool whose skill runs `gh` against
