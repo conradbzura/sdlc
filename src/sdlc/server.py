@@ -681,8 +681,8 @@ async def sdlc_review(
     reviewers with its findings, and rewrites that same document in place. Each
     pass may close a finding whose remediation is present, reject one that does
     not hold up, or add one the current state newly exposes. The chain
-    terminates when no blocking findings remain; advisories carry forward and
-    never gate.
+    terminates when no blocking findings remain; advisory and incidental
+    findings carry forward and neither gates.
 
     Every finding-set mutation is committed separately, with a message
     justifying the state change, to the repository named by the `review-repo`

@@ -1619,9 +1619,10 @@ def test_agents_md_should_state_the_same_blocking_safeguards_as_the_skill():
     When:
         Its re-review consolidation account is read.
     Then:
-        It should carry both safeguards the skill defines, not just the
-        carry-beats-close rule. A reviewer that reads only the weaker version
-        applies the weaker version.
+        It should carry every safeguard the skill defines, not just the
+        carry-beats-close rule, and cover all three ways a blocking finding
+        can leave the termination predicate. A reviewer that reads only the
+        weaker version applies the weaker version.
     """
     # Arrange
     text = AGENTS.read_text()
@@ -1633,6 +1634,8 @@ def test_agents_md_should_state_the_same_blocking_safeguards_as_the_skill():
     assert "two reviewers agreeing" in paragraph
     assert "explicit user confirmation" in paragraph
     assert "quote the remediating text" in paragraph
+    # The third way out of the termination predicate takes the same gate.
+    assert "incidental" in paragraph
 
 
 def test_step8_should_instruct_the_write_that_the_retired_id_rule_depends_on():
