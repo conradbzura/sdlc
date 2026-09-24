@@ -69,13 +69,20 @@ class Findings:
         return "\n".join(lines)
 
 
+# The three severity tiers, in gate order. Only ``blocking`` gates termination;
+# ``advisory`` records debt to pay now or later; ``incidental`` records an
+# observation that does not pertain to the issue the PR closes, deferred rather
+# than dismissed.
+_Severity = Literal["blocking", "advisory", "incidental"]
+
+
 @dataclass(frozen=True)
 class ReviewFinding:
     """A single finding parsed from a local ``.sdlc/reviews`` review document."""
 
     id: str
     title: str
-    severity: Literal["blocking", "advisory"]
+    severity: _Severity
     reference: str
     issue: str
     remediation: str
@@ -102,9 +109,11 @@ class ReviewFindings:
         path is emitted verbatim rather than reconstructed, so a paths-mode
         ``<slug>/review-<#>.md`` document renders correctly (in the
         issue-keyed case ``self.path`` already equals that reconstruction).
-        Findings are emitted blocking first, then advisory, each numbered
-        with its id, severity, reference, title, issue, and pre-selected
-        remediation block.
+        Findings are emitted blocking first, then advisory, then
+        incidental — the order in which a consumer spends attention,
+        since only the first gates and only the last is a deferral. Each
+        is numbered with its id, severity, reference, title, issue, and
+        pre-selected remediation block.
         """
         lines = [f"{label}: {self.path}"]
         if self.issue_number:
@@ -116,6 +125,7 @@ class ReviewFindings:
         ]
         ordered = [f for f in self.findings if f.severity == "blocking"]
         ordered += [f for f in self.findings if f.severity == "advisory"]
+        ordered += [f for f in self.findings if f.severity == "incidental"]
         for index, finding in enumerate(ordered, start=1):
             lines.append("")
             lines.append(
@@ -229,12 +239,21 @@ _PR_URL = re.compile(
 # ``### A1 — Title here — aie (4/10 …)``. The ``**(BLOCKING)**`` marker is
 # optional; the tier section the heading sits under is authoritative for
 # severity, with the marker as a secondary signal.
+#
+# There is deliberately NO ``**(INCIDENTAL)**`` peer. The marker override is
+# **monotone toward blocking**: it can only promote a finding INTO the
+# termination predicate, never out of it, so a stale or misplaced marker costs
+# a wasted pass, which the next round recovers. A marker that demoted would
+# break that property — a stale one left on a Tier 1 heading would drop a
+# blocking finding out of the predicate and the chain would terminate with the
+# defect unaddressed and no trace. Tier 3 membership is by section alone.
 _FINDING_HEADING = re.compile(
     r"^###\s+(?P<id>\S+)\s+—\s+(?P<rest>.*)$",
 )
 _BLOCKING_MARKER = "**(BLOCKING)**"
 _TIER_BLOCKING = re.compile(r"^##\s+Tier\s+1\b.*Blocking", re.IGNORECASE)
 _TIER_ADVISORY = re.compile(r"^##\s+Tier\s+2\b.*Advisory", re.IGNORECASE)
+_TIER_INCIDENTAL = re.compile(r"^##\s+Tier\s+3\b.*Incidental", re.IGNORECASE)
 
 # Fenced code blocks inside a finding's prose hold Markdown samples, and this
 # project's own documents quote review structure: `style-guides/markdown.md`
@@ -390,7 +409,7 @@ def _parse_finding_block(
     finding_id: str,
     rest: str,
     body: str,
-    severity: Literal["blocking", "advisory"],
+    severity: _Severity,
 ) -> ReviewFinding:
     """Build a ``ReviewFinding`` from one finding heading and its body text.
 
@@ -404,7 +423,8 @@ def _parse_finding_block(
         # again on ` — ` would eat the title itself wherever it contains one.
         title = title.split(_BLOCKING_MARKER, 1)[0]
     else:
-        # An advisory heading reads `<title> — <attribution>`. Split on the LAST
+        # An advisory or incidental heading reads `<title> — <attribution>`;
+        # neither carries a marker, so both take this path. Split on the LAST
         # separator so only the attribution goes: titles legitimately contain
         # ` — `, and a leftmost split silently truncates them, which then gets
         # written back to the document on the next in-place re-review.
@@ -576,10 +596,15 @@ def parse_review_document(
     """Parse a local review markdown document into a ``ReviewFindings``.
 
     Splits the document on its severity-tier sections (``## Tier 1 — Blocking``
-    / ``## Tier 2 — Advisory``) and on the per-finding ``### <ID> — <title>``
-    headings, extracting each finding's reference, issue, remediation block,
-    and touched commit. Severity comes from the enclosing tier section, with
-    the ``**(BLOCKING)**`` heading marker as a corroborating signal.
+    / ``## Tier 2 — Advisory`` / ``## Tier 3 — Incidental``) and on the
+    per-finding ``### <ID> — <title>`` headings, extracting each finding's
+    reference, issue, remediation block, and touched commit. Severity comes
+    from the enclosing tier section, with the ``**(BLOCKING)**`` heading marker
+    as a corroborating signal.
+
+    A document carrying only the first two tiers parses exactly as it did
+    before the third existed: ``_TIER_INCIDENTAL`` simply never matches, so no
+    migration is required of a chain already in flight.
     """
     text = Path(path).read_text()
     lines = text.splitlines()
@@ -597,8 +622,8 @@ def parse_review_document(
         )
 
     findings: list[ReviewFinding] = []
-    current_severity: Literal["blocking", "advisory"] | None = None
-    pending: tuple[str, str, Literal["blocking", "advisory"]] | None = None
+    current_severity: _Severity | None = None
+    pending: tuple[str, str, _Severity] | None = None
     body_lines: list[str] = []
 
     def flush() -> None:
@@ -625,11 +650,15 @@ def parse_review_document(
                 flush()
                 current_severity = "advisory"
                 continue
+            if _TIER_INCIDENTAL.match(line):
+                flush()
+                current_severity = "incidental"
+                continue
             heading = _FINDING_HEADING.match(line)
             if heading is not None and current_severity is not None:
                 flush()
                 rest = heading.group("rest")
-                severity: Literal["blocking", "advisory"] = current_severity
+                severity: _Severity = current_severity
                 if _BLOCKING_MARKER in rest:
                     severity = "blocking"
                 pending = (heading.group("id"), rest, severity)
@@ -741,8 +770,8 @@ def _render_github_findings_as_document(
 ) -> str:
     """Render GitHub PR ``Finding``s into the local review-document markdown.
 
-    Produces a template-shaped document — header, blocking/advisory tiers, and
-    one finding per GitHub comment — so it can be parsed back by
+    Produces a template-shaped document — header, all three severity tiers,
+    and one finding per GitHub comment — so it can be parsed back by
     ``parse_review_document``. GitHub review feedback carries no severity, so
     every converted finding lands in the blocking tier with a generic,
     pre-selected ``[x]`` "address the reviewer's comment" remediation plus an
@@ -807,9 +836,22 @@ def _render_github_findings_as_document(
         blocks.append(
             "_No unresolved GitHub review feedback was found on this PR._\n"
         )
-    advisory = ["---", "", "## Tier 2 — Advisory", ""]
+    # Both empty tiers are emitted, not just Tier 2: a re-review rewrites this
+    # document in place and may re-tier a converted finding down, and a section
+    # that is absent has to be hand-created in a shape the parser only accepts
+    # exactly. Writing them costs two lines and removes that step.
+    tiers = [
+        "---",
+        "",
+        "## Tier 2 — Advisory",
+        "",
+        "---",
+        "",
+        "## Tier 3 — Incidental",
+        "",
+    ]
     return "\n".join(header) + "\n\n---\n\n".join(blocks) + "\n\n" + "\n".join(
-        advisory
+        tiers
     )
 
 

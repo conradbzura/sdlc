@@ -18,12 +18,20 @@ from sdlc.pr_state import (
 )
 
 
-def _review_document(blocking="", advisory=""):
+def _review_document(blocking="", advisory="", incidental=None):
     """Build a minimal review-document markdown body with the given tiers.
 
-    ``blocking`` and ``advisory`` are pre-rendered finding blocks (already
-    dedented); each is dropped under its severity tier heading.
+    ``blocking``, ``advisory`` and ``incidental`` are pre-rendered finding
+    blocks (already dedented); each is dropped under its severity tier
+    heading. ``incidental`` defaults to ``None``, which omits the Tier 3
+    section entirely — that is the two-tier shape every document written
+    before the incidental tier existed carries.
     """
+    tier_three = (
+        ""
+        if incidental is None
+        else "## Tier 3 — Incidental\n\n{0}\n\n".format(incidental)
+    )
     return textwrap.dedent(
         """\
         # PR #42 — Round 1 Review
@@ -40,11 +48,11 @@ def _review_document(blocking="", advisory=""):
 
         {advisory}
 
-        ## Cross-cutting decisions
+        {incidental}## Cross-cutting decisions
 
         None.
         """
-    ).format(blocking=blocking, advisory=advisory)
+    ).format(blocking=blocking, advisory=advisory, incidental=tier_three)
 
 
 _BLOCKING_FINDING = textwrap.dedent(
@@ -70,6 +78,19 @@ _ADVISORY_FINDING = textwrap.dedent(
 
     The imports could be grouped more clearly; this is a readability nit.
     - [x] Group stdlib imports first. *(Recommended — readability.)*
+    - [ ] Other: ________________________________________________
+
+    **Touched commit:** `def5678`
+    """
+)
+
+_INCIDENTAL_FINDING = textwrap.dedent(
+    """\
+    ### I1 — Pre-existing None guard is missing — aie (1/10 aie)
+    **Reference:** `src/sdlc/server.py:200`
+
+    The guard predates this PR and no acceptance criterion covers it; recorded as a deferral.
+    - [x] File a follow-up issue. *(Recommended — off-issue for this PR.)*
     - [ ] Other: ________________________________________________
 
     **Touched commit:** `def5678`
@@ -928,6 +949,66 @@ class TestReviewFindings:
         # Assert
         assert rendered.index("Blocking item") < rendered.index("Advisory item")
 
+    def test_format_should_order_incidental_findings_last(self):
+        """Test ReviewFindings.format emits the three tiers in gate order.
+
+        Given:
+            ReviewFindings whose list holds an incidental finding first, then
+            an advisory one, then a blocking one.
+        When:
+            format() is called.
+        Then:
+            The rendered order should be blocking, advisory, incidental — the
+            order in which a consumer should spend attention, since only the
+            first gates and only the last is a deferral.
+        """
+        # Arrange
+        review = ReviewFindings(
+            issue_number=42,
+            iteration=1,
+            path=".sdlc/reviews/issue-#42/review-1.md",
+            findings=[
+                ReviewFinding(
+                    id="I1",
+                    title="Incidental item",
+                    severity="incidental",
+                    reference="`c.py`",
+                    issue="incidental issue",
+                    remediation="- [x] defer",
+                    touched_commit=None,
+                ),
+                ReviewFinding(
+                    id="A1",
+                    title="Advisory item",
+                    severity="advisory",
+                    reference="`a.py`",
+                    issue="advisory issue",
+                    remediation="- [x] tidy",
+                    touched_commit=None,
+                ),
+                ReviewFinding(
+                    id="B1",
+                    title="Blocking item",
+                    severity="blocking",
+                    reference="`b.py:1`",
+                    issue="blocking issue",
+                    remediation="- [x] fix",
+                    touched_commit=None,
+                ),
+            ],
+        )
+
+        # Act
+        rendered = review.format()
+
+        # Assert
+        assert (
+            rendered.index("Blocking item")
+            < rendered.index("Advisory item")
+            < rendered.index("Incidental item")
+        )
+        assert "[incidental] I1" in rendered
+
     def test_format_should_emit_the_documents_actual_path(self):
         """Test ReviewFindings.format emits self.path verbatim in the header.
 
@@ -1102,16 +1183,21 @@ def test_parse_review_document_should_group_findings_by_tier(tmp_path):
     """Test parse_review_document assigns severity from the enclosing tier.
 
     Given:
-        A review document with one finding under each severity tier.
+        A review document with one finding under each of the three severity
+        tiers.
     When:
         parse_review_document is called.
     Then:
-        It should return both findings with the severity of their tier.
+        It should return every finding with the severity of its tier.
     """
     # Arrange
     path = tmp_path / "review-1.md"
     path.write_text(
-        _review_document(blocking=_BLOCKING_FINDING, advisory=_ADVISORY_FINDING)
+        _review_document(
+            blocking=_BLOCKING_FINDING,
+            advisory=_ADVISORY_FINDING,
+            incidental=_INCIDENTAL_FINDING,
+        )
     )
 
     # Act
@@ -1119,7 +1205,96 @@ def test_parse_review_document_should_group_findings_by_tier(tmp_path):
 
     # Assert
     by_id = {f.id: f.severity for f in result.findings}
-    assert by_id == {"B1": "blocking", "A1": "advisory"}
+    assert by_id == {"B1": "blocking", "A1": "advisory", "I1": "incidental"}
+
+
+def test_parse_review_document_should_extract_an_incidental_finding(tmp_path):
+    """Test parse_review_document extracts a Tier 3 finding's fields.
+
+    Given:
+        A review document whose Tier 3 finding states its issue as a bare
+        paragraph, in the same shape Tier 2 uses.
+    When:
+        parse_review_document is called.
+    Then:
+        It should classify the finding as incidental and capture the bare
+        issue text, the remediation checklist and the touched commit.
+    """
+    # Arrange
+    path = tmp_path / "review-1.md"
+    path.write_text(_review_document(incidental=_INCIDENTAL_FINDING))
+
+    # Act
+    result = parse_review_document(path, issue_number=42, iteration=1)
+
+    # Assert
+    assert len(result.findings) == 1
+    finding = result.findings[0]
+    assert finding.id == "I1"
+    assert finding.title == "Pre-existing None guard is missing"
+    assert finding.severity == "incidental"
+    assert finding.reference == "`src/sdlc/server.py:200`"
+    assert "no acceptance criterion covers it" in finding.issue
+    assert "- [x] File a follow-up issue." in finding.remediation
+    assert finding.touched_commit == "`def5678`"
+
+
+def test_parse_review_document_should_read_a_two_tier_document_unchanged(tmp_path):
+    """Test a document written before the incidental tier still parses.
+
+    Given:
+        A review document carrying only Tier 1 and Tier 2 — the shape every
+        document written before the incidental tier existed has.
+    When:
+        parse_review_document is called.
+    Then:
+        It should return exactly the two findings with their original
+        severities, so no migration is required of existing chains.
+    """
+    # Arrange
+    path = tmp_path / "review-1.md"
+    document = _review_document(
+        blocking=_BLOCKING_FINDING, advisory=_ADVISORY_FINDING
+    )
+    assert "Tier 3" not in document
+    path.write_text(document)
+
+    # Act
+    result = parse_review_document(path, issue_number=42, iteration=1)
+
+    # Assert
+    assert [(f.id, f.severity) for f in result.findings] == [
+        ("B1", "blocking"),
+        ("A1", "advisory"),
+    ]
+
+
+def test_parse_review_document_should_promote_a_marked_finding_in_the_incidental_tier(
+    tmp_path,
+):
+    """Test the blocking marker still outranks a Tier 3 section heading.
+
+    Given:
+        A finding carrying the BLOCKING marker that sits under Tier 3 —
+        a re-tier that moved the finding but not its marker.
+    When:
+        parse_review_document is called.
+    Then:
+        It should classify the finding as blocking. The marker override is
+        monotone toward blocking, so a stale marker costs a wasted pass
+        rather than dropping a finding out of the termination predicate.
+    """
+    # Arrange
+    path = tmp_path / "review-1.md"
+    stale = _BLOCKING_FINDING.replace("### B1", "### B4")
+    path.write_text(_review_document(incidental=stale))
+
+    # Act
+    result = parse_review_document(path, issue_number=42, iteration=1)
+
+    # Assert
+    assert result.findings[0].id == "B4"
+    assert result.findings[0].severity == "blocking"
 
 
 def test_parse_review_document_should_separate_adjacent_findings(tmp_path):
@@ -1723,6 +1898,44 @@ def test_convert_pr_review_to_document_should_write_and_round_trip(
     bodies = " ".join(f.issue for f in result.findings)
     assert "rename foo to bar" in bodies
     assert "Fix the doc gap." in bodies
+
+
+def test_convert_pr_review_to_document_should_carry_an_empty_incidental_tier(
+    tmp_path, monkeypatch
+):
+    """Test a converted document carries all three tier sections.
+
+    Given:
+        A GitHub PR URL whose review feedback converts into a local document.
+    When:
+        convert_pr_review_to_document is called.
+    Then:
+        The written document should carry an empty Tier 3 section, so a later
+        re-review can re-tier a finding into it without hand-editing the
+        document into a shape the parser has to guess at.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    reviews = [{"author": {"login": "bob"}, "body": "Fix the doc gap."}]
+    responses = {
+        _closing_graphql_args("conradbzura", "sdlc", 42): _closing_payload([7]),
+        _graphql_args("conradbzura", "sdlc", 42): _graphql_payload([]),
+        ("pr", "view", "42", "--json", "reviews"): _reviews_payload(reviews),
+    }
+    monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
+    repo = pr_state._Repo(owner="conradbzura", name="sdlc", repo_flag=None)
+
+    # Act
+    pr_state.convert_pr_review_to_document(
+        "https://github.com/conradbzura/sdlc/pull/42", repo=repo
+    )
+
+    # Assert
+    written = tmp_path / ".sdlc" / "reviews" / "issue-#7" / "review-1.md"
+    text = written.read_text()
+    assert "## Tier 2 — Advisory" in text
+    assert "## Tier 3 — Incidental" in text
+    assert text.index("## Tier 2 — Advisory") < text.index("## Tier 3 — Incidental")
 
 
 def test_convert_pr_review_to_document_should_use_the_next_iteration(
