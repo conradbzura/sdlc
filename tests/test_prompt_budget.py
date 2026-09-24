@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from sdlc.pr_state import parse_review_document
 from sdlc.server import _review_skill, _strip_rereview, sdlc_review
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +51,12 @@ FRESH_PROMPT_BUDGET = 106_000
 REREVIEW_PROMPT_BUDGET = 130_000
 # Splitting the file is not licence to write more prose overall.
 COMBINED_BUDGET = 170_000
+
+# The share of a full render that the disclosed block may cost. The review
+# document outgrew the skill without anyone measuring it — 108,405 bytes for
+# 55 findings, against a 102,452-byte fresh prompt — because nothing budgeted
+# the one artifact that grows with every pass of every chain.
+DISCLOSURE_SHARE = 0.60
 
 REMEDY = (
     "Design rationale belongs in src/sdlc/review-rationale.md "
@@ -366,3 +373,63 @@ def test_other_skills_should_stay_within_their_budget(skill, budget):
     assert skill.stat().st_size <= budget, (
         f"{skill.name} is {skill.stat().st_size - budget} bytes over budget"
     )
+
+
+def _synthetic_review_document(findings: int) -> str:
+    """Build a review document with `findings` blocking findings."""
+    blocks = []
+    for n in range(1, findings + 1):
+        blocks.append(
+            f"### B{n} — A finding with a reasonably typical title **(BLOCKING)** "
+            f"— general-purpose (1/1)\n"
+            f"**Reference:** `src/sdlc/module_{n}.py:{n * 7}`\n\n"
+            "**Issue:** " + ("Evidence prose that states the defect concretely. " * 12)
+            + "\n\n**Remediation:**\n"
+            "- [x] Do the recommended thing. *(Recommended — it is the fix.)*\n"
+            "- [ ] Do the alternative thing.\n"
+            "- [ ] Other: ________________________________________________\n\n"
+            f"**Touched commit:** `abc{n:04d}`\n"
+        )
+    return (
+        "# PR #1 — Round 1 Review\n\n**Pass 1** — "
+        f"{findings} blocking, 0 advisory, 0 incidental open.\n\n"
+        "---\n\n## Tier 1 — Blocking\n\n"
+        + "\n---\n\n".join(blocks)
+        + "\n## Tier 2 — Advisory\n\n## Cross-cutting decisions\n\nNone.\n"
+    )
+
+
+def test_the_disclosed_document_should_cost_a_fraction_of_the_full_render(tmp_path):
+    """Test the review document is disclosed rather than dumped.
+
+    Given:
+        A fifty-finding review document, the size a chain reaches after a
+        few passes.
+    When:
+        The block both endpoints inject is compared with the full render
+        they used to inject.
+    Then:
+        It should cost a fraction of it while still naming every finding.
+        This is the first budget on the review document, which outgrew the
+        skill precisely because nothing measured it.
+    """
+    # Arrange
+    path = tmp_path / "review-1.md"
+    path.write_text(_synthetic_review_document(50))
+    parsed = parse_review_document(path, issue_number=1, iteration=1)
+
+    # Act
+    disclosed = parsed.disclose()
+    full = parsed.format()
+
+    # Assert
+    assert len(disclosed) <= DISCLOSURE_SHARE * len(full), (
+        f"the disclosed block is {len(disclosed):,} bytes against a "
+        f"{len(full):,}-byte full render — over the "
+        f"{DISCLOSURE_SHARE:.0%} share. Finding bodies belong behind "
+        "`sdlc_review_findings`, not in the injected block."
+    )
+    # And the enumeration is whole, which is what makes the elision safe.
+    for n in range(1, 51):
+        assert f"### B{n} —" in disclosed, n
+    assert disclosed.count("body elided") == 50
