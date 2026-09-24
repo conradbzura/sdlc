@@ -47,6 +47,16 @@ def _section(text: str, heading: str) -> str:
     return text[start:end]
 
 
+def _line(text: str, prefix: str) -> str:
+    """Return the single line starting with `prefix`.
+
+    Markdown prose here is never hard-wrapped, so a block-level element is one
+    line and can be asserted on without a section scan picking up its
+    neighbours.
+    """
+    return next(line for line in text.splitlines() if line.startswith(prefix))
+
+
 def _bash_blocks(text: str) -> list[str]:
     """Return every ```bash fenced block in `text`, in order.
 
@@ -2181,6 +2191,81 @@ def test_pass_line_should_count_findings_carried_unexamined():
     assert "carried unexamined <u>" in template
     assert "carried without re-examination" in _step8()
     assert "carried WITHOUT re-examination" in _skill_text()
+
+
+def test_the_template_should_carry_an_incidental_tier():
+    """Test the document shape has somewhere to record a deferral.
+
+    Given:
+        A finding that is real but does not pertain to the originating issue.
+    When:
+        The review template is read.
+    Then:
+        It should carry a Tier 3 section after Tier 2, with the pass line
+        counting its open findings, so the observation is recorded without
+        holding the chain open.
+    """
+    # Arrange
+    template = TEMPLATE.read_text()
+
+    # Act & assert
+    assert "## Tier 3 — Incidental" in template
+    assert template.index("## Tier 2 — Advisory") < template.index(
+        "## Tier 3 — Incidental"
+    )
+    assert "<I> incidental" in template
+
+
+def test_the_template_should_define_the_tiers_by_what_a_finding_is():
+    """Test the severity legend is about the work, not about approval.
+
+    Given:
+        Both original tiers were glossed by their effect on approval, which
+        says nothing about whether a finding pertains to the issue.
+    When:
+        The severity legend is read.
+    Then:
+        Each tier should be defined by what the finding is — a correctness
+        or incorrect-intent defect, technical debt, or an observation off
+        the issue — and relevance should be named as what separates the
+        third from the other two.
+    """
+    # Arrange
+    legend = _line(TEMPLATE.read_text(), "**Severity legend**")
+
+    # Act & assert
+    assert "incorrect intent" in legend
+    assert "technical debt" in legend
+    assert "does not pertain to the originating issue" in legend
+    assert "not role-relative" in legend
+    # A deferral, not a dismissal: the evidence survives.
+    assert "deferral" in legend and "dismissal" in legend
+
+
+def test_the_template_should_give_the_incidental_tier_no_heading_marker():
+    """Test the third tier is not given a demoting heading marker.
+
+    Given:
+        The BLOCKING marker outranks the enclosing tier, and that override
+        only ever promotes a finding into the termination predicate.
+    When:
+        The template's re-tiering rule is read.
+    Then:
+        It should forbid an INCIDENTAL peer outright, since a stale demoting
+        marker would drop a blocking finding out of the predicate silently
+        rather than costing a recoverable wasted pass.
+    """
+    # Arrange
+    template = TEMPLATE.read_text()
+    rule = _line(template, "**Re-tiering**")
+
+    # Act & assert
+    assert "**(INCIDENTAL)**" in rule and "MUST NOT be introduced" in rule
+    assert "by section alone" in rule
+    # And nowhere does the template model one on a heading.
+    headings = [line for line in template.splitlines() if line.startswith("### ")]
+    assert headings
+    assert not any("(INCIDENTAL)" in line for line in headings)
 
 
 def test_subagent_brief_should_request_every_declared_artifact():

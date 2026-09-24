@@ -737,7 +737,7 @@ async def test_sdlc_review_should_inline_review_template(monkeypatch):
     When:
         sdlc_review(pr_number=10) is called.
     Then:
-        It should include the template's blocking and advisory tier headings.
+        It should include all three of the template's severity-tier headings.
     """
     # Arrange
     monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
@@ -748,6 +748,7 @@ async def test_sdlc_review_should_inline_review_template(monkeypatch):
     # Assert
     assert "## Tier 1 — Blocking" in result
     assert "## Tier 2 — Advisory" in result
+    assert "## Tier 3 — Incidental" in result
 
 
 @pytest.mark.asyncio
@@ -992,7 +993,7 @@ async def test_sdlc_review_paths_mode_should_inline_review_template():
     When:
         sdlc_review(paths=["src/sdlc/server.py"]) is called.
     Then:
-        It should include the template's blocking and advisory tier headings.
+        It should include all three of the template's severity-tier headings.
     """
     # Act
     result = await sdlc_review(paths=["src/sdlc/server.py"])
@@ -1000,6 +1001,7 @@ async def test_sdlc_review_paths_mode_should_inline_review_template():
     # Assert
     assert "## Tier 1 — Blocking" in result
     assert "## Tier 2 — Advisory" in result
+    assert "## Tier 3 — Incidental" in result
 
 
 @pytest.mark.asyncio
@@ -1391,7 +1393,7 @@ async def test_sdlc_review_should_inline_the_template_when_rereviewing(
     When:
         sdlc_review(pr_number=10, verify=1) is called.
     Then:
-        It should include the template's blocking and advisory tier headings.
+        It should include all three of the template's severity-tier headings.
     """
     # Arrange
     monkeypatch.chdir(tmp_path)
@@ -1404,6 +1406,7 @@ async def test_sdlc_review_should_inline_the_template_when_rereviewing(
     # Assert
     assert "## Tier 1 — Blocking" in result
     assert "## Tier 2 — Advisory" in result
+    assert "## Tier 3 — Incidental" in result
 
 
 @pytest.mark.asyncio
@@ -2104,7 +2107,7 @@ async def test_review_template_should_return_template_content():
     When:
         review_template() is called.
     Then:
-        It should return the blocking and advisory severity-tier headings.
+        It should return all three severity-tier headings.
     """
     # Act
     result = await review_template()
@@ -2112,6 +2115,7 @@ async def test_review_template_should_return_template_content():
     # Assert
     assert "## Tier 1 — Blocking" in result
     assert "## Tier 2 — Advisory" in result
+    assert "## Tier 3 — Incidental" in result
 
 
 @pytest.mark.asyncio
