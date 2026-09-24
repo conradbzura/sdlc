@@ -88,3 +88,24 @@ def test_the_ordering_invariant_should_cover_the_incidental_tier():
 
     # Act & assert
     assert "incidental" in invariant.lower()
+
+
+def test_a_remediation_with_no_owning_commit_should_get_a_new_commit():
+    """Test the fixup block handles a finding that creates code.
+
+    Given:
+        A finding can now report a change that was never made, so its
+        remediation writes code no commit on the branch owns.
+    When:
+        The fixup-command step is read.
+    Then:
+        It should branch to an ordinary commit for that case, rather than
+        emitting `--fixup` against a sha that does not exist.
+    """
+    # Arrange
+    step = _section(_skill_text(), "### 8. Emit fixup commands after each remediation")
+
+    # Act & assert
+    assert "no commit — omission" in step
+    assert "--fixup" in step
+    assert "new commit" in step

@@ -2326,6 +2326,76 @@ def test_the_brief_should_direct_a_sweep_for_changes_that_were_never_made():
     assert "identify the code that should satisfy it" in brief
 
 
+def test_step8_should_validate_the_role_a_finding_is_attributed_to():
+    """Test the confinement invariant is checked and not merely instructed.
+
+    Given:
+        Reviewers now extend their own scope, so the role glob is the only
+        mechanical bound left and the brief is the only thing that had ever
+        enforced it.
+    When:
+        Step 8's consolidation rules are read.
+    Then:
+        They should re-run `sdlc_role_scope` per finding and re-attribute an
+        out-of-map finding rather than drop it — losing a real finding to a
+        bookkeeping rule is the worse of the two failures.
+    """
+    # Arrange
+    rule = _line(_step8(), "- **Validate each finding's attribution**")
+
+    # Act & assert
+    assert "sdlc_role_scope" in rule
+    assert "NOT dropped" in rule
+    assert "re-attribute" in rule.lower()
+
+
+def test_a_finding_with_no_owning_commit_should_still_be_attributable():
+    """Test an omission can be recorded where every finding needs a commit.
+
+    Given:
+        A change that was never made has no commit that touched it, and
+        every PR-mode finding carries a `Touched commit`.
+    When:
+        Step 8's attribution rule, the template and the fixup mapping are
+        read.
+    Then:
+        All three should carry the omission form, and the fixup mapping
+        should route it to a new commit rather than to a fixup against a
+        commit that does not exist.
+    """
+    # Arrange
+    rule = _line(_step8(), "- **(PR mode) Attribute each finding to a commit**")
+    template = TEMPLATE.read_text()
+
+    # Act & assert
+    assert "(no commit — omission)" in rule
+    assert "(no commit — omission)" in template
+    assert "new commit" in rule
+    assert "new commit" in _section(template, "## Fixup mapping")
+
+
+def test_the_document_should_record_scope_extensions():
+    """Test a widened scope is auditable after the fact.
+
+    Given:
+        Reviewers may now admit files the PR never touched, on their own
+        judgement.
+    When:
+        The template's header is read.
+    Then:
+        It should record, per role, the globs that scoped it and any file
+        admitted by extension with the criterion that admitted it — so a
+        later pass can see what was reviewed and why.
+    """
+    # Arrange
+    scope_line = _line(TEMPLATE.read_text(), "**Scope**")
+
+    # Act & assert
+    assert "globs" in scope_line
+    assert "extension" in scope_line
+    assert "criterion" in scope_line
+
+
 def _step2() -> str:
     return _section(_skill_text(), "### 2. Acquire the review targets")
 

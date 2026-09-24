@@ -182,6 +182,8 @@ git commit --fixup=<sha>      # <commit subject as appears in git log>
 
 **Fixup vs new commit:** Prefer `git commit --fixup=<sha>` when the remediation touches code that already belongs to an existing commit on the branch. An autosquash rebase later folds these in cleanly. Net-new commits are warranted ONLY when the remediation introduces an entirely new subsystem, feature, or concept. If the remediation *replaces* something already in a prior commit, fixup that prior commit instead.
 
+**A finding whose `Touched commit` reads `(no commit — omission)`** reports a change that was never made, so no commit on the branch owns the surface and `git log ... -- <file>` returns nothing. Emit an ordinary `git commit` with a conventional subject for it, not a `--fixup` against a sha you had to invent — the mapping is only useful if the user can paste it. Where the review grouped the finding under an existing commit instead (the criterion's related work has an owner), fixup that one as usual.
+
 The agent MUST NOT execute these commands. The user reviews and runs them.
 
 ### 9. Prompt the user to run `sdlc_commit`

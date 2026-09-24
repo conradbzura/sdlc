@@ -2,7 +2,7 @@
 
 **Pass <k>** — <B> blocking, <A> advisory, <I> incidental open. Closed <c>, rejected <r>, added <a>, carried unexamined <u> this pass.
 
-Generated from a `<reviewers-per-role>`-reviewer review of PR #<N> (`<head-ref>` → `<base-ref>`, Closes #<issue>) at HEAD `<sha>`. Composition: `<reviewers-per-role>` reviewer(s) per role across role(s) `<role-a>`, `<role-b>`, … (`<reviewers-per-role> × <role-count>` reviewer subagents total). Findings are deduped within each role, merged across roles, and grouped by severity tier (blocking first). Each role's findings are confined to the files mapped to it in `guide-map.role`; any file may be read for context. Note for each role which globs scoped it and which files in this PR fell in scope.
+Generated from a `<reviewers-per-role>`-reviewer review of PR #<N> (`<head-ref>` → `<base-ref>`, Closes #<issue>) at HEAD `<sha>`. Composition: `<reviewers-per-role>` reviewer(s) per role across role(s) `<role-a>`, `<role-b>`, … (`<reviewers-per-role> × <role-count>` reviewer subagents total). Findings are deduped within each role, merged across roles, and grouped by severity tier (blocking first). Each role's findings are confined to the files mapped to it in `guide-map.role`; any file may be read for context. The Scope line below records what each role actually covered.
 
 **Pass line** — `<k>` is how many review passes have run against this document (1 on the round that created it, incremented by each `--verify` re-review). The open counts describe the finding set below, one per tier; the deltas describe what this pass changed and are NOT per tier — `<c>`, `<r>` and `<a>` count findings across all three tiers, since a closure is a closure whichever tier it left, and a finding re-tiered rather than removed is none of the three. `<u>` counts findings carried WITHOUT re-examination — either because their originating role was absent from this pass's role list, or because a reviewer that WAS dispatched returned no disposition for them. They are open and blocking as usual, but nobody looked at them this round, so the count is stated rather than left implicit, and the two causes are recorded separately because they have different remedies. A closed finding leaves the document entirely, with the reason recorded in the commit that removed it; a rejected one leaves the tiers but is recorded in the ledger below, so a later pass cannot re-raise it as new without saying so.
 
@@ -11,6 +11,10 @@ Generated from a `<reviewers-per-role>`-reviewer review of PR #<N> (`<head-ref>`
 **Phase-1 blindness** — <"Structural for every role" when each reviewer was dispatched in two turns with no seeded text in the first, which is the normal case. Otherwise name the roles run INLINE, where there is no separate phase-1 prompt to withhold the seeded set from: for those roles the ordering is instructional only, and an independent rediscovery is recorded as ordinary agreement rather than outranking a close.>
 
 **Dedup approach** — Within a role, the consolidator collapses findings that name the same defect at the same reference into one (recording the reviewer agreement count, e.g. `4/5 reviewers`). Across roles, findings about the same defect are merged into a single entry that records every role that raised it; the entry takes the **highest** severity any role assigned, ranking `blocking > advisory > incidental`, and dissent (a role that rated it lower, or did not raise it) is noted inline. One split is not settled that way: **Blocking against Incidental** is a disagreement about relevance rather than about severity — whether the issue asked for the work is a fact about the issue, identical for every role — so it is resolved against the originating issue's acceptance criteria, the criterion the finding traces to (or the absence of one) is recorded, and the finding stays blocking until it is.
+
+**Scope** — per role: the `guide-map.role` globs that scoped it, the files of this PR that fell in scope, and — listed separately — any file admitted by **extension**, with the acceptance criterion that admitted it. Scope is the code logically related to the issue's expected outcomes whether or not this PR touched it, so a reviewer may reach a file the diff does not contain; recording the criterion beside it is what makes the widening auditable, and a file listed here with no criterion is scope creep that a later pass should question. Context is the whole repository and is not recorded — reading is unrestricted and produces nothing to audit. *(Paths mode: the matched files are the scope; there is nothing to extend and no criterion to cite.)*
+
+- `<role>` — globs `<glob>`, `<glob>`; in scope `<file>`, `<file>`; by extension `<file>` (criterion #<n>)
 
 **Re-tiering** — a finding that changes tier keeps its id and moves between the sections below, and the `**(BLOCKING)**` marker in its heading MUST move with it: strip the marker when a finding moves to Tier 2 or Tier 3, add it when one moves to Tier 1. The parser reads that marker as authoritative OVER the enclosing tier, so a Tier 2 or Tier 3 finding that kept its marker is re-seeded as blocking on the next pass and the chain can never terminate. There is deliberately **no `**(INCIDENTAL)**` marker** and one MUST NOT be introduced: the blocking marker's override only ever promotes a finding INTO the termination predicate, so a stale one costs a wasted pass the next round recovers, whereas a marker that demoted would let a stale heading drop a blocking finding OUT of the predicate silently. Tier 3 membership is by section alone.
 
@@ -37,7 +41,7 @@ Generated from a `<reviewers-per-role>`-reviewer review of PR #<N> (`<head-ref>`
 
 **Tests to add:** <Optional — the test(s) that would catch a regression of this finding. Omit the whole line when none apply.>
 
-**Touched commit:** `<sha>`
+**Touched commit:** `<sha>` *(PR mode. Use `(no commit — omission)` for a finding that reports a change which was never made: no commit touched the file, which is what the finding says.)*
 
 ---
 
@@ -95,7 +99,8 @@ Generated from a `<reviewers-per-role>`-reviewer review of PR #<N> (`<head-ref>`
 
 ## Fixup mapping
 
-<For each blocking finding (and any advisory the user elects to fix), the commit its remediation should be folded into, so the fixup pass can `git commit --fixup=<sha>` against the right target. Group findings by the commit they touch.>
+<For each blocking finding (and any advisory the user elects to fix), the commit its remediation should be folded into, so the fixup pass can `git commit --fixup=<sha>` against the right target. Group findings by the commit they touch. A finding whose `Touched commit` is `(no commit — omission)` needs a **new commit** rather than a fixup — there is no sha to fold into, and emitting one the user cannot run wastes the mapping. Group those together under the heading below.>
 
 - `<sha>` (`<conventional-commit subject>`) — B1, B2, A1
 - `<sha>` (`<conventional-commit subject>`) — B3
+- **new commit** (no owning commit — these findings report work that was never done) — B4
