@@ -40,10 +40,16 @@ SERVER = ROOT / "src/sdlc/server.py"
 # promoted into the skill because a rule was missed mid-document — which is
 # what the rationale resource exists to absorb. A raise is a deliberate,
 # reviewable act; that is the whole point of the budget, not a defect in it.
-FRESH_PROMPT_BUDGET = 100_000
+#
+# Raised a second time, for the context/scope definitions. Worth recording
+# what the two raises have cost together: #37 cut the assembled fresh prompt
+# from 138,587 to 85,790 bytes, and the two features since have spent most of
+# that back. If a third feature needs a third raise, the answer is another
+# extraction pass, not another number.
+FRESH_PROMPT_BUDGET = 106_000
 REREVIEW_PROMPT_BUDGET = 130_000
 # Splitting the file is not licence to write more prose overall.
-COMBINED_BUDGET = 160_000
+COMBINED_BUDGET = 170_000
 
 REMEDY = (
     "Design rationale belongs in src/sdlc/review-rationale.md "

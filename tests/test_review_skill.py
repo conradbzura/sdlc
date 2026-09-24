@@ -2276,6 +2276,56 @@ def test_the_confinement_invariant_should_defer_to_the_scope_definition():
     assert "step 8" in invariant
 
 
+def test_the_brief_should_seed_scope_rather_than_bound_it():
+    """Test the changed files start the reviewer off instead of fencing it in.
+
+    Given:
+        `sdlc_role_scope` can only ever return changed files, so treating
+        its result as the boundary is what put a missing change out of
+        reach.
+    When:
+        Step 5 and the reviewer brief are read.
+    Then:
+        Both should call that set a seed, and the brief should authorize
+        extension to any file the role covers that is related to a
+        criterion — naming the criterion that admits it.
+    """
+    # Arrange
+    step5 = _section(_skill_text(), "### 5. Resolve each role's lens and mapped files")
+    brief = _step7()
+
+    # Act & assert
+    assert "seed" in step5
+    assert "not the boundary" in step5
+    assert "starting point" in brief
+    assert "name the criterion" in brief
+    # The hard outer bound survives the widening.
+    assert "guide-map.role" in brief
+
+
+def test_the_brief_should_direct_a_sweep_for_changes_that_were_never_made():
+    """Test a reviewer is sent looking for what is absent, not just present.
+
+    Given:
+        A change an acceptance criterion required and nobody made leaves no
+        trace in the diff, so nothing in a diff-driven review surfaces it.
+    When:
+        The reviewer brief is read.
+    Then:
+        It should direct a per-criterion sweep — identify the code that
+        should satisfy each criterion and verify it does — and name the
+        missing change as a finding in its own right.
+    """
+    # Arrange
+    brief = _step7()
+
+    # Act & assert
+    assert "should have been made and was not" in brief
+    assert "first-class finding" in brief
+    assert "verify that it does" in brief
+    assert "identify the code that should satisfy it" in brief
+
+
 def _step2() -> str:
     return _section(_skill_text(), "### 2. Acquire the review targets")
 
