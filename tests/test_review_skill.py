@@ -2420,6 +2420,31 @@ def test_pass_line_should_count_incidental_findings():
     # Act & assert
     assert "<I> incidental" in template
     assert "incidental (`<I>`)" in counting
+    # The deltas are not per tier, and the document says so rather than
+    # leaving a reader to infer whether `<c>` covers a closed deferral.
+    pass_line = _line(template, "**Pass line**")
+    assert "across all three tiers" in pass_line
+
+
+def test_the_dedup_rule_should_carry_the_relevance_exception():
+    """Test the document states the split highest-severity-wins cannot settle.
+
+    Given:
+        The template's dedup paragraph is what a later pass reads to learn
+        how cross-role disagreement was resolved.
+    When:
+        It is read.
+    Then:
+        It should name Blocking-versus-Incidental as a relevance question
+        settled against the acceptance criteria, not by ranking the tiers.
+    """
+    # Arrange
+    dedup = _line(TEMPLATE.read_text(), "**Dedup approach**")
+
+    # Act & assert
+    assert "relevance" in dedup
+    assert "acceptance criteri" in dedup
+    assert "stays blocking" in dedup
 
 
 def test_termination_should_report_advisory_and_incidental_separately():
