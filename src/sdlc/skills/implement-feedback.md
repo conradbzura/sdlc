@@ -35,8 +35,9 @@ This skill does **not** use the structured planning interface (`EnterPlanMode` f
 ## Invariants
 
 - MUST verify the server-supplied finding enumeration by re-reading the LOCAL review document the endpoint named before walking through findings.
-- MUST order findings by the canonical severity sequence (correctness → code quality → integration tests → unit tests → style → docs), within which the document's own blocking-before-advisory tiering is honored.
-- MUST track findings as a todo list, one task per finding, kept visible to the user.
+- MUST order findings by the canonical severity sequence (correctness → code quality → integration tests → unit tests → style → docs), within which the document's own tiering — blocking, then advisory, then incidental — is honored.
+- MUST walk Tier 1 and Tier 2 findings only. An **incidental** finding does not pertain to the issue this PR closes; it is reported as a deferral already recorded in the review document and MUST NOT be walked through the per-finding approval gate, because remediating it here is the scope creep the tier exists to prevent.
+- MUST track findings as a todo list, one task per walked finding, kept visible to the user.
 - MUST present findings sequentially. For each finding the agent MUST restate the finding with its `Reference` (which may be `file:line`, a whole-file path, or an issue-level reference), evaluate correctness/relevance, present the document's pre-selected `[x]` remediation as the recommended option (alongside any alternatives), and wait for explicit user approval before editing.
 - MUST NOT auto-commit. After each approved remediation, MUST emit a copy-paste-able `git commit --fixup=<sha>` block mapping each touched file back to the commit on the branch that owns that surface. The agent MUST NOT execute these commands.
 - MUST prompt the user to run `sdlc_commit` when they are ready to commit the accumulated remediations.
@@ -45,7 +46,7 @@ This skill does **not** use the structured planning interface (`EnterPlanMode` f
 
 ## Arguments
 
-The MCP endpoint supplies a rendered review-document block appended below this skill prompt. The block carries the source document path (`.sdlc/reviews/issue-#<N>/review-<iteration>.md`), the issue number, the iteration, and the enumerated findings — each with its id, severity, `Reference`, title, issue, and pre-selected remediation, ordered blocking before advisory. The document was selected by the `--review` argument: the latest iteration by default, an explicit `--review <int>` iteration, or a document just converted from a `--review <pr-url>` (in which case each finding carries a generic pre-selected "address the reviewer's comment" remediation that the user disambiguates per finding). The agent MUST treat the rendered block as a starting point and re-read the named local document (step 3) to confirm completeness before walking through findings. The endpoint also appends a `Target repo: <id>` directive identifying the repository for `gh` commands that reference issues or PRs (the upstream `<owner>/<name>` when the current repo is a fork, otherwise the current repo); consume it in step 1 rather than re-deriving the target repo.
+The MCP endpoint supplies a rendered review-document block appended below this skill prompt. The block carries the source document path (`.sdlc/reviews/issue-#<N>/review-<iteration>.md`), the issue number, the iteration, and the enumerated findings — each with its id, severity, `Reference`, title, issue, and pre-selected remediation, ordered blocking, then advisory, then incidental. The document was selected by the `--review` argument: the latest iteration by default, an explicit `--review <int>` iteration, or a document just converted from a `--review <pr-url>` (in which case each finding carries a generic pre-selected "address the reviewer's comment" remediation that the user disambiguates per finding). The agent MUST treat the rendered block as a starting point and re-read the named local document (step 3) to confirm completeness before walking through findings. The endpoint also appends a `Target repo: <id>` directive identifying the repository for `gh` commands that reference issues or PRs (the upstream `<owner>/<name>` when the current repo is a fork, otherwise the current repo); consume it in step 1 rather than re-deriving the target repo.
 
 ## Subagent Execution (Optional)
 
@@ -114,16 +115,17 @@ cat .sdlc/reviews/issue-#<N>/review-<iteration>.md
 
 This is a local artifact `sdlc_review` (or a `--review <pr-url>` conversion) wrote; nothing is re-queried from GitHub. The document is the authoritative finding set for this round — there is no GitHub `isResolved` state to consult, because the review was never posted to GitHub.
 
-The findings are recorded in the document under two severity tiers and BOTH MUST be enumerated:
+The findings are recorded in the document under up to three severity tiers and ALL of them MUST be enumerated — a tier you do not read is a tier you cannot report:
 
-- **Tier 1 — Blocking** — defects that MUST be resolved before approval per the raising role's blocking policy.
-- **Tier 2 — Advisory** — clarity, consistency, or quality observations that do not gate approval; the user elects which to fix.
+- **Tier 1 — Blocking** — a correctness defect, or an implementation that does something other than what the issue asked for. Gates approval.
+- **Tier 2 — Advisory** — on-issue work that adds to technical debt if it is not addressed now; the user elects which to fix.
+- **Tier 3 — Incidental** — a real observation about a file this PR happens to touch, not about the work the issue specified. Recorded as a deferral, carried as a candidate for a future issue, and not remediated here. Absent from documents written before this tier existed, and from paths-mode documents, which have no originating issue.
 
 Each finding carries a stable id, a `Reference` (a `file:line` citation, a whole-file path, or an issue-level reference for line-less findings), an `Issue` section with evidence, and a `Remediation` checklist whose pre-selected `[x]` option is the consolidator's recommendation. If re-reading the document surfaces findings the rendered block abbreviated or omitted, work from the document — it is the source of truth.
 
 ### 4. Order findings by severity
 
-Sort the verified findings by the canonical severity sequence so downstream remediations may be obviated by upstream fixes:
+Sort the verified findings **that will be walked** — Tier 1 and Tier 2 — by the canonical severity sequence, so downstream remediations may be obviated by upstream fixes:
 
 1. Correctness bugs in source
 2. Code quality / hygiene in source
@@ -150,6 +152,8 @@ Before walking through findings, MUST read enough of the codebase to evaluate th
 
 ### 7. Walk through findings sequentially
 
+The walk covers **Tier 1 and Tier 2 only**. Tier 3 findings are **not walked** — see the report at the end of this step.
+
 For each finding, in severity order:
 
 1. **Restate the finding** with its `Reference` (which may be a `file:line` citation, a whole-file path, or an issue-level reference such as `issue acceptance criterion #3`), its id, and its `Issue` text. Mark the corresponding todo as in-progress.
@@ -158,6 +162,8 @@ For each finding, in severity order:
 4. **Wait for explicit user approval** before editing. Allow the user to push back, ask clarifying questions, or pick a different option (including `Other:`). The agent MUST NOT edit any file before approval is given.
 5. **Implement the approved option.** Edit only the files in scope of the approved option.
 6. **Mark the todo complete** after the user confirms the remediation looks right (or after step 8's fixup-command block has been emitted, whichever the user prefers).
+
+**After the walk — report the deferrals.** When the document carries a Tier 3 section, list those findings once, together, after the walk: id, title and `Reference` each. Say that they are **not remediated in this PR** — each is a deferral the review already recorded, with its evidence intact, against a file this PR happens to touch rather than against the work the issue specified. Do not create a todo for them, do not propose a remediation, and do not open an approval gate: a deferral walked like a finding is the scope creep the tier exists to prevent, and the pre-selected `[x]` option on an incidental finding is advice for whoever picks it up later, not a proposal for now. If the user wants one addressed anyway, that is their call to make against a document they can see — not a default of this walk.
 
 ### 8. Emit fixup commands after each remediation
 
