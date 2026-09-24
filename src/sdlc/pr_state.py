@@ -782,6 +782,24 @@ _OUTLINE_KEEP = ("**Reference:**", "**Touched commit:**", "**Tests to add:**")
 # supply a body it never read.
 _ELIDED = "_(body elided — fetch with `sdlc_review_findings`)_"
 
+# `## Pass <k> — cross-cutting decisions`. These accumulate: a chain writes one
+# per pass and they roughly double each round, so by the time a review has run
+# several passes the superseded ones outweigh the findings. Only the current
+# pass's decisions are operative — the rest are history, and history that is
+# re-read on every pass is history nobody asked for.
+_PASS_SECTION = re.compile(
+    r"^##\s+Pass\s+(?P<pass>\d+)\s+—.*cross-cutting", re.IGNORECASE
+)
+_PASS_LINE = re.compile(r"^\*\*Pass\s+(?P<pass>\d+)\*\*")
+
+# A section elided because a later pass superseded it. Unlike a finding body
+# there is no fetch for this — it is prose, not an addressable finding — so the
+# marker says to read the document, which the block names directly above.
+_SUPERSEDED = (
+    "_(superseded by a later pass — elided; read the review document itself "
+    "if you need it)_"
+)
+
 
 def render_outline(path: str | Path) -> str:
     """Return the review document with every finding's body elided.
@@ -820,27 +838,54 @@ def render_outline(path: str | Path) -> str:
             "swallowed into the preceding finding's body."
         )
 
+    # The pass this document is on. A `## Pass <k> — cross-cutting decisions`
+    # section for any EARLIER pass has been superseded. Elision is keyed on the
+    # pass number rather than on position: a document that ordered its sections
+    # differently would otherwise lose the operative one, and there is no fetch
+    # to recover it with.
+    current_pass = 0
+    for line, in_fence in zip(lines, fence_mask):
+        if in_fence:
+            continue
+        match = _PASS_LINE.match(line)
+        if match is not None:
+            current_pass = int(match.group("pass"))
+            break
+
     out: list[str] = []
     in_tier = False
     in_finding = False
+    in_superseded = False
     elided = False
     for line, in_fence in zip(lines, fence_mask):
         if in_fence:
-            # A fenced line is sample text. Inside a finding it is part of the
-            # body being elided; outside one it passes through untouched.
-            if not in_finding:
+            # A fenced line is sample text. Inside an elided region it is part
+            # of what is being elided; outside one it passes through untouched.
+            if not in_finding and not in_superseded:
                 out.append(line)
             continue
         if _TIER_BLOCKING.match(line) or _TIER_ADVISORY.match(line):
-            in_tier, in_finding = True, False
+            in_tier, in_finding, in_superseded = True, False, False
         elif _TIER_INCIDENTAL.match(line):
-            in_tier, in_finding = True, False
+            in_tier, in_finding, in_superseded = True, False, False
         elif line.startswith("## "):
             in_tier, in_finding = False, False
+            match = _PASS_SECTION.match(line)
+            in_superseded = (
+                match is not None and int(match.group("pass")) < current_pass
+            )
+            if in_superseded:
+                # The heading stays, so the elision is visible and the section
+                # is findable; only its body goes.
+                out.append(line)
+                out.append(f"\n{_SUPERSEDED}\n")
+                continue
         elif in_tier and line.startswith("### "):
             in_finding, elided = True, False
         elif in_finding and line.rstrip("\n").rstrip() == "---":
             in_finding = False
+        if in_superseded:
+            continue
         if not in_finding:
             out.append(line)
             continue

@@ -2027,6 +2027,71 @@ def test_disclose_should_label_the_header_when_a_label_is_given(
     assert block.startswith(f"Seeded from: {path}")
 
 
+def test_render_outline_should_elide_a_superseded_cross_cutting_section(tmp_path):
+    """Test a past pass's decisions do not ride along on every later pass.
+
+    Given:
+        A pass-4 document carrying its own cross-cutting section and those
+        of passes 2 and 3, which accumulate and roughly double each round.
+    When:
+        render_outline is called.
+    Then:
+        It should keep the current pass's section and elide the earlier
+        numbered ones, naming the document to read them in. Only the
+        current pass's decisions are operative; the rest are history.
+    """
+    # Arrange
+    path = tmp_path / "review-1.md"
+    path.write_text(
+        _review_document(blocking=_BLOCKING_FINDING).replace(
+            "## Cross-cutting decisions\n\nNone.",
+            "## Cross-cutting decisions\n\nThe original theme.\n\n"
+            "## Pass 2 — cross-cutting decisions\n\nSuperseded theme two.\n\n"
+            "## Pass 3 — cross-cutting decisions\n\nSuperseded theme three.\n\n"
+            "## Pass 4 — cross-cutting decisions\n\nThe operative theme.",
+        ).replace("# PR #42 — Round 1 Review", "# PR #42 — Round 1 Review\n\n**Pass 4** — 1 blocking open."),
+    )
+
+    # Act
+    outline = render_outline(path)
+
+    # Assert
+    assert "The operative theme." in outline
+    assert "Superseded theme two." not in outline
+    assert "Superseded theme three." not in outline
+    # The headings stay, so the elision is visible and the history findable.
+    assert "## Pass 2 — cross-cutting decisions" in outline
+    assert "## Pass 3 — cross-cutting decisions" in outline
+    assert outline.count("superseded") >= 2
+
+
+def test_render_outline_should_keep_an_unnumbered_cross_cutting_section(tmp_path):
+    """Test only a section that names an earlier pass is treated as history.
+
+    Given:
+        A document whose cross-cutting section carries no pass number, so
+        nothing establishes that a later pass superseded it.
+    When:
+        render_outline is called.
+    Then:
+        It should keep the section. Eliding by position would drop an
+        operative section on any document that orders them differently.
+    """
+    # Arrange
+    path = tmp_path / "review-1.md"
+    path.write_text(
+        _review_document(blocking=_BLOCKING_FINDING).replace(
+            "None.", "A theme with no pass number."
+        )
+    )
+
+    # Act
+    outline = render_outline(path)
+
+    # Assert
+    assert "A theme with no pass number." in outline
+
+
 def test_iterations_should_be_empty_when_no_review_dir(tmp_path, monkeypatch):
     """Test the iteration helper returns nothing when no review dir exists.
 
