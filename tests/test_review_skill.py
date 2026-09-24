@@ -2196,6 +2196,86 @@ def test_pass_line_should_count_findings_carried_unexamined():
     assert "carried WITHOUT re-examination" in _skill_text()
 
 
+def _scope_section() -> str:
+    return _section(_skill_text(), "## Context and scope")
+
+
+def test_the_skill_should_define_context_and_scope_separately():
+    """Test reading a file and being answerable for it are distinct.
+
+    Given:
+        "You MAY read any file for context" appeared only in passing, so
+        nothing separated what a reviewer may look at from what it is
+        responsible for finding defects in.
+    When:
+        The Context and scope section is read.
+    Then:
+        It should define both by name — context unbounded across the
+        repository, scope as an obligation — and state that reading alone is
+        never grounds for a finding.
+    """
+    # Arrange
+    section = _scope_section()
+
+    # Act & assert
+    assert "**Review context**" in section
+    assert "**Review scope**" in section
+    assert "entire repository" in section
+    assert "never, by itself, grounds for a finding" in section
+    assert "responsible for" in section
+
+
+def test_scope_should_be_defined_by_the_issue_rather_than_the_diff():
+    """Test a change that was never made can still be found.
+
+    Given:
+        Scope was the role's mapped subset of the PR's changed files, so
+        code an acceptance criterion required but nobody wrote was in no
+        reviewer's scope and the omission could not be raised.
+    When:
+        The scope definition is read.
+    Then:
+        It should admit code the PR did not touch, keep the role's globs as
+        the outer bound, and say what scope means in paths mode, which has
+        no issue to derive relatedness from.
+    """
+    # Arrange
+    section = _scope_section()
+
+    # Act & assert
+    assert "whether or not this PR touched it" in section
+    assert "nobody made is in scope precisely because it is missing" in section
+    assert "expected outcomes" in section
+    assert "guide-map.role" in section
+    assert "paths mode" in section
+
+
+def test_the_confinement_invariant_should_defer_to_the_scope_definition():
+    """Test the invariant and the definition cannot state different bounds.
+
+    Given:
+        The invariant stated the whole of scope itself — the role's mapped
+        changed files — which is now only its outer bound.
+    When:
+        The confinement invariant is read.
+    Then:
+        It should point at the definition rather than restate a narrower
+        one, and express the confinement as a property of the finished
+        document, which is the only place it can be checked.
+    """
+    # Arrange
+    invariant = next(
+        line
+        for line in _skill_text().splitlines()
+        if line.startswith("- Every finding in the document MUST")
+    )
+
+    # Act & assert
+    assert "Context and scope" in invariant
+    assert "guide-map.role" in invariant
+    assert "step 8" in invariant
+
+
 def _step2() -> str:
     return _section(_skill_text(), "### 2. Acquire the review targets")
 

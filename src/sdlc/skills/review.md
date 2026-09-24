@@ -72,6 +72,18 @@ The total number of reviewer subagents is **N × (number of roles)**. Each revie
 <!-- rereview:end -->
 *Why: `sdlc://review-rationale` §R1 — read it if you are unsure why the two turns cannot be collapsed into one.*
 
+## Context and scope
+
+Two different bounds, and they are not the same bound. Reading a file and being answerable for what is in it are separate permissions, so they are defined separately here and every "confined to" below means the second.
+
+**Review context** — the **entire repository**. A reviewer MAY read any file, at any time, to understand what it is looking at: the module a changed test exercises, a caller, a config, a sibling implementation. Reading is never restricted, costs the review nothing, and is never, by itself, grounds for a finding.
+*Why: `sdlc://review-rationale` §R14.1 — read it before restricting what a reviewer may read.*
+
+**Review scope** — the code a reviewer is **responsible for**. A defect in scope is a finding it is obliged to raise. **(PR mode)** scope is the union of **(a)** code logically related to the originating issue's expected outcomes, **whether or not this PR touched it** — a change an acceptance criterion required and nobody made is in scope precisely because it is missing — and **(b)** code this PR introduced or changed, wherever it landed, since damage this PR caused is this PR's responsibility. That union is then intersected with the files the role's `guide-map.role` globs match, which is the hard outer bound and the only mechanical one: `general-purpose` maps to `**/*`, so a default single-role pass is bounded by issue relevance alone. **(paths mode)** scope is the matched files. The paths the user named ARE the intent statement, and there is no issue to derive relatedness from, so nothing widens scope there.
+
+Something real noticed **outside** scope — a pre-existing defect in a file this PR happened to touch, anything met while reading context — is not discarded. It is an **Incidental** finding: recorded with its evidence, not gating, not remediated in this PR. Scope decides what a reviewer must go and find; Tier 3 is where what it merely noticed goes, which is what lets scope be this tight without losing information.
+*Why: `sdlc://review-rationale` §R14.2 — read it if you are about to drop an observation because it fell outside scope.*
+
 ## Invariants
 
 Passages below and in the steps cite `sdlc://review-rationale` §`R<n>` for the reasoning behind a rule. That resource carries **no rules** — it never changes what this document requires, and it is read on demand, not as a precondition for any step.
@@ -84,7 +96,7 @@ Passages below and in the steps cite `sdlc://review-rationale` §`R<n>` for the 
 - **(re-review)** MUST commit each finding-set mutation separately, with a message that justifies that specific state change, and MUST leave the document internally consistent — header counts included — at every commit.
 <!-- rereview:end -->
 - MUST NOT force-add a path the target repository ignores, and MUST NOT create a repository on its own initiative. When the resolved repository ignores the review documents, or no repository resolves at all, STOP and ask the user to unignore the path, name a different repository, or authorize `git init .sdlc` (step 10a).
-- Each reviewer's findings MUST be confined to the files mapped to its role in `guide-map.role` (any file MAY be read for context). The default `general-purpose` role is mapped to `**/*`, so its findings span the whole diff.
+- Every finding in the document MUST sit in the scope of the role it is attributed to, as **Context and scope** above defines scope — that is, its file MUST match that role's `guide-map.role` globs. Stated over the finished document rather than over what a reviewer may say, because the consolidator is the only party that can check it, and step 8 now does. A reviewer working at the edge of its lens is not the failure; a document that credits a role with a finding outside its map is.
 - When consolidating, each finding MUST be assigned the **highest** severity any role gives it, ranking `blocking > advisory > incidental`; where roles disagree, the dissent MUST be noted on the finding. A **blocking**-versus-**incidental** split is a disagreement about relevance rather than severity: resolve it against the originating issue's acceptance criteria, and until it is resolved the finding stays blocking. **(paths mode)** there is no originating issue, so the incidental tier is unavailable.
 - For each finding, the consolidator MUST pre-select the recommended remediation option with `[x]`, list any alternatives with `[ ]`, and always include an `Other: ___` slot.
 <!-- rereview:begin -->

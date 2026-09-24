@@ -216,3 +216,17 @@ The `**(BLOCKING)**` marker outranks the tier section a heading sits in, which m
 ### R13.5 Why paths mode has no third tier
 
 Paths mode reviews files as they stand, with no PR and no linked issue. The paths a run was given say which files to read; they say nothing about what work was asked for, so there is nothing for relevance to be measured against. A stand-in — the commit range, the user's phrasing, the files themselves — would be an inferred intent presented as the issue's, which is the failure the tier exists to prevent rather than a lesser version of it. An observation that would be incidental in PR mode is Advisory there: still real, still non-gating, still recorded.
+
+## R14. Context and scope — why scope is the issue's shape, not the diff's
+
+For most of this skill's life "scope" meant one thing: the subset of the PR's changed files that a role's `guide-map.role` globs matched. That definition has a hole you cannot see from inside it. If an acceptance criterion required a change to a module and nobody made the change, the module is not in the diff, so it is in no reviewer's scope, so no reviewer can raise the omission as a finding against the code. The chain then terminates — correctly, by its own rule, with no blocking findings — on a PR that does not satisfy the issue. A review that can only inspect what was written can never report what was not.
+
+The three-tier split (§R13) narrowed this from the other end by asking whether a finding traces to an acceptance criterion. That test can only *demote* a finding already raised. It cannot admit one, because the reviewer was never given the file to look at.
+
+### R14.1 Why context is deliberately unbounded
+
+Reading and being answerable are different permissions, and conflating them is what made the old definition look adequate. A reviewer needs the module a changed test exercises, the caller of a changed signature, the sibling implementation that establishes the convention — none of which it should necessarily raise findings against. Restricting reads would degrade every finding it *does* make and buys nothing: reading costs the review nothing and produces no output on its own. So context is the whole repository, stated as its own concept so that "you MAY read any file" is no longer a parenthesis inside a confinement rule, where it read as an exception rather than as a permission of equal standing.
+
+### R14.2 Why an out-of-scope observation is tiered rather than dropped
+
+Tightening scope without somewhere for the overflow to go would destroy information, which is the argument §R13.1 already makes about relevance. The two mechanisms compose: scope says what a reviewer must go and find, and Tier 3 says where what it merely noticed goes. A pre-existing defect in a file this PR happened to touch is the ordinary case — real, worth recording, and nothing the issue asked anyone to fix. A reviewer that has read a file and found something has produced information; the only question this skill asks is whether that something gates, and scope answers it without anyone having to discard the finding to get the answer.
