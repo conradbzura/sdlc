@@ -2568,6 +2568,58 @@ def test_convert_pr_review_to_document_should_write_and_round_trip(
     assert "Fix the doc gap." in bodies
 
 
+def test_convert_pr_review_to_document_should_carry_the_header_a_rereview_reads(
+    tmp_path, monkeypatch
+):
+    """Test a converted document carries the three load-bearing header lines.
+
+    Given:
+        A GitHub PR URL whose review feedback converts into a local document.
+    When:
+        convert_pr_review_to_document is called.
+    Then:
+        The written document should carry a pass line, a Retired ids line and
+        a Composition line naming at least one role. It is a first-class
+        `review-<iteration>.md` that `sdlc_review --verify` will seed from,
+        and without these three step 2 cannot read `<k>`, step 10(c) has
+        nothing to bump, `max(retired ∪ open) + 1` has half its input, and the
+        role inheritance falls back without saying so. Nothing raises on their
+        absence, so the document would degrade silently.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    threads = [
+        {
+            "isResolved": False,
+            "comments": {"nodes": [{
+                "body": "rename foo to bar",
+                "path": "src/sdlc/server.py",
+                "line": 64,
+                "author": {"login": "alice"},
+            }]},
+        },
+    ]
+    responses = {
+        _closing_graphql_args("conradbzura", "sdlc", 42): _closing_payload([7]),
+        _graphql_args("conradbzura", "sdlc", 42): _graphql_payload(threads),
+        ("pr", "view", "42", "--json", "reviews"): _reviews_payload([]),
+    }
+    monkeypatch.setattr(pr_state, "_run_gh", _make_fake_run_gh(responses))
+    repo = pr_state.Repo(owner="conradbzura", name="sdlc", repo_flag=None)
+
+    # Act
+    pr_state.convert_pr_review_to_document(
+        "https://github.com/conradbzura/sdlc/pull/42", repo=repo
+    )
+
+    # Assert
+    written = tmp_path / ".sdlc" / "reviews" / "issue-#7" / "review-1.md"
+    document = written.read_text()
+    assert "**Pass 1** — 1 blocking," in document
+    assert "**Retired ids** — none." in document
+    assert pr_state.parse_composition_roles(written) == ["general-purpose"]
+
+
 def test_convert_pr_review_to_document_should_carry_an_empty_incidental_tier(
     tmp_path, monkeypatch
 ):
