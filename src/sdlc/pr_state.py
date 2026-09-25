@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -69,17 +69,96 @@ class Findings:
         return "\n".join(lines)
 
 
+# The three severity tiers, in gate order. Only ``blocking`` gates termination;
+# ``advisory`` records debt to pay now or later; ``incidental`` records an
+# observation that does not pertain to the issue the PR closes, deferred rather
+# than dismissed.
+_Severity = Literal["blocking", "advisory", "incidental"]
+
+
 @dataclass(frozen=True)
 class ReviewFinding:
     """A single finding parsed from a local ``.sdlc/reviews`` review document."""
 
     id: str
     title: str
-    severity: Literal["blocking", "advisory"]
+    severity: _Severity
     reference: str
     issue: str
     remediation: str
     touched_commit: str | None
+
+
+def _by_severity(findings: list[ReviewFinding]) -> list[ReviewFinding]:
+    """Return ``findings`` blocking first, then advisory, then incidental.
+
+    The order a consumer spends attention in: only the first tier gates, and
+    only the last is a deferral.
+    """
+    return (
+        [f for f in findings if f.severity == "blocking"]
+        + [f for f in findings if f.severity == "advisory"]
+        + [f for f in findings if f.severity == "incidental"]
+    )
+
+
+def _render_finding(index: int, finding: ReviewFinding) -> list[str]:
+    """Render one finding as the numbered block both renderings emit.
+
+    Shared by ``ReviewFindings.format`` and ``render_findings`` so the text a
+    consumer sees when a finding is disclosed up front and the text it sees
+    when it fetches the body later cannot diverge.
+    """
+    lines = [
+        "",
+        f"  {index}. [{finding.severity}] {finding.id} — {finding.title}",
+        f"     Reference: {finding.reference}",
+    ]
+    if finding.issue:
+        lines.append(f"     Issue: {finding.issue}")
+    lines.append("     Remediation:")
+    lines.extend(f"       {line}" for line in finding.remediation.splitlines())
+    if finding.touched_commit is not None:
+        lines.append(f"     Touched commit: {finding.touched_commit}")
+    return lines
+
+
+def _render_enumeration(
+    findings: list[ReviewFinding], orphaned_ids: list[str] | None = None
+) -> list[str]:
+    """Render every finding as one line: id, severity, reference, title.
+
+    The enumeration half of the fetch tool. A consumer that needs to know
+    WHICH findings a document holds — reconciling a seeded block against the
+    file, or listing a walk's work — needs no body, and paying for 41 bodies
+    to learn 41 ids is the cost incremental disclosure exists to avoid.
+
+    The trailing ``Ids:`` line is the reconciliation surface: a caller
+    comparing id sets compares that one line rather than parsing the table,
+    which is what the hand-written scanners this replaced kept getting wrong.
+    It stays LAST so a caller may keep reading it by suffix.
+
+    ``Outside any tier:`` sits immediately above it and is what gives step
+    7(0) a second source to compare against. Without it the gate compared the
+    parser's enumeration against the parser's enumeration — a heading that
+    drifted outside the tiers is absent from both sides, so the one failure
+    the gate exists for could never fire. It is emitted UNCONDITIONALLY, as
+    ``none`` when there are none: an omitted line cannot be told from a server
+    that predates the field, and the gate would silently degrade back to the
+    no-op it was.
+    """
+    ordered = _by_severity(findings)
+    lines = [""]
+    lines.extend(
+        f"  {f.id}\t{f.severity}\t{f.reference}\t{f.title}" for f in ordered
+    )
+    outside = " ".join(orphaned_ids) if orphaned_ids else "none"
+    lines += [
+        "",
+        f"Outside any tier: {outside}",
+        f"Ids: {' '.join(f.id for f in ordered)}",
+    ]
+    return lines
 
 
 @dataclass(frozen=True)
@@ -90,19 +169,32 @@ class ReviewFindings:
     iteration: int
     path: str
     findings: list[ReviewFinding]
+    # Well-formed `### <id> — <title>` headings that parsed outside every tier
+    # section. They are NOT findings — they have no severity, so there is
+    # nothing to disposition — but they are the one failure step 7(0) exists
+    # to catch, and until they were surfaced the gate compared this parser's
+    # output against this parser's output and could never fire. Defaulted so
+    # every existing constructor keeps working.
+    orphaned_ids: list[str] = field(default_factory=list)
 
-    def format(self) -> str:
+    def format(self, label: str = "Review document") -> str:
         """Render the review document as a human-readable feedback block.
 
         The header carries the document's actual path (``self.path``), the
-        issue number, and iteration so the agent can re-read the document. The
+        issue number, and iteration so the agent can re-read the document.
+        ``label`` names that first header line: a re-review passes
+        ``"Seeded from"`` so this provenance line cannot be confused with the
+        ``Review document:`` write-target directive rendered above it. The
         path is emitted verbatim rather than reconstructed, so a paths-mode
-        ``<slug>/review-<#>.md`` document renders correctly (in the issue-keyed
-        case ``self.path`` already equals that reconstruction). Findings are
-        emitted blocking first, then advisory, each numbered with its id,
-        severity, reference, title, issue, and pre-selected remediation block.
+        ``<slug>/review-<#>.md`` document renders correctly (in the
+        issue-keyed case ``self.path`` already equals that reconstruction).
+        Findings are emitted blocking first, then advisory, then
+        incidental — the order in which a consumer spends attention,
+        since only the first gates and only the last is a deferral. Each
+        is numbered with its id, severity, reference, title, issue, and
+        pre-selected remediation block.
         """
-        lines = [f"Review document: {self.path}"]
+        lines = [f"{label}: {self.path}"]
         if self.issue_number:
             lines.append(f"Issue: #{self.issue_number}")
         lines += [
@@ -110,26 +202,73 @@ class ReviewFindings:
             f"Path: {self.path}",
             f"Findings ({len(self.findings)}):",
         ]
-        ordered = [f for f in self.findings if f.severity == "blocking"]
-        ordered += [f for f in self.findings if f.severity == "advisory"]
-        for index, finding in enumerate(ordered, start=1):
-            lines.append("")
-            lines.append(
-                f"  {index}. [{finding.severity}] {finding.id} — {finding.title}"
-            )
-            lines.append(f"     Reference: {finding.reference}")
-            if finding.issue:
-                lines.append(f"     Issue: {finding.issue}")
-            lines.append("     Remediation:")
-            for remediation_line in finding.remediation.splitlines():
-                lines.append(f"       {remediation_line}")
-            if finding.touched_commit is not None:
-                lines.append(f"     Touched commit: {finding.touched_commit}")
+        for index, finding in enumerate(_by_severity(self.findings), start=1):
+            lines.extend(_render_finding(index, finding))
         return "\n".join(lines)
+
+    def disclose(self, label: str = "Review document") -> str:
+        """Render the document for injection, with every finding body elided.
+
+        What both endpoints inject. The header is `format`'s, so the
+        provenance lines a consumer reads are unchanged; the body is
+        `render_outline` over the document on disk rather than a re-render of
+        parsed fields.
+
+        Two things follow, and the second is the reason to prefer this over
+        `format` regardless of size. The **enumeration stays inline** — every
+        id, severity, reference and title is present, so nothing can be lost
+        to the disclosure. And the block stops being **lossy**: role
+        attribution, untruncated titles, `Tests to add`, both ledgers and the
+        cross-cutting sections arrive verbatim, where `format` drops all of
+        them and leaves a consumer to read them back off disk before it
+        rewrites the document over them.
+
+        Only each finding's issue text and remediation checklist are held
+        back, behind a per-finding marker naming `sdlc_review_findings`.
+        """
+        header = [f"{label}: {self.path}"]
+        if self.issue_number:
+            header.append(f"Issue: #{self.issue_number}")
+        header += [
+            f"Iteration: {self.iteration}",
+            f"Path: {self.path}",
+            f"Findings ({len(self.findings)}): every finding's heading, "
+            "reference and touched commit are below, in the document's own "
+            "structure. Each body is elided behind a marker — fetch the ones "
+            "you act on with `sdlc_review_findings`, and do not act on a "
+            "finding whose body you have not read.",
+            "",
+        ]
+        try:
+            return "\n".join(header) + render_outline(self.path)
+        except OSError as exc:
+            # The document was parsed from disk, so it existed a moment ago;
+            # if it does not now, the outline cannot be built. Fall back to
+            # the full rendering rather than failing the call — but SAY so,
+            # because the fallback is the lossy one and a consumer that
+            # believes it holds the ledgers when it does not will rewrite the
+            # document over them.
+            return "\n".join(
+                header[:-1]
+                + [
+                    f"NOTE: {self.path} could not be re-read ({exc.strerror}), "
+                    "so the full rendering follows instead of the document "
+                    "outline. It does NOT carry role attribution, the "
+                    "ledgers or the cross-cutting sections — read them off "
+                    "disk before rewriting the document.",
+                ]
+            ) + "\n" + self.format(label=label)
 
 
 @dataclass(frozen=True)
-class _Repo:
+class Repo:
+    """The repository ``gh`` commands address, as `resolve_repo` resolved it.
+
+    ``repo_flag`` is the ``--repo`` value when the current checkout is a fork
+    and issues or PRs belong to the upstream, and ``None`` when the current
+    repo applies and no flag is needed.
+    """
+
     owner: str
     name: str
     repo_flag: str | None
@@ -180,10 +319,10 @@ def _run_gh(args: list[str], allow_failure: bool = False) -> str | None:
     return result.stdout
 
 
-def resolve_repo() -> _Repo:
+def resolve_repo() -> Repo:
     """Resolve the target repository for ``gh`` commands.
 
-    Returns a ``_Repo`` whose ``repo_flag`` is the ``--repo`` value
+    Returns a ``Repo`` whose ``repo_flag`` is the ``--repo`` value
     (``"<owner>/<name>"``) when the current repo is a fork — so that issues
     and PRs are addressed against the upstream — and ``None`` otherwise (the
     current repo applies and no ``--repo`` flag is needed).
@@ -198,8 +337,8 @@ def resolve_repo() -> _Repo:
             parent = data["parent"]
             owner = parent["owner"]["login"]
             name = parent["name"]
-            return _Repo(owner=owner, name=name, repo_flag=f"{owner}/{name}")
-        return _Repo(
+            return Repo(owner=owner, name=name, repo_flag=f"{owner}/{name}")
+        return Repo(
             owner=data["owner"]["login"], name=data["name"], repo_flag=None
         )
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
@@ -225,12 +364,100 @@ _PR_URL = re.compile(
 # ``### A1 — Title here — aie (4/10 …)``. The ``**(BLOCKING)**`` marker is
 # optional; the tier section the heading sits under is authoritative for
 # severity, with the marker as a secondary signal.
+#
+# There is deliberately NO ``**(INCIDENTAL)**`` peer. The marker override is
+# **monotone toward blocking**: it can only promote a finding INTO the
+# termination predicate, never out of it, so a stale or misplaced marker costs
+# a wasted pass, which the next round recovers. A marker that demoted would
+# break that property — a stale one left on a Tier 1 heading would drop a
+# blocking finding out of the predicate and the chain would terminate with the
+# defect unaddressed and no trace. Tier 3 membership is by section alone.
 _FINDING_HEADING = re.compile(
     r"^###\s+(?P<id>\S+)\s+—\s+(?P<rest>.*)$",
 )
 _BLOCKING_MARKER = "**(BLOCKING)**"
 _TIER_BLOCKING = re.compile(r"^##\s+Tier\s+1\b.*Blocking", re.IGNORECASE)
 _TIER_ADVISORY = re.compile(r"^##\s+Tier\s+2\b.*Advisory", re.IGNORECASE)
+_TIER_INCIDENTAL = re.compile(r"^##\s+Tier\s+3\b.*Incidental", re.IGNORECASE)
+
+# Fenced code blocks inside a finding's prose hold Markdown samples, and this
+# project's own documents quote review structure: `style-guides/markdown.md`
+# carries `### Do` / `### Don't` and `review-template.md` carries `### B1 — …`.
+# A line-oriented scan with no fence awareness reads those as document
+# structure — aborting the parse on the unparsed-heading guard, or admitting a
+# quoted heading as a phantom finding that the in-place re-review then writes
+# back as real.
+#
+# Two rules govern this module, and they are stated here rather than at each
+# call site because the defect they prevent has now been introduced three
+# times, each time by a fix that enumerated the scanners it knew about:
+#
+#   1. EVERY scanner over review-document text matches structure only on lines
+#      where `in_fence` is False. There are four — `_extract_field`,
+#      `_extract_issue`, `_extract_remediation` and `parse_review_document` —
+#      plus `parse_composition_roles` over the header. A scanner added without
+#      the mask reads a quoted sample as document structure.
+#   2. EVERY generator that embeds text this package did not write — a GitHub
+#      comment body, say — fences it. A generator that does not can manufacture
+#      a document the parser cannot read, which is worse than a parser that
+#      cannot read one, because the file is on disk before the failure.
+_FENCE = re.compile(r"^(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
+
+
+def _fence_scan(lines: list[str]) -> tuple[list[bool], int | None]:
+    """Return the per-line fence mask and the line number of an open fence.
+
+    The mask reports, per line, whether it lies inside a fenced code block.
+    The fence delimiters themselves report ``True``, so a caller that skips
+    structural matching on an inside line never mistakes a delimiter for
+    content either. Follows CommonMark on closing: a fence ends only on a run
+    of the SAME character at least as long as the opener and carrying no info
+    string, so a ``~~~`` line inside a backtick fence does not close it.
+
+    The second element is the 1-based line number of a fence still open at end
+    of input, or ``None`` when every fence closed. An unbalanced opener marks
+    the whole remainder of the document as fenced, which silently swallows
+    every finding below it — the same "deleted with no disposition and no
+    trace" failure the unparsed-heading guard exists to prevent, so the
+    document-level caller raises on it rather than returning a short
+    enumeration.
+    """
+    inside: list[bool] = []
+    opener: str | None = None
+    opened_at: int | None = None
+    for number, line in enumerate(lines, start=1):
+        match = _FENCE.match(line.lstrip())
+        if opener is None:
+            opener = match.group("marker") if match is not None else None
+            opened_at = number if match is not None else None
+            inside.append(match is not None)
+            continue
+        inside.append(True)
+        if (
+            match is not None
+            and match.group("marker")[0] == opener[0]
+            and len(match.group("marker")) >= len(opener)
+            and not match.group("info").strip()
+        ):
+            opener = None
+            opened_at = None
+    return inside, opened_at
+
+
+def _fenced(lines: list[str]) -> list[bool]:
+    """Return, per line, whether it lies inside a fenced code block.
+
+    The mask half of `_fence_scan`, for the body-level scanners. They operate
+    on a slice of a document `parse_review_document` has already checked for
+    balance, so the unclosed-opener half has nothing to report to them.
+    """
+    return _fence_scan(lines)[0]
+
+
+# Where every review document lives, relative to the working directory. Named
+# once: `_reviews_dir` builds the issue-keyed case from it, and
+# `render_findings` refuses a path that resolves outside it.
+_REVIEWS_ROOT = Path(".sdlc/reviews")
 
 
 def _reviews_dir(issue_number: int) -> Path:
@@ -239,7 +466,7 @@ def _reviews_dir(issue_number: int) -> Path:
     Mirrors the cwd-relative convention `sdlc_review` writes to:
     ``.sdlc/reviews/issue-#<N>``.
     """
-    return Path(".sdlc/reviews") / f"issue-#{issue_number}"
+    return _REVIEWS_ROOT / f"issue-#{issue_number}"
 
 
 def _iterations(
@@ -288,21 +515,32 @@ def _next_iteration(
 
 
 def _extract_field(block: str, label: str) -> str | None:
-    """Return the inline value of a ``**Label:** value`` line in ``block``."""
-    pattern = re.compile(
-        rf"^\*\*{re.escape(label)}:\*\*\s*(?P<value>.*)$", re.MULTILINE
-    )
-    match = pattern.search(block)
-    if match is None:
-        return None
-    return match.group("value").strip()
+    """Return the inline value of a ``**Label:** value`` line in ``block``.
+
+    Fence-aware, per rule 1 above. This supplies both ``Reference`` and
+    ``Touched commit``, and a finding whose prose quotes a template sample
+    carries those very labels inside a fence — so an unmasked leftmost search
+    reads the sample rather than the finding. Both values are written back into
+    the seeded block a re-review rewrites the document from, so a fabricated
+    reference becomes the document's own citation on the next pass and a
+    fabricated sha drives `git commit --fixup` through the fixup mapping.
+    """
+    pattern = re.compile(rf"^\*\*{re.escape(label)}:\*\*\s*(?P<value>.*)$")
+    lines = block.splitlines()
+    for line, in_fence in zip(lines, _fenced(lines)):
+        if in_fence:
+            continue
+        match = pattern.match(line)
+        if match is not None:
+            return match.group("value").strip()
+    return None
 
 
 def _parse_finding_block(
     finding_id: str,
     rest: str,
     body: str,
-    severity: Literal["blocking", "advisory"],
+    severity: _Severity,
 ) -> ReviewFinding:
     """Build a ``ReviewFinding`` from one finding heading and its body text.
 
@@ -311,9 +549,18 @@ def _parse_finding_block(
     """
     title = rest
     if _BLOCKING_MARKER in title:
+        # A blocking heading reads `<title> **(BLOCKING)** — <attribution>`, so
+        # splitting on the marker has already dropped the attribution. Splitting
+        # again on ` — ` would eat the title itself wherever it contains one.
         title = title.split(_BLOCKING_MARKER, 1)[0]
-    # Drop a trailing `— <role / agreement>` attribution when present.
-    title = title.split(" — ", 1)[0].strip()
+    else:
+        # An advisory or incidental heading reads `<title> — <attribution>`;
+        # neither carries a marker, so both take this path. Split on the LAST
+        # separator so only the attribution goes: titles legitimately contain
+        # ` — `, and a leftmost split silently truncates them, which then gets
+        # written back to the document on the next in-place re-review.
+        title = title.rsplit(" — ", 1)[0]
+    title = title.strip()
 
     reference = _extract_field(body, "Reference") or ""
     touched_commit = _extract_field(body, "Touched commit")
@@ -343,34 +590,40 @@ def _extract_issue(body: str) -> str:
     checkbox (the advisory shape in the review template).
     """
     lines = body.splitlines()
+    fenced = _fenced(lines)
     labelled: list[str] = []
     capturing = False
-    for line in lines:
-        if line.startswith("**Issue:**"):
+    for line, in_fence in zip(lines, fenced):
+        if not in_fence and line.startswith("**Issue:**"):
             capturing = True
             labelled.append(line[len("**Issue:**"):].strip())
             continue
         if capturing:
-            if line.startswith("**") or line.lstrip().startswith("- ["):
+            if not in_fence and (
+                line.startswith(_FIELD_LABELS) or line.lstrip().startswith("- [")
+            ):
                 break
-            labelled.append(line.strip())
+            # A fenced line is code: keep its indentation, and let no `**bold**`
+            # or `- [x]` line in the sample terminate the paragraph.
+            labelled.append(line.rstrip() if in_fence else line.strip())
     if any(labelled):
         return "\n".join(labelled).strip()
 
     # Advisory shape: text after the Reference line, before the first checkbox.
     bare: list[str] = []
     seen_reference = False
-    for line in lines:
-        if line.startswith("**Reference:**"):
+    for line, in_fence in zip(lines, fenced):
+        if not in_fence and line.startswith("**Reference:**"):
             seen_reference = True
             continue
         if not seen_reference:
             continue
-        if line.lstrip().startswith("- ["):
-            break
-        if line.startswith("**"):
-            break
-        bare.append(line.strip())
+        if not in_fence:
+            if line.lstrip().startswith("- ["):
+                break
+            if line.startswith(_FIELD_LABELS):
+                break
+        bare.append(line.rstrip() if in_fence else line.strip())
     return "\n".join(bare).strip()
 
 
@@ -380,21 +633,37 @@ def _extract_remediation(body: str) -> str:
     Captures the contiguous run of ``- [ ]`` / ``- [x]`` checkbox lines
     (and their continuations), preserving the pre-selected option, any
     alternatives, and the ``Other:`` slot.
+
+    Terminates on ``_FIELD_LABELS``, exactly as :func:`_extract_issue` does,
+    and for the reason recorded above that tuple. An earlier form here broke
+    on ANY line opening ``**``, which cannot tell a label from a bolded
+    continuation between two options — a consolidator writing
+    ``**Note that this changes behaviour.**`` between them silently dropped
+    every option below it, the ``Other:`` slot included. That slot is required
+    on every finding, the fetch that serves this block is mandatory, and
+    ``render_outline`` elides the body, so the alternatives existed only on a
+    path no consumer is permitted to take.
     """
     lines = body.splitlines()
     captured: list[str] = []
     capturing = False
-    for line in lines:
+    for line, in_fence in zip(lines, _fenced(lines)):
         stripped = line.lstrip()
-        if stripped.startswith("- ["):
+        if not in_fence and stripped.startswith("- ["):
             capturing = True
             captured.append(line.rstrip())
             continue
         if capturing:
+            if in_fence:
+                # A fenced sample inside a checkbox continuation: keep it
+                # verbatim, blank lines included, and let nothing in it
+                # terminate the checklist.
+                captured.append(line.rstrip())
+                continue
             if not stripped:
                 continue
             if (
-                stripped.startswith("**")
+                stripped.startswith(_FIELD_LABELS)
                 or stripped.startswith("###")
                 or stripped.startswith("---")
             ):
@@ -404,24 +673,127 @@ def _extract_remediation(body: str) -> str:
     return "\n".join(captured).strip()
 
 
+# Everything between the literal `role(s)` and the first `(` or end of line.
+# An earlier form required the backticked run to be followed by `(` or `.`,
+# which the template's own elided shape — ``role(s) `<a>`, `<b>`, … (…)`` —
+# does not satisfy, so the line the writing agent is told to copy exactly
+# parsed as no roles at all and the re-review fell back to general-purpose
+# without saying so.
+_COMPOSITION_ROLES = re.compile(r"role\(s\)\s+(?P<roles>[^(\n]*)")
+
+
+def parse_composition_roles(path: str | Path) -> list[str]:
+    """Return the role stems named on a review document's Composition line.
+
+    The header records the composition a round ran under, e.g. ``Composition: 5
+    reviewer(s) per role across role(s) `aie` (5 × 1 = 5 …)``. A re-review that
+    does not inherit these dispatches the wrong lens entirely: every seeded
+    finding whose originating role is absent carries unexamined, forever, while
+    each pass still reports progress.
+
+    The line is identified by carrying both the literal ``Composition`` and the
+    literal ``role(s)``, outside any code fence, and the FIRST such line
+    decides — see rule 1 above.
+
+    Returns ``[]`` when no such line is present or when it names no backticked
+    stem, which the caller treats as "nothing to inherit" rather than as an
+    error — an older document may predate the line. That empty result is what
+    raises the endpoint's coverage warning, so it is the reportable outcome for
+    a malformed header, not a reason to keep scanning.
+    """
+    lines = Path(path).read_text().splitlines()
+    for line, in_fence in zip(lines, _fenced(lines)):
+        # Anchored to the header line, and fence-aware, per rule 1 above. The
+        # literal `role(s)` appears in ordinary finding prose whenever a review
+        # discusses this contract — which reviews of this repository routinely
+        # do — so an unanchored scan lets a finding body shadow a malformed
+        # header and the pass inherits a role nobody ran. Stopping at the first
+        # anchored line is deliberate: a header that names no stems yields
+        # nothing to inherit, which the caller reports as a coverage warning.
+        # Reading on would replace that visible failure with a silent wrong
+        # answer, and the warning is the only signal the composition drifted.
+        if in_fence or "Composition" not in line or "role(s)" not in line:
+            continue
+        match = _COMPOSITION_ROLES.search(line)
+        if match is None:
+            return []
+        stems = [
+            stem.strip() for stem in re.findall(r"`([^`]+)`", match.group("roles"))
+        ]
+        # An unfilled template still has its `<role-a>` placeholders. Treat
+        # those as nothing to inherit rather than dispatching a role by that
+        # name, which no `guide-map.role` entry could ever match.
+        return [
+            stem
+            for stem in stems
+            if stem and not (stem.startswith("<") and stem.endswith(">"))
+        ]
+    return []
+
+
 def parse_review_document(
     path: str | Path, issue_number: int, iteration: int
 ) -> ReviewFindings:
     """Parse a local review markdown document into a ``ReviewFindings``.
 
     Splits the document on its severity-tier sections (``## Tier 1 — Blocking``
-    / ``## Tier 2 — Advisory``) and on the per-finding ``### <ID> — <title>``
-    headings, extracting each finding's reference, issue, remediation block,
-    and touched commit. Severity comes from the enclosing tier section, with
-    the ``**(BLOCKING)**`` heading marker as a corroborating signal.
+    / ``## Tier 2 — Advisory`` / ``## Tier 3 — Incidental``) and on the
+    per-finding ``### <ID> — <title>`` headings, extracting each finding's
+    reference, issue, remediation block, and touched commit. Severity comes
+    from the enclosing tier section, with the ``**(BLOCKING)**`` heading marker
+    as a corroborating signal.
+
+    A document carrying only the first two tiers parses exactly as it did
+    before the third existed: ``_TIER_INCIDENTAL`` simply never matches, so no
+    migration is required of a chain already in flight.
     """
     text = Path(path).read_text()
     lines = text.splitlines()
+    fence_mask, unclosed_at = _fence_scan(lines)
+    if unclosed_at is not None:
+        # An opener still open at EOF marks every later line as fenced, so each
+        # remaining finding is appended to the current finding's body and
+        # vanishes — the same silent deletion the unparsed-heading guard below
+        # raises on, and worse, because `_render_rereview` declares the parsed
+        # enumeration authoritative and step 10 rewrites the document from it.
+        raise ValueError(
+            f"{path}: unclosed code fence opened at line {unclosed_at}: "
+            f"{lines[unclosed_at - 1]!r}. Every finding below it would be "
+            "swallowed into the preceding finding's body."
+        )
 
     findings: list[ReviewFinding] = []
-    current_severity: Literal["blocking", "advisory"] | None = None
-    pending: tuple[str, str, Literal["blocking", "advisory"]] | None = None
+    current_severity: _Severity | None = None
+    pending: tuple[str, str, _Severity] | None = None
     body_lines: list[str] = []
+    # A tier heading is a section, not a label: a document carrying two of the
+    # same one has a second, stray section whose findings a READER files under
+    # the wrong severity while this parser, which prefers the `**(BLOCKING)**`
+    # marker, reports them correctly. That divergence is invisible to every
+    # check that goes through this function — which is every check there is —
+    # so it is caught here or not at all.
+    seen_tiers: set[_Severity] = set()
+    # Id uniqueness is what the retired-id ledger protects and nothing else
+    # enforces. `max(retired ∪ open) + 1` is computed by hand by the
+    # consolidating agent, one mutation at a time, which is the same
+    # reachability class as the three guards below — and a repeat is worse
+    # than a stray heading: a reviewer returns one `B1 | close` line, the
+    # consolidator removes AN entry, and a real finding leaves with no
+    # disposition while the commit history cites an ambiguous id.
+    seen_ids: dict[str, int] = {}
+    orphaned_ids: list[str] = []
+
+    def enter_tier(severity: _Severity, line: str) -> None:
+        nonlocal current_severity
+        if severity in seen_tiers:
+            raise ValueError(
+                f"{path}: duplicate tier heading {line.strip()!r}. A second "
+                f"heading for the {severity} tier opens a stray section, and "
+                "findings under it are read by severity marker here but by "
+                "enclosing heading anywhere a human looks. Merge the sections."
+            )
+        seen_tiers.add(severity)
+        current_severity = severity
 
     def flush() -> None:
         nonlocal pending, body_lines
@@ -435,30 +807,79 @@ def parse_review_document(
         pending = None
         body_lines = []
 
-    for line in lines:
-        if _TIER_BLOCKING.match(line):
-            flush()
-            current_severity = "blocking"
-            continue
-        if _TIER_ADVISORY.match(line):
-            flush()
-            current_severity = "advisory"
-            continue
-        heading = _FINDING_HEADING.match(line)
-        if heading is not None and current_severity is not None:
-            flush()
-            rest = heading.group("rest")
-            severity: Literal["blocking", "advisory"] = current_severity
-            if _BLOCKING_MARKER in rest:
-                severity = "blocking"
-            pending = (heading.group("id"), rest, severity)
-            continue
-        if line.startswith("## "):
-            # A non-tier section heading (e.g. Cross-cutting decisions) ends
-            # the findings region.
-            flush()
-            current_severity = None
-            continue
+    # Structure is recognized only OUTSIDE fenced code blocks; a fenced line is
+    # sample text and is appended to the body verbatim.
+    for number, (line, in_fence) in enumerate(zip(lines, fence_mask), 1):
+        if not in_fence:
+            if _TIER_BLOCKING.match(line):
+                flush()
+                enter_tier("blocking", line)
+                continue
+            if _TIER_ADVISORY.match(line):
+                flush()
+                enter_tier("advisory", line)
+                continue
+            if _TIER_INCIDENTAL.match(line):
+                flush()
+                enter_tier("incidental", line)
+                continue
+            heading = _FINDING_HEADING.match(line)
+            if heading is not None and current_severity is not None:
+                flush()
+                rest = heading.group("rest")
+                severity: _Severity = current_severity
+                if _BLOCKING_MARKER in rest:
+                    severity = "blocking"
+                finding_id = heading.group("id")
+                if finding_id in seen_ids:
+                    # Both line numbers, because raising here makes the whole
+                    # document unreadable — `render_outline`, `disclose` and
+                    # `render_findings` all go through this function, and
+                    # `implement-feedback.md` forbids reading the file whole.
+                    # This message is the only view of the defect the agent
+                    # that has to repair it will get.
+                    raise ValueError(
+                        f"{path}: duplicate finding id {finding_id!r} at line "
+                        f"{number}, already used at line {seen_ids[finding_id]}. "
+                        "Ids are cited in the commit history and by "
+                        "sdlc_implement --review <#>, and new ids are computed "
+                        "as max(retired ∪ open) + 1 over them, so a repeat "
+                        "makes one finding unaddressable and lets a single "
+                        "disposition remove the wrong one. Renumber the second."
+                    )
+                seen_ids[finding_id] = number
+                pending = (finding_id, rest, severity)
+                continue
+            if (
+                current_severity is None
+                and (orphan := _FINDING_HEADING.match(line)) is not None
+            ):
+                # A well-formed heading below `## Rejected in earlier passes`
+                # or `## Pass <k> — cross-cutting decisions`, or above Tier 1.
+                # Raising here would refuse a document that legitimately
+                # quotes a finding heading in unfenced prose — reviews OF
+                # review documents do that routinely — so it is reported
+                # rather than refused, and step 7(0) decides.
+                orphaned_ids.append(orphan.group("id"))
+                continue
+            if line.startswith("### ") and current_severity is not None:
+                # A finding heading the regex could not parse — an en dash or a
+                # hyphen where the em dash belongs, most likely. Silently
+                # skipping it drops the finding from the enumeration, and
+                # because a re-review rewrites the document in place from that
+                # enumeration, the finding is then deleted with no disposition
+                # and no trace.
+                raise ValueError(
+                    f"{path}: unparsed finding heading in a severity tier: "
+                    f"{line!r}. A finding heading must read "
+                    "'### <id> — <title>' with a spaced em dash."
+                )
+            if line.startswith("## "):
+                # A non-tier section heading (e.g. Cross-cutting decisions)
+                # ends the findings region.
+                flush()
+                current_severity = None
+                continue
         if pending is not None:
             body_lines.append(line)
 
@@ -468,7 +889,248 @@ def parse_review_document(
         iteration=iteration,
         path=str(path),
         findings=findings,
+        orphaned_ids=orphaned_ids,
     )
+
+
+# Single-line labelled fields kept in an outline. Each is one line — this
+# project's markdown style forbids hard-wrapping prose — and each is something
+# a consumer routes, orders or attributes on without reading the finding.
+#
+# The corroboration and dissent records are here by that same test and by a
+# stronger one: they are the EVIDENCE a gate is judged on. Step 8 requires a
+# dissent to be noted whenever a blocking finding stays open uncorroborated,
+# and `implement-feedback.md` forbids reading the document whole, so a record
+# the outline drops is one the user is never shown. Note this closes the
+# outline half only — `_render_finding` has no field for them either, so the
+# fetch still cannot return them; `ReviewFinding` would have to grow first.
+_OUTLINE_KEEP = (
+    "**Reference:**",
+    "**Touched commit:**",
+    "**Tests to add:**",
+    "**Corroboration:**",
+    "**Relevance dissent:**",
+    "**Severity dissent:**",
+)
+
+# What replaces an elided body. Deliberately visible and deliberately one per
+# finding: a silent gap is what would let a consumer work from the outline and
+# supply a body it never read.
+# The labelled fields that close a finding's issue text. An earlier form
+# terminated on ANY line opening `**`, which cannot tell a label from prose
+# that merely begins with a bold span. A body whose first paragraph opened
+# `**Criterion #15**` was therefore dropped in full, and one whose second
+# opened `**(a) The third door.**` lost everything from there down — measured
+# at 6 of 36 findings on a real document, including every Tier 3 finding,
+# whose `**Off-issue:**` paragraph is the evidence the tier requires. The
+# fetch that serves these bodies is mandatory, so a truncated one is evidence
+# the consumer never learns is missing. Extend this tuple, never the test.
+_FIELD_LABELS = (
+    "**Issue:**",
+    "**Reference:**",
+    "**Remediation:**",
+    "**Tests to add:**",
+    "**Touched commit:**",
+    "**Corroboration:**",
+    "**Relevance dissent:**",
+    "**Severity dissent:**",
+    "**Elided:**",
+)
+
+_ELIDED = "**Elided:** _(body elided — fetch with `sdlc_review_findings`)_"
+
+# `## Pass <k> — cross-cutting decisions`. These accumulate: a chain writes one
+# per pass and they roughly double each round, so by the time a review has run
+# several passes the superseded ones outweigh the findings. Only the current
+# pass's decisions are operative — the rest are history, and history that is
+# re-read on every pass is history nobody asked for.
+_PASS_SECTION = re.compile(
+    r"^##\s+Pass\s+(?P<pass>\d+)\s+—.*cross-cutting", re.IGNORECASE
+)
+_PASS_LINE = re.compile(r"^\*\*Pass\s+(?P<pass>\d+)\*\*")
+
+# A section elided because a later pass superseded it. Unlike a finding body
+# there is no fetch for this — it is prose, not an addressable finding — so the
+# marker says to read the document, which the block names directly above.
+_SUPERSEDED = (
+    "_(superseded by a later pass — elided; read the review document itself "
+    "if you need it)_"
+)
+
+
+def render_outline(path: str | Path) -> str:
+    """Return the review document with every finding's body elided.
+
+    The outline keeps each ``### <id> — <title>`` heading and the single-line
+    labelled fields beneath it, and replaces each finding's ``**Issue:**``
+    paragraph and ``**Remediation:**`` checklist with one ``_ELIDED`` marker.
+    Everything outside a finding block — the header, both ledgers, the
+    cross-cutting sections and the fixup mapping — passes through byte for
+    byte.
+
+    This is what the endpoints inject in place of ``ReviewFindings.format()``.
+    Two properties make it safe to substitute, and both are tested:
+
+    * The **enumeration is whole.** Every id, severity, reference and title
+      survives, so no consumer can lose a finding to the disclosure — which is
+      the failure every guard in this module exists to prevent.
+    * The outline is **itself a valid review document**. Parsing it yields the
+      same findings with empty bodies, so a consumer that re-parses what it was
+      given is not handed a different shape from the file on disk.
+
+    Unlike ``format()``, which re-renders parsed fields, this elides from the
+    real text — so role attribution, untruncated titles and the ledgers arrive
+    verbatim rather than having to be read back from disk afterwards.
+    """
+    text = Path(path).read_text()
+    lines = text.splitlines(keepends=True)
+    fence_mask, unclosed_at = _fence_scan(lines)
+    if unclosed_at is not None:
+        # Same refusal as the parser, for the same reason: an opener still open
+        # at EOF marks every later line as fenced, so every finding below it
+        # would be passed through as if it were body text of the one above.
+        raise ValueError(
+            f"{path}: unclosed code fence opened at line {unclosed_at}: "
+            f"{lines[unclosed_at - 1]!r}. Every finding below it would be "
+            "swallowed into the preceding finding's body."
+        )
+
+    # The pass this document is on. A `## Pass <k> — cross-cutting decisions`
+    # section for any EARLIER pass has been superseded. Elision is keyed on the
+    # pass number rather than on position: a document that ordered its sections
+    # differently would otherwise lose the operative one, and there is no fetch
+    # to recover it with.
+    current_pass = 0
+    for line, in_fence in zip(lines, fence_mask):
+        if in_fence:
+            continue
+        match = _PASS_LINE.match(line)
+        if match is not None:
+            current_pass = int(match.group("pass"))
+            break
+
+    out: list[str] = []
+    in_tier = False
+    in_finding = False
+    in_superseded = False
+    elided = False
+    for line, in_fence in zip(lines, fence_mask):
+        if in_fence:
+            # A fenced line is sample text. Inside an elided region it is part
+            # of what is being elided; outside one it passes through untouched.
+            # Elision inside a finding is announced here as well as below: a
+            # body with no unfenced prose and no checklist would otherwise be
+            # dropped with no marker at all, and a silent gap is what lets a
+            # consumer work from the outline and supply a body it never read.
+            if not in_finding and not in_superseded:
+                out.append(line)
+            elif in_finding and not elided:
+                out.append(f"{_ELIDED}\n")
+                elided = True
+            continue
+        if _TIER_BLOCKING.match(line) or _TIER_ADVISORY.match(line):
+            in_tier, in_finding, in_superseded = True, False, False
+        elif _TIER_INCIDENTAL.match(line):
+            in_tier, in_finding, in_superseded = True, False, False
+        elif line.startswith("## "):
+            in_tier, in_finding = False, False
+            match = _PASS_SECTION.match(line)
+            in_superseded = (
+                match is not None and int(match.group("pass")) < current_pass
+            )
+            if in_superseded:
+                # The heading stays, so the elision is visible and the section
+                # is findable; only its body goes.
+                out.append(line)
+                out.append(f"\n{_SUPERSEDED}\n")
+                continue
+        elif in_tier and line.startswith("### "):
+            in_finding, elided = True, False
+        elif in_finding and line.rstrip("\n").rstrip() == "---":
+            in_finding = False
+        if in_superseded:
+            continue
+        if not in_finding:
+            out.append(line)
+            continue
+        if line.startswith("### ") or line.startswith(_OUTLINE_KEEP):
+            out.append(line)
+            continue
+        if not line.strip():
+            out.append(line)
+            continue
+        if not elided:
+            out.append(f"{_ELIDED}\n")
+            elided = True
+    return "".join(out)
+
+
+def render_findings(path: str | Path, ids: list[str]) -> str:
+    """Return the full bodies of the findings ``ids`` names, in severity order.
+
+    The fetch half of incremental disclosure: the endpoints inject
+    ``render_outline``'s elided view, and a consumer calls this when it
+    reaches a finding it actually has to act on. Each finding renders exactly
+    as ``ReviewFindings.format`` would have rendered it — both go through
+    ``_render_finding`` — so what a consumer reads does not depend on when it
+    read it.
+
+    An id that is not in the document is **named in the result** rather than
+    silently omitted. A short answer returned without comment is how a
+    consumer ends up dispositioning a finding it was never shown, which is the
+    failure the whole enumeration discipline in this module guards against.
+
+    An **empty** ``ids`` returns the enumeration instead: every finding as one
+    ``id / severity / reference / title`` line, no bodies, with a trailing
+    ``Ids:`` line to compare id sets against. That is the whole of what a
+    reconciliation or a walk-ordering needs, and routing it through this tool
+    is what lets the skills stop shelling out to ``uv run python -c "from
+    sdlc import ..."`` — which resolves against the REVIEWED project's
+    environment and therefore fails everywhere the server is installed out of
+    process, which is everywhere but this repository.
+
+    ``path`` is REFUSED unless it resolves inside ``.sdlc/reviews`` under the
+    working directory. It reaches the filesystem and it arrives from a prompt
+    — an agent interpolating an injected directive — so the location is
+    checked rather than assumed, as `git_state.resolve_review_repo` checks the
+    repository it is handed.
+    """
+    resolved = Path(path).resolve()
+    reviews = (Path.cwd() / _REVIEWS_ROOT).resolve()
+    if not resolved.is_relative_to(reviews):
+        raise ValueError(
+            f"refusing to read {resolved.as_posix()}: review findings are "
+            f"served only from {reviews.as_posix()}. The path is interpolated "
+            "from a prompt directive, so a document outside the reviews "
+            "directory is a misdirected fetch rather than a review document."
+        )
+    parsed = parse_review_document(resolved, issue_number=0, iteration=0)
+    if not ids:
+        header = (
+            f"Findings from {parsed.path} ({len(parsed.findings)} total — "
+            "enumeration only, no bodies):"
+        )
+        return "\n".join(
+            [header] + _render_enumeration(parsed.findings, parsed.orphaned_ids)
+        )
+    wanted = list(dict.fromkeys(ids))
+    found = {f.id: f for f in parsed.findings}
+    ordered = [f for f in _by_severity(parsed.findings) if f.id in wanted]
+
+    lines = [f"Findings from {parsed.path} ({len(ordered)} of {len(wanted)} requested):"]
+    for index, finding in enumerate(ordered, start=1):
+        lines.extend(_render_finding(index, finding))
+    missing = [i for i in wanted if i not in found]
+    if missing:
+        lines += [
+            "",
+            f"  NOT FOUND in this document: {', '.join(missing)}. The document "
+            "holds "
+            f"{', '.join(f.id for f in parsed.findings) or 'no findings'}. An id "
+            "that is absent here is absent from the round — do not act on it "
+            "from recollection.",
+        ]
+    return "\n".join(lines)
 
 
 def load_review_findings(
@@ -513,6 +1175,32 @@ def load_review_findings(
     return parse_review_document(path, issue_number, iteration)
 
 
+_BACKTICK_RUN = re.compile(r"`+")
+
+
+def _fence_for(text: str) -> str:
+    """Return a backtick fence long enough to enclose ``text`` verbatim.
+
+    CommonMark closes a fence on a run of the same character at least as long
+    as the opener, so an opener must be longer than any run the content holds.
+    """
+    longest = max((len(run) for run in _BACKTICK_RUN.findall(text)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def _heading_safe(text: str) -> str:
+    """Return ``text`` reduced to something that cannot forge document structure.
+
+    A GitHub comment's first line becomes a finding title, and the heading is
+    assembled around it. Leading `#` characters would put a second heading
+    marker inside one, and any newline would put the remainder of the comment
+    on a line of its own outside the heading.
+    """
+    flattened = " ".join(text.split())
+    stripped = flattened.lstrip("#").strip()
+    return stripped or "Review comment"
+
+
 def _render_github_findings_as_document(
     issue_number: int,
     iteration: int,
@@ -522,22 +1210,43 @@ def _render_github_findings_as_document(
 ) -> str:
     """Render GitHub PR ``Finding``s into the local review-document markdown.
 
-    Produces a template-shaped document — header, blocking/advisory tiers, and
-    one finding per GitHub comment — so it can be parsed back by
+    Produces a template-shaped document — header, all three severity tiers,
+    and one finding per GitHub comment — so it can be parsed back by
     ``parse_review_document``. GitHub review feedback carries no severity, so
     every converted finding lands in the blocking tier with a generic,
     pre-selected ``[x]`` "address the reviewer's comment" remediation plus an
     ``Other:`` slot.
     """
     all_findings = [*threads, *body_findings]
+    count = len(all_findings)
     header = [
         f"# PR Review (converted) — Round {iteration}",
+        "",
+        # The three header lines below are load-bearing for everything a
+        # re-review does with this file, and it IS a first-class
+        # `review-<iteration>.md` that `sdlc_review --verify <iteration>` will
+        # seed from. Without the pass line step 2 cannot read `<k>` and step
+        # 10(c) has nothing to bump; without `Retired ids` the
+        # `max(retired ∪ open) + 1` rule has only half its input; without a
+        # Composition line the role inheritance falls back to
+        # `general-purpose` without saying so. Nothing raises on their
+        # absence — the document degrades silently, which is the same
+        # argument that added the empty tier sections here.
+        f"**Pass 1** — {count} blocking, 0 advisory, 0 incidental open. "
+        f"Closed 0, rejected 0, added {count}, carried unexamined 0 this pass.",
+        "",
+        "**Retired ids** — none. This document was created by conversion, so "
+        "no id has been closed or rejected yet. New findings take the next id "
+        "ABOVE the highest id carrying their prefix across BOTH this line and "
+        "the surviving findings.",
         "",
         f"Generated by converting the GitHub review feedback on {pr_url} "
         f"(Closes #{issue_number}) into a local review document. GitHub "
         "review comments carry no severity tier, so each is recorded as a "
         "blocking finding with a generic pre-selected remediation; adjust "
-        "before applying.",
+        "before applying. Composition: no reviewer subagents ran, so this is "
+        "recorded as 1 reviewer(s) per role across role(s) `general-purpose` "
+        "— the lens a re-review of this document will dispatch.",
         "",
         "---",
         "",
@@ -554,16 +1263,27 @@ def _render_github_findings_as_document(
         else:
             reference = "(cross-cutting — no single line)"
         author = finding.author or "unknown"
-        title = finding.body.strip().splitlines()[0] if finding.body.strip() else (
-            "Review comment"
-        )
+        body = finding.body.strip()
+        title = _heading_safe(body.splitlines()[0]) if body else "Review comment"
+        # Rule 2 above: the comment body is text this package did not write. An
+        # ordinary comment quoting a Markdown heading — `### Do`, which this
+        # project's own style guide carries — otherwise renders as document
+        # structure, and the document is WRITTEN to disk before the read-back
+        # below raises on it. The file then survives, so a retry computes the
+        # next iteration one higher and fails again. Fencing it also keeps a
+        # quoted `### C9 — … **(BLOCKING)**` from parsing as a real finding.
+        fence = _fence_for(body)
         blocks.append(
             "\n".join(
                 [
                     f"### C{index} — {title} **(BLOCKING)** — @{author}",
                     f"**Reference:** {reference}",
                     "",
-                    f"**Issue:** @{author} ({finding.kind}): {finding.body.strip()}",
+                    f"**Issue:** @{author} ({finding.kind}) wrote:",
+                    "",
+                    fence,
+                    *body.splitlines(),
+                    fence,
                     "",
                     "**Remediation:**",
                     "- [x] Address the reviewer's comment. "
@@ -577,14 +1297,27 @@ def _render_github_findings_as_document(
         blocks.append(
             "_No unresolved GitHub review feedback was found on this PR._\n"
         )
-    advisory = ["---", "", "## Tier 2 — Advisory", ""]
+    # Both empty tiers are emitted, not just Tier 2: a re-review rewrites this
+    # document in place and may re-tier a converted finding down, and a section
+    # that is absent has to be hand-created in a shape the parser only accepts
+    # exactly. Writing them costs two lines and removes that step.
+    tiers = [
+        "---",
+        "",
+        "## Tier 2 — Advisory",
+        "",
+        "---",
+        "",
+        "## Tier 3 — Incidental",
+        "",
+    ]
     return "\n".join(header) + "\n\n---\n\n".join(blocks) + "\n\n" + "\n".join(
-        advisory
+        tiers
     )
 
 
 def convert_pr_review_to_document(
-    pr_url: str, repo: _Repo | None = None
+    pr_url: str, repo: Repo | None = None
 ) -> ReviewFindings:
     """Convert a GitHub PR's review feedback into a new local review document.
 
@@ -626,7 +1359,7 @@ def convert_pr_review_to_document(
 
 
 def _classify_number(
-    repo: _Repo, number: int
+    repo: Repo, number: int
 ) -> tuple[Literal["pr", "issue", "missing"], dict | None]:
     pr_args = ["pr", "view", str(number)]
     pr_args = _with_repo(pr_args, repo.repo_flag)
@@ -641,7 +1374,7 @@ def _classify_number(
     return "missing", None
 
 
-def _find_linked_pr(repo: _Repo, issue_number: int) -> dict | None:
+def _find_linked_pr(repo: Repo, issue_number: int) -> dict | None:
     args = ["pr", "list"]
     args = _with_repo(args, repo.repo_flag)
     args += [
@@ -656,7 +1389,7 @@ def _find_linked_pr(repo: _Repo, issue_number: int) -> dict | None:
     return json.loads(stripped)
 
 
-def _find_closing_issue(repo: _Repo, pr_number: int) -> int | None:
+def _find_closing_issue(repo: Repo, pr_number: int) -> int | None:
     """Return the issue number PR ``pr_number`` closes, or ``None``.
 
     Queries GitHub's ``closingIssuesReferences`` connection — the authoritative
@@ -696,7 +1429,7 @@ def _find_closing_issue(repo: _Repo, pr_number: int) -> int | None:
 
 
 def _query_review_state(
-    repo: _Repo, pr_number: int
+    repo: Repo, pr_number: int
 ) -> tuple[list[Finding], list[Finding]]:
     graphql_args = [
         "api", "graphql",
@@ -758,7 +1491,7 @@ def _query_review_state(
 
 def dispatch(
     number: int,
-    repo: _Repo | None = None,
+    repo: Repo | None = None,
     review: int | str | None = None,
 ) -> ReviewFindings | PrContext | None:
     """Classify ``number`` and resolve the review work to perform.

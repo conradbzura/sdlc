@@ -17,10 +17,17 @@ dependencies = [
 sdlc-mcp = "sdlc:main"
 
 [dependency-groups]
-test = ["pytest", "pytest-asyncio"]
+test = [
+    "hypothesis>=6.168.0",
+    "pytest",
+    "pytest-asyncio",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sdlc"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "integration: exercises real git subprocesses and the skill's own command blocks",
+]

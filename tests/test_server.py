@@ -1,11 +1,12 @@
 """Tests for sdlc.server — MCP tools and resources."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 
-from sdlc import pr_state
+from sdlc import pr_state, server
 from sdlc.pr_state import (
     GhUnavailable,
     PrContext,
@@ -13,14 +14,14 @@ from sdlc.pr_state import (
     ReviewFindings,
 )
 from sdlc.server import (
-    _paths_slug,
-    _read_skill,
+    review_skill,
     agents_md,
     get_default_config,
     get_role_guide,
     get_style_guide,
     get_test_guide,
     knowledge_graph,
+    review_rationale,
     review_template,
     role_template,
     sdlc_commit,
@@ -29,12 +30,46 @@ from sdlc.server import (
     sdlc_issue,
     sdlc_pr,
     sdlc_review,
+    sdlc_review_findings,
     sdlc_role,
     sdlc_role_scope,
     sdlc_roles,
     sdlc_test,
     sdlc_understand_chat,
 )
+
+
+def _write_config(root, *, repo=None, branch=None):
+    """Write a real .sdlc/config.json under root with the given review keys.
+
+    Values resolve relative to the config file's PARENT, so a sibling of the
+    working directory is named "../<name>" exactly as a user would have to
+    write it.
+    """
+    config = {}
+    if repo is not None:
+        config["review-repo"] = repo
+    if branch is not None:
+        config["review-branch"] = branch
+    path = Path(root) / ".sdlc" / "config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config))
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _isolated_review_config(monkeypatch, tmp_path):
+    """Run every test from an empty directory carrying no review config.
+
+    The review directives are rendered from a config read against the process
+    working directory, so without this the developer's own checkout — which
+    sets review-repo — would decide them and these tests would assert against
+    the host's configuration rather than against the code. Tests that need a
+    value write a real config with _write_config instead of reaching into
+    module state.
+    """
+    monkeypatch.delenv("SDLC_CONFIG", raising=False)
+    monkeypatch.chdir(tmp_path)
 
 
 @pytest.fixture(autouse=True)
@@ -55,12 +90,12 @@ def _stub_gh_unavailable(monkeypatch):
 
 def _fork_repo():
     """A resolved repo standing in for a fork whose upstream is upstream/sdlc."""
-    return pr_state._Repo(owner="upstream", name="sdlc", repo_flag="upstream/sdlc")
+    return pr_state.Repo(owner="upstream", name="sdlc", repo_flag="upstream/sdlc")
 
 
 def _current_repo():
     """A resolved repo standing in for a non-fork (current repo applies)."""
-    return pr_state._Repo(owner="conradbzura", name="sdlc", repo_flag=None)
+    return pr_state.Repo(owner="conradbzura", name="sdlc", repo_flag=None)
 
 
 def _patch_resolve_repo(monkeypatch, repo):
@@ -85,8 +120,24 @@ def _review_directive(result):
     mode-specific contract is about what the tool APPENDS, so isolate that
     block by stripping the inlined skill prefix and the trailing template.
     """
-    before_template = result.split("\n\nReview document template:", 1)[0]
-    return before_template[len(_read_skill("review")) :]
+    # The skill is assembled per mode, so strip whichever assembly this result
+    # actually carries rather than assuming the whole file is present.
+    for rereview in (False, True):
+        skill = review_skill(rereview=rereview)
+        if result.startswith(skill):
+            body = result[len(skill):]
+            break
+    else:
+        raise AssertionError("result does not begin with either skill assembly")
+    head, separator, tail = body.partition("\n\nReview document template:")
+    if not separator:
+        return body
+    # On a re-review the template sits BETWEEN the directives and the trailing
+    # seeded block, which is deliberately last: it is bulk context, not a
+    # directive, and burying the commit-destination directives behind it is
+    # what the ordering exists to prevent. Drop the template, keep both spans.
+    seeded = tail.find("\n\nSeeded findings —")
+    return head + (tail[seeded:] if seeded != -1 else "")
 
 
 @pytest.mark.asyncio
@@ -218,7 +269,7 @@ async def test_sdlc_implement_with_no_feedback_pr(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sdlc_implement_with_review_findings(monkeypatch):
+async def test_sdlc_implement_with_review_findings(tmp_path, monkeypatch):
     """Test sdlc_implement returns the feedback skill when review findings exist.
 
     Given:
@@ -226,25 +277,13 @@ async def test_sdlc_implement_with_review_findings(monkeypatch):
     When:
         sdlc_implement(number=42) is called.
     Then:
-        It should return the feedback skill with the rendered review document.
+        It should return the feedback skill with the document disclosed as an
+        outline — every finding named, each body held back for a fetch.
     """
     # Arrange
-    review_findings = ReviewFindings(
-        issue_number=7,
-        iteration=2,
-        path=".sdlc/reviews/issue-#7/review-2.md",
-        findings=[
-            ReviewFinding(
-                id="B1",
-                title="Rename foo to bar",
-                severity="blocking",
-                reference="`src/sdlc/server.py:64`",
-                issue="The symbol foo should be bar.",
-                remediation="- [x] Rename foo to bar. *(Recommended.)*",
-                touched_commit="`abc1234`",
-            ),
-        ],
-    )
+    monkeypatch.chdir(tmp_path)
+    path = _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 2)
+    review_findings = pr_state.parse_review_document(path, issue_number=7, iteration=2)
     monkeypatch.setattr(
         pr_state, "dispatch", lambda number, repo=None, review=None: review_findings
     )
@@ -257,6 +296,8 @@ async def test_sdlc_implement_with_review_findings(monkeypatch):
     assert "src/sdlc/server.py:64" in result
     assert "Rename foo to bar" in result
     assert "Iteration: 2" in result
+    assert "sdlc_review_findings" in result
+    assert "The symbol `foo` should be `bar`." not in result
 
 
 @pytest.mark.asyncio
@@ -686,7 +727,7 @@ async def test_sdlc_review_should_inline_review_template(monkeypatch):
     When:
         sdlc_review(pr_number=10) is called.
     Then:
-        It should include the template's blocking and advisory tier headings.
+        It should include all three of the template's severity-tier headings.
     """
     # Arrange
     monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
@@ -697,6 +738,7 @@ async def test_sdlc_review_should_inline_review_template(monkeypatch):
     # Assert
     assert "## Tier 1 — Blocking" in result
     assert "## Tier 2 — Advisory" in result
+    assert "## Tier 3 — Incidental" in result
 
 
 @pytest.mark.asyncio
@@ -941,7 +983,7 @@ async def test_sdlc_review_paths_mode_should_inline_review_template():
     When:
         sdlc_review(paths=["src/sdlc/server.py"]) is called.
     Then:
-        It should include the template's blocking and advisory tier headings.
+        It should include all three of the template's severity-tier headings.
     """
     # Act
     result = await sdlc_review(paths=["src/sdlc/server.py"])
@@ -949,6 +991,7 @@ async def test_sdlc_review_paths_mode_should_inline_review_template():
     # Assert
     assert "## Tier 1 — Blocking" in result
     assert "## Tier 2 — Advisory" in result
+    assert "## Tier 3 — Incidental" in result
 
 
 @pytest.mark.asyncio
@@ -984,11 +1027,12 @@ async def test_sdlc_review_paths_mode_should_emit_hashed_directory_for_glob():
     # Act
     result = await sdlc_review(paths=["src/sdlc/**/*.py"])
 
-    # Assert
-    expected = _paths_slug(["src/sdlc/**/*.py"])
+    # Assert — the slug is PINNED, not recomputed. It is the directory
+    # successive rounds of one target accumulate under, so its stability across
+    # releases is the contract; deriving the expectation from the code under
+    # test would assert that code against itself and pass through any change.
+    expected = "src-sdlc-py-59843563"
     assert f"Review document directory: .sdlc/reviews/{expected}/" in result
-    assert "-" in expected
-    # The trailing hash is 8 lowercase hex characters.
     suffix = expected.rsplit("-", 1)[1]
     assert len(suffix) == 8
     assert all(ch in "0123456789abcdef" for ch in suffix)
@@ -1135,7 +1179,7 @@ def _write_review_doc(tmp_path, directory, iteration, finding_id="B1"):
 
 
 @pytest.mark.asyncio
-async def test_sdlc_review_verify_should_raise_when_no_target_given():
+async def test_sdlc_review_should_raise_when_rereviewing_with_no_target():
     """Test sdlc_review with verify but no target raises ValueError.
 
     Given:
@@ -1151,10 +1195,10 @@ async def test_sdlc_review_verify_should_raise_when_no_target_given():
 
 
 @pytest.mark.asyncio
-async def test_sdlc_review_verify_pr_mode_should_raise_when_no_closing_issue(
+async def test_sdlc_review_should_raise_when_rereviewing_a_pr_that_closes_no_issue(
     monkeypatch,
 ):
-    """Test verify PR mode raises when the PR closes no issue.
+    """Test re-review PR mode raises when the PR closes no issue.
 
     Given:
         closing_issue returns None for PR 10.
@@ -1172,18 +1216,21 @@ async def test_sdlc_review_verify_pr_mode_should_raise_when_no_closing_issue(
 
 
 @pytest.mark.asyncio
-async def test_sdlc_review_verify_pr_mode_should_raise_when_gh_unavailable(
+async def test_sdlc_review_should_raise_when_rereviewing_a_pr_and_gh_is_unavailable(
     monkeypatch,
 ):
-    """Test verify PR mode propagates GhUnavailable when gh is down.
+    """Test a re-review fails as ValueError, not GhUnavailable, when gh is down.
 
     Given:
         closing_issue raises GhUnavailable for PR 10.
     When:
         sdlc_review(pr_number=10, verify=1) is called.
     Then:
-        It should raise GhUnavailable — verify PR mode cannot resolve the
-        issue directory and does not degrade like the non-verify path.
+        It should raise ValueError naming gh and the document it could not
+        locate. Stopping is correct — a re-review cannot resolve the issue
+        directory and does not degrade like the fresh-review path — but the
+        failure has to match the contract `sdlc_review`'s docstring and
+        AGENTS.md both state, which enumerates ValueError only.
     """
 
     # Arrange
@@ -1193,15 +1240,17 @@ async def test_sdlc_review_verify_pr_mode_should_raise_when_gh_unavailable(
     monkeypatch.setattr(pr_state, "closing_issue", raise_unavailable)
 
     # Act / Assert
-    with pytest.raises(GhUnavailable):
+    with pytest.raises(ValueError, match="gh executable not found") as raised:
         await sdlc_review(pr_number=10, verify=1)
+    assert "review-1.md" in str(raised.value)
+    assert not isinstance(raised.value, GhUnavailable)
 
 
 @pytest.mark.asyncio
-async def test_sdlc_review_verify_pr_mode_should_raise_when_no_review_doc(
+async def test_sdlc_review_should_raise_when_rereviewing_a_pr_with_no_review_document(
     tmp_path, monkeypatch
 ):
-    """Test verify PR mode raises when the target has no review document.
+    """Test re-review PR mode raises when the target has no review document.
 
     Given:
         closing_issue resolves PR 10 to issue 7, but no issue-#7 review
@@ -1221,10 +1270,10 @@ async def test_sdlc_review_verify_pr_mode_should_raise_when_no_review_doc(
 
 
 @pytest.mark.asyncio
-async def test_sdlc_review_verify_pr_mode_should_raise_when_iteration_missing(
+async def test_sdlc_review_should_raise_when_rereviewing_a_missing_iteration(
     tmp_path, monkeypatch
 ):
-    """Test verify PR mode raises when the requested iteration is absent.
+    """Test re-review PR mode raises when the requested iteration is absent.
 
     Given:
         Issue 7 has only review-1.md but verify=5 is requested.
@@ -1244,18 +1293,18 @@ async def test_sdlc_review_verify_pr_mode_should_raise_when_iteration_missing(
 
 
 @pytest.mark.asyncio
-async def test_sdlc_review_verify_pr_mode_should_inject_findings_and_directives(
+async def test_sdlc_review_should_seed_findings_and_write_in_place_when_rereviewing_a_pr(
     tmp_path, monkeypatch
 ):
-    """Test verify PR mode injects findings, verify directives, and PR target.
+    """Test re-review PR mode seeds findings and writes the document in place.
 
     Given:
         Issue 7 has review-1.md with a blocking finding, and PR 10 closes it.
     When:
         sdlc_review(pr_number=10, verify=1) is called.
     Then:
-        It should inject the verify-mode directives, the verify document write
-        path, the rendered finding, and the PR target.
+        It should name review-1.md as the write target, seed the rendered
+        finding, and carry the PR target with no verify document.
     """
     # Arrange
     monkeypatch.chdir(tmp_path)
@@ -1266,17 +1315,18 @@ async def test_sdlc_review_verify_pr_mode_should_inject_findings_and_directives(
     result = await sdlc_review(pr_number=10, verify=1)
 
     # Assert
-    assert "Verify mode: review-1" in result
-    assert "Verify document: .sdlc/reviews/issue-#7/verify-1.md" in result
+    assert "Re-review: review-1" in result
+    assert "Review document: .sdlc/reviews/issue-#7/review-1.md" in result
+    assert "Verify document" not in result
     assert "Rename foo to bar" in result
     assert "Target PR: #10" in result
 
 
 @pytest.mark.asyncio
-async def test_sdlc_review_verify_paths_mode_should_load_from_slug_directory(
+async def test_sdlc_review_should_rewrite_the_slug_document_when_rereviewing_paths(
     tmp_path, monkeypatch
 ):
-    """Test verify paths mode loads from the slug directory and injects findings.
+    """Test re-review paths mode rewrites the slug directory document in place.
 
     Given:
         A slug directory keyed by the single literal file's stem holds
@@ -1284,8 +1334,9 @@ async def test_sdlc_review_verify_paths_mode_should_load_from_slug_directory(
     When:
         sdlc_review(paths=["src/sdlc/server.py"], verify=1) is called.
     Then:
-        It should inject the slug verify document path, the rendered finding,
-        and a Target paths block, with no PR or resolved-issue directive.
+        It should name that same document as the write target, seed the
+        rendered finding, and carry a Target paths block with no PR or
+        resolved-issue directive.
     """
     # Arrange
     monkeypatch.chdir(tmp_path)
@@ -1296,7 +1347,9 @@ async def test_sdlc_review_verify_paths_mode_should_load_from_slug_directory(
 
     # Assert
     directive = _review_directive(result)
-    assert "Verify document: .sdlc/reviews/server/verify-1.md" in directive
+    assert "Re-review: review-1" in directive
+    assert "Review document: .sdlc/reviews/server/review-1.md" in directive
+    assert "Verify document" not in directive
     assert "Rename foo to bar" in directive
     assert "Target paths:" in directive
     assert "Target PR:" not in directive
@@ -1304,10 +1357,10 @@ async def test_sdlc_review_verify_paths_mode_should_load_from_slug_directory(
 
 
 @pytest.mark.asyncio
-async def test_sdlc_review_verify_paths_mode_should_raise_when_no_doc(
+async def test_sdlc_review_should_raise_when_rereviewing_paths_with_no_document(
     tmp_path, monkeypatch
 ):
-    """Test verify paths mode raises when no review doc exists for the slug.
+    """Test re-review paths mode raises when no review doc exists for the slug.
 
     Given:
         No slug directory exists for the single literal file.
@@ -1325,17 +1378,17 @@ async def test_sdlc_review_verify_paths_mode_should_raise_when_no_doc(
 
 
 @pytest.mark.asyncio
-async def test_sdlc_review_verify_should_inline_review_template(
+async def test_sdlc_review_should_inline_the_template_when_rereviewing(
     tmp_path, monkeypatch
 ):
-    """Test verify mode still inlines the consolidated-review-document template.
+    """Test a re-review still inlines the consolidated-review-document template.
 
     Given:
         Issue 7 has review-1.md and PR 10 closes it.
     When:
         sdlc_review(pr_number=10, verify=1) is called.
     Then:
-        It should include the template's blocking and advisory tier headings.
+        It should include all three of the template's severity-tier headings.
     """
     # Arrange
     monkeypatch.chdir(tmp_path)
@@ -1348,22 +1401,25 @@ async def test_sdlc_review_verify_should_inline_review_template(
     # Assert
     assert "## Tier 1 — Blocking" in result
     assert "## Tier 2 — Advisory" in result
+    assert "## Tier 3 — Incidental" in result
 
 
 @pytest.mark.asyncio
-async def test_sdlc_review_non_verify_pr_mode_should_omit_verify_directive(
-    monkeypatch,
+async def test_sdlc_review_should_omit_the_rereview_directive_when_verify_is_unset(
+    tmp_path, monkeypatch
 ):
-    """Test sdlc_review without verify emits no verify-mode directive.
+    """Test sdlc_review without verify emits no re-review or seeded block.
 
     Given:
         closing_issue resolves PR 10 to issue 7 and verify is omitted.
     When:
         sdlc_review(pr_number=10) is called.
     Then:
-        It should not contain any Verify mode directive.
+        It should carry neither the re-review directive nor a seeded
+        findings block.
     """
     # Arrange
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
 
     # Act
@@ -1371,52 +1427,70 @@ async def test_sdlc_review_non_verify_pr_mode_should_omit_verify_directive(
 
     # Assert
     directive = _review_directive(result)
-    assert "Verify mode" not in directive
+    assert "Re-review" not in directive
+    assert "Verify" not in directive
+    assert "Seeded findings" not in directive
+    assert "Seeded from" not in directive
 
 
-def test_paths_slug_should_return_stem_for_single_literal_path():
-    """Test _paths_slug returns the file stem for one literal path.
-
-    Given:
-        A single literal file path with no glob metacharacters.
-    When:
-        _paths_slug(["src/sdlc/role-guides/aie.md"]) is called.
-    Then:
-        It should return the file's stem with no hash suffix.
-    """
-    # Act
-    slug = _paths_slug(["src/sdlc/role-guides/aie.md"])
-
-    # Assert
-    assert slug == "aie"
+def _document_directory(result):
+    """Return the slug directory sdlc_review resolved for a paths-mode call."""
+    marker = "Review document directory: .sdlc/reviews/"
+    directive = _review_directive(result)
+    assert marker in directive, "no review document directory in the directive"
+    return directive.split(marker, 1)[1].split("/", 1)[0]
 
 
-def test_paths_slug_should_sanitize_and_hash_glob_or_multiple_paths():
-    """Test _paths_slug sanitizes and hashes a glob or multi-path input.
+@pytest.mark.asyncio
+async def test_sdlc_review_should_name_the_file_stem_for_one_literal_path():
+    """Test a single literal path resolves to that file's stem.
 
     Given:
-        A glob path and, separately, a multi-element path list.
+        A paths-mode review of one literal file path with no glob
+        metacharacters.
     When:
-        _paths_slug is called on each.
+        sdlc_review is called with it.
     Then:
-        It should return a sanitized slug ending in an 8-hex-char hash, stable
-        across calls and order-independent for the multi-path case.
+        The review document directory should be the file's stem, with no hash
+        suffix — the readable case the slug rule exists to preserve.
     """
     # Act
-    glob_slug = _paths_slug(["src/sdlc/**/*.py"])
-    multi_a = _paths_slug(["src/a.py", "src/b.py"])
-    multi_b = _paths_slug(["src/b.py", "src/a.py"])
+    result = await sdlc_review(paths=["src/sdlc/role-guides/aie.md"])
 
     # Assert
-    glob_suffix = glob_slug.rsplit("-", 1)[1]
-    assert len(glob_suffix) == 8
-    assert all(ch in "0123456789abcdef" for ch in glob_suffix)
-    # No glob metacharacters survive sanitization.
+    assert _document_directory(result) == "aie"
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_resolve_one_directory_regardless_of_path_order():
+    """Test the slug is stable and order-independent for a multi-path target.
+
+    Given:
+        The same two file paths supplied in each order.
+    When:
+        sdlc_review is called with both orderings, and twice with the same
+        glob.
+    Then:
+        Every call should resolve the same directory, sanitized of glob
+        metacharacters and path separators. Successive rounds of one target
+        accumulate under that directory, so an unstable slug would scatter a
+        review chain across directories and a re-review would find nothing.
+    """
+    # Act
+    forward = await sdlc_review(paths=["src/a.py", "src/b.py"])
+    reversed_order = await sdlc_review(paths=["src/b.py", "src/a.py"])
+    glob_first = await sdlc_review(paths=["src/sdlc/**/*.py"])
+    glob_again = await sdlc_review(paths=["src/sdlc/**/*.py"])
+
+    # Assert
+    assert _document_directory(forward) == _document_directory(reversed_order)
+    glob_slug = _document_directory(glob_first)
+    assert glob_slug == _document_directory(glob_again)
     assert "*" not in glob_slug
     assert "/" not in glob_slug
-    # Stable and order-independent over the sorted, joined raw paths.
-    assert multi_a == multi_b
-    assert _paths_slug(["src/sdlc/**/*.py"]) == glob_slug
+    suffix = glob_slug.rsplit("-", 1)[1]
+    assert len(suffix) == 8
+    assert all(ch in "0123456789abcdef" for ch in suffix)
 
 
 @pytest.mark.asyncio
@@ -1551,7 +1625,9 @@ async def test_sdlc_implement_should_inject_target_repo_on_continue_path(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_sdlc_implement_should_inject_target_repo_on_feedback_path(monkeypatch):
+async def test_sdlc_implement_should_inject_target_repo_on_feedback_path(
+    tmp_path, monkeypatch
+):
     """Test sdlc_implement injects the target-repo directive on the feedback path.
 
     Given:
@@ -1562,22 +1638,9 @@ async def test_sdlc_implement_should_inject_target_repo_on_feedback_path(monkeyp
         It should append the target-repo directive alongside the findings.
     """
     # Arrange
-    review_findings = ReviewFindings(
-        issue_number=7,
-        iteration=1,
-        path=".sdlc/reviews/issue-#7/review-1.md",
-        findings=[
-            ReviewFinding(
-                id="B1",
-                title="Rename foo to bar",
-                severity="blocking",
-                reference="`src/sdlc/server.py:64`",
-                issue="The symbol foo should be bar.",
-                remediation="- [x] Rename foo to bar.",
-                touched_commit="`abc1234`",
-            ),
-        ],
-    )
+    monkeypatch.chdir(tmp_path)
+    path = _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 1)
+    review_findings = pr_state.parse_review_document(path, issue_number=7, iteration=1)
     monkeypatch.setattr(
         pr_state, "dispatch", lambda number, repo=None, review=None: review_findings
     )
@@ -1998,6 +2061,28 @@ async def test_role_template_should_return_template_content():
 
 
 @pytest.mark.asyncio
+async def test_review_rationale_should_return_document_content():
+    """Test the rationale resource serves the review skill's design reasoning.
+
+    Given:
+        The bundled review-rationale document.
+    When:
+        The sdlc://review-rationale resource is read.
+    Then:
+        It should return the document, carrying its no-rules disclaimer. The
+        disclaimer is the safety property the whole split rests on: a rule can
+        only be in the skill, because a normative sentence here is forbidden.
+    """
+    # Act
+    result = await review_rationale()
+
+    # Assert
+    assert "# Review skill \u2014 design rationale" in result
+    assert "**This document carries NO rules.**" in result
+    assert "## R10. Step 10" in result
+
+
+@pytest.mark.asyncio
 async def test_review_template_should_return_template_content():
     """Test the review-template resource serves the bundled review template.
 
@@ -2006,7 +2091,7 @@ async def test_review_template_should_return_template_content():
     When:
         review_template() is called.
     Then:
-        It should return the blocking and advisory severity-tier headings.
+        It should return all three severity-tier headings.
     """
     # Act
     result = await review_template()
@@ -2014,6 +2099,7 @@ async def test_review_template_should_return_template_content():
     # Assert
     assert "## Tier 1 — Blocking" in result
     assert "## Tier 2 — Advisory" in result
+    assert "## Tier 3 — Incidental" in result
 
 
 @pytest.mark.asyncio
@@ -2256,6 +2342,33 @@ async def test_agents_md_should_return_file_content():
 
 
 @pytest.mark.asyncio
+async def test_agents_md_should_carry_only_loadable_json_examples():
+    """Test every fenced json block in AGENTS.md parses as JSON.
+
+    Given:
+        AGENTS.md, whose config example is the only worked example of
+        .sdlc/config.json and which review.md directs agents to edit.
+    When:
+        Each ```json block is parsed.
+    Then:
+        All should load. JSON has no comments, and guides.load_user_config
+        raises on a malformed file at import and on every review — so an
+        annotated example that gets copied takes down every sdlc_* call for
+        that project, not just the review.
+    """
+    # Arrange
+    content = await agents_md()
+
+    # Act
+    blocks = re.findall(r"```json\n(.*?)```", content, re.DOTALL)
+
+    # Assert
+    assert blocks, "AGENTS.md carries no json examples to check"
+    for block in blocks:
+        json.loads(block)
+
+
+@pytest.mark.asyncio
 async def test_knowledge_graph_should_return_content_when_file_exists(monkeypatch, tmp_path):
     """Test knowledge_graph returns graph content when the file exists.
 
@@ -2299,3 +2412,1490 @@ async def test_knowledge_graph_should_return_not_found_when_file_missing(monkeyp
 
     # Assert
     assert "No knowledge graph found" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_name_the_configured_repository(
+    tmp_path, monkeypatch
+):
+    """Test the declared review repository is named as an absolute path.
+
+    Given:
+        review-repo names .sdlc/reviews, a git repository beneath the config
+        directory and distinct from the bare .sdlc fallback.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        It should name that repository by its absolute path.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc" / "reviews" / ".git").mkdir(parents=True)
+    _write_config(tmp_path, repo="reviews")
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    expected = (tmp_path / ".sdlc" / "reviews").resolve().as_posix()
+    assert f"Review repository: {expected}" in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_name_sdlc_when_it_is_a_repository(
+    tmp_path, monkeypatch
+):
+    """Test .sdlc is used as the convention fallback when it is a repository.
+
+    Given:
+        No configured review-repo and a .sdlc directory holding a .git.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        It should name .sdlc by its absolute path.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc" / ".git").mkdir(parents=True)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    expected = (tmp_path / ".sdlc").resolve().as_posix()
+    assert f"Review repository: {expected}" in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_report_unresolved_when_no_repository_is_declared(
+    tmp_path, monkeypatch
+):
+    """Test an undeclared repository is reported as a question for the user.
+
+    Given:
+        No configured review-repo and a .sdlc that is not a repository.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        It should report the repository unresolved and direct the skill to ask
+        the user rather than inferring one.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review repository: unresolved" in directive
+    assert "git init .sdlc" in directive
+    assert "Do not guess." in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_report_unresolved_when_the_configured_repo_is_invalid(
+    tmp_path, monkeypatch
+):
+    """Test a misconfigured review-repo is surfaced, not silently replaced.
+
+    Given:
+        review-repo names a directory that is not a repository, while .sdlc
+        itself is one.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        It should report the configured path unresolved rather than falling
+        back to the .sdlc repository the user did not name.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / ".sdlc" / ".git").mkdir(parents=True)
+    _write_config(tmp_path, repo="../elsewhere")
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review repository: unresolved" in directive
+    assert "elsewhere" in directive
+    # The fallback is what must not happen. The refusal legitimately NAMES
+    # .sdlc/reviews as the path the configured value has to contain, so the
+    # check is that .sdlc was not resolved TO, not that it goes unmentioned.
+    sdlc = (tmp_path / ".sdlc").resolve().as_posix()
+    assert f"Review repository: {sdlc}" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_emit_the_document_path_relative_to_the_repository(
+    tmp_path, monkeypatch
+):
+    """Test the staging path is rebased onto the review repository root.
+
+    Given:
+        .sdlc is the review repository, so the document lies below it.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        It should emit the document path relative to .sdlc, which is what git
+        add can address, alongside the working-directory path it is written to.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc" / ".git").mkdir(parents=True)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review document: .sdlc/reviews/server/review-1.md" in directive
+    assert "Review document in repository: reviews/server/review-1.md" in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_refuse_a_review_repo_at_the_reviewed_root(
+    tmp_path, monkeypatch
+):
+    """Test a review repo naming the reviewed root is refused, not resolved.
+
+    Given:
+        review-repo names the working directory itself, which is a repository.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        It should report the repository unresolved, because excluding the
+        review repository from the snapshot would exclude the whole tree and
+        abort the capture at step 2.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".git").mkdir()
+    _write_config(tmp_path, repo="..")
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review repository: unresolved" in directive
+    assert "Review document in repository:" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_omit_the_branch_directive_when_nothing_sets_one(
+    tmp_path, monkeypatch
+):
+    """Test no branch directive is emitted when neither argument nor config sets one.
+
+    Given:
+        No target argument and no configured review branch.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        It should emit no review commit branch directive, leaving the skill to
+        commit to the checked-out branch.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    assert "Review commit branch" not in _review_directive(result)
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_emit_the_branch_directive_when_target_given(
+    tmp_path, monkeypatch
+):
+    """Test an explicit target branch is emitted as the commit destination.
+
+    Given:
+        A target branch is supplied to sdlc_review.
+    When:
+        sdlc_review(paths=[...], target="reviews") is called.
+    Then:
+        It should name that branch as the review commit branch and call for a
+        worktree so the reviewed tree is undisturbed.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], target="reviews")
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review commit branch: reviews" in directive
+    assert "worktree" in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_fall_back_to_the_configured_branch(
+    tmp_path, monkeypatch
+):
+    """Test the review-branch config key supplies the branch when no target is given.
+
+    Given:
+        The loaded state carries a configured review branch and no target is
+        supplied.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        It should name the configured branch as the review commit branch.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    _write_config(tmp_path, branch="from-config")
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    assert "Review commit branch: from-config" in _review_directive(result)
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_prefer_the_target_over_the_configured_branch(
+    tmp_path, monkeypatch
+):
+    """Test an explicit target outranks the configured review branch.
+
+    Given:
+        The loaded state carries a configured review branch and a different
+        target is supplied.
+    When:
+        sdlc_review(paths=[...], target="explicit") is called.
+    Then:
+        It should name the supplied target, not the configured branch.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    _write_config(tmp_path, branch="from-config")
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], target="explicit")
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review commit branch: explicit" in directive
+    assert "from-config" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_emit_commit_directives_when_rereviewing(
+    tmp_path, monkeypatch
+):
+    """Test a re-review carries the same commit directives a fresh round does.
+
+    Given:
+        A slug directory holds review-1.md and a target branch is supplied.
+    When:
+        sdlc_review(paths=[...], verify=1, target="reviews") is called.
+    Then:
+        It should emit both the review repository and the commit branch
+        directives.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    _write_review_doc(tmp_path, ".sdlc/reviews/server", 1)
+
+    # Act
+    result = await sdlc_review(
+        paths=["src/sdlc/server.py"], verify=1, target="reviews"
+    )
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review repository:" in directive
+    assert "Review commit branch: reviews" in directive
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["fresh_pr", "fresh_paths", "rereview_pr", "rereview_paths"])
+async def test_sdlc_review_should_emit_one_commit_directive_set_in_every_mode(
+    mode, tmp_path, monkeypatch
+):
+    """Test every review shape carries exactly one set of commit directives.
+
+    Given:
+        A review repository and a target branch, in each of the four shapes a
+        review can take.
+    When:
+        sdlc_review is called in that shape.
+    Then:
+        It should emit exactly one Review repository line and exactly one
+        Review commit branch line.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc" / ".git").mkdir(parents=True)
+    _write_config(tmp_path, branch="reviews")
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+    if mode.startswith("rereview"):
+        directory = ".sdlc/reviews/issue-#7" if "pr" in mode else ".sdlc/reviews/server"
+        _write_review_doc(tmp_path, directory, 1)
+    kwargs = {"pr_number": 10} if "pr" in mode else {"paths": ["src/sdlc/server.py"]}
+    if mode.startswith("rereview"):
+        kwargs["verify"] = 1
+
+    # Act
+    result = await sdlc_review(**kwargs)
+
+    # Assert
+    directive = _review_directive(result)
+    lines = directive.splitlines()
+    assert sum(1 for line in lines if line.startswith("Review repository:")) == 1
+    assert sum(1 for line in lines if line.startswith("Review commit branch:")) == 1
+    assert sum(1 for line in lines if line.startswith("Review snapshot directory:")) == 1
+    assert (
+        sum(1 for line in lines if line.startswith("Review snapshot in repository:"))
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_emit_commit_directives_when_reviewing_a_pr(
+    tmp_path, monkeypatch
+):
+    """Test the fresh PR path carries the commit directives, not only paths mode.
+
+    Given:
+        A PR closing issue 7, a .sdlc repository, and a target branch.
+    When:
+        sdlc_review(pr_number=10, target="reviews") is called.
+    Then:
+        It should emit the repository, repository-relative document, and commit
+        branch directives.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc" / ".git").mkdir(parents=True)
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+
+    # Act
+    result = await sdlc_review(pr_number=10, target="reviews")
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review repository:" in directive
+    assert (
+        "Review document in repository: reviews/issue-#7/review-1.md" in directive
+    )
+    assert "Review commit branch: reviews" in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_omit_commit_directives_when_the_issue_is_unresolved(
+    tmp_path, monkeypatch
+):
+    """Test no commit directives are emitted when no document will be written.
+
+    Given:
+        A PR that closes no issue, so the skill is told to stop and ask.
+    When:
+        sdlc_review(pr_number=10, target="reviews") is called.
+    Then:
+        It should emit no commit directives, since there is no document to
+        write or commit on that branch.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: None)
+
+    # Act
+    result = await sdlc_review(pr_number=10, target="reviews")
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Resolved issue: unresolved" in directive
+    assert "Review repository:" not in directive
+    assert "Review commit branch:" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_emit_the_resolved_issue_when_rereviewing_a_pr(
+    tmp_path, monkeypatch
+):
+    """Test a PR-mode re-review names the linked issue like a fresh round does.
+
+    Given:
+        Issue 7 has review-1.md and PR 10 closes it.
+    When:
+        sdlc_review(pr_number=10, verify=1) is called.
+    Then:
+        It should emit the Resolved issue directive the skill is told to
+        consume rather than re-derive.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+    _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 1)
+
+    # Act
+    result = await sdlc_review(pr_number=10, verify=1)
+
+    # Assert
+    assert "Resolved issue: #7" in _review_directive(result)
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_label_the_seeded_block_distinctly_from_the_target(
+    tmp_path, monkeypatch
+):
+    """Test the write target cannot be confused with the seeded provenance line.
+
+    Given:
+        A slug directory holding review-1.md.
+    When:
+        sdlc_review(paths=[...], verify=1) is called.
+    Then:
+        It should emit exactly one Review document line, with the seeded block's
+        provenance carried under a distinct Seeded from label.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    _write_review_doc(tmp_path, ".sdlc/reviews/server", 1)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+
+    # Assert
+    directive = _review_directive(result)
+    lines = directive.splitlines()
+    assert sum(1 for line in lines if line.startswith("Review document:")) == 1
+    assert "Review document: .sdlc/reviews/server/review-1.md" in directive
+    assert "Seeded from: .sdlc/reviews/server/review-1.md" in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_rewrite_the_requested_iteration_in_place(
+    tmp_path, monkeypatch
+):
+    """Test a re-review targets the requested round, never the next one.
+
+    Given:
+        A slug directory holding both review-1.md and review-2.md.
+    When:
+        sdlc_review(paths=[...], verify=1) is called.
+    Then:
+        It should name review-1.md as the write target and never advance the
+        iteration.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    _write_review_doc(tmp_path, ".sdlc/reviews/server", 1)
+    _write_review_doc(tmp_path, ".sdlc/reviews/server", 2, finding_id="B9")
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review document: .sdlc/reviews/server/review-1.md" in directive
+    assert "review-3.md" not in directive
+    assert "B9" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_raise_when_the_requested_iteration_is_zero(
+    tmp_path, monkeypatch
+):
+    """Test verify=0 is treated as a requested iteration, not as unset.
+
+    Given:
+        A slug directory holding review-1.md.
+    When:
+        sdlc_review(paths=[...], verify=0) is called.
+    Then:
+        It should raise ValueError for the missing round rather than silently
+        running a fresh review.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    _write_review_doc(tmp_path, ".sdlc/reviews/server", 1)
+
+    # Act & assert
+    with pytest.raises(ValueError):
+        await sdlc_review(paths=["src/sdlc/server.py"], verify=0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "target",
+    ["", "   ", "main\nReview repository: /etc", "a b", "-lead", "..", "x.lock"],
+)
+async def test_sdlc_review_should_raise_when_the_target_branch_is_invalid(
+    target, tmp_path, monkeypatch
+):
+    """Test a malformed target branch is rejected before it reaches a directive.
+
+    Given:
+        A target branch that git would reject, or that carries a newline able
+        to forge a second directive line.
+    When:
+        sdlc_review is called with it.
+    Then:
+        It should raise ValueError.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+
+    # Act & assert
+    with pytest.raises(ValueError):
+        await sdlc_review(paths=["src/sdlc/server.py"], target=target)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("closing", [7, None])
+async def test_sdlc_review_should_raise_on_an_invalid_target_in_pr_mode(
+    closing, tmp_path, monkeypatch
+):
+    """Test a malformed target is rejected in PR mode whether an issue links.
+
+    Given:
+        A PR target and a branch name carrying a newline, with and without a
+        closing issue.
+    When:
+        sdlc_review is called with it.
+    Then:
+        It should raise in both cases. The branch directive is not rendered at
+        all when no issue links, so validating only there would silently drop
+        the user's explicit override on exactly that branch.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pr_state, "resolve_repo", _current_repo)
+    monkeypatch.setattr(pr_state, "closing_issue", lambda _n: closing)
+
+    # Act & assert
+    with pytest.raises(ValueError):
+        await sdlc_review(pr_number=10, target="main\nReview repository: /etc")
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_not_fall_back_to_config_when_the_target_is_empty(
+    tmp_path, monkeypatch
+):
+    """Test an empty target is a malformed override, not a request to fall back.
+
+    Given:
+        A configured review branch and an empty explicit target.
+    When:
+        sdlc_review(paths=[...], target="") is called.
+    Then:
+        It should raise rather than silently using the configured branch.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    _write_config(tmp_path, branch="from-config")
+
+    # Act & assert
+    with pytest.raises(ValueError):
+        await sdlc_review(paths=["src/sdlc/server.py"], target="")
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_use_config_written_to_disk(tmp_path, monkeypatch):
+    """Test a config file on disk reaches the rendered directives.
+
+    Given:
+        A .sdlc/config.json setting review-repo and review-branch, and the
+        real reload path restored.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        It should name both the configured repository and branch, having
+        re-read the config itself rather than relying on the import-time bind.
+    """
+    # Arrange
+    sdlc_dir = tmp_path / ".sdlc"
+    (sdlc_dir / ".git").mkdir(parents=True)
+    (sdlc_dir / "config.json").write_text(
+        json.dumps({"review-repo": ".", "review-branch": "from-disk"})
+    )
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review commit branch: from-disk" in directive
+    assert f"Review repository: {sdlc_dir.resolve().as_posix()}" in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_not_emit_the_base_branch_override_directive(
+    tmp_path, monkeypatch
+):
+    """Test the review target is a commit destination, not a base branch.
+
+    Given:
+        A target branch supplied to sdlc_review.
+    When:
+        sdlc_review(paths=[...], target="reviews") is called.
+    Then:
+        It should emit the commit-branch directive and never the base-branch
+        override wording used by implement and pr.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], target="reviews")
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review commit branch: reviews" in directive
+    assert "Target branch override" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_never_reference_a_verify_document(
+    tmp_path, monkeypatch
+):
+    """Test the removed verdict artifact is absent from the whole prompt.
+
+    Given:
+        A slug directory holding review-1.md.
+    When:
+        sdlc_review(paths=[...], verify=1) is called.
+    Then:
+        No verify- filename fragment should appear anywhere in the returned
+        prompt, inlined skill and template included.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    _write_review_doc(tmp_path, ".sdlc/reviews/server", 1)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+
+    # Assert
+    assert "verify-" not in result
+    assert "Verify document" not in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_rereview_a_hashed_slug_directory(
+    tmp_path, monkeypatch
+):
+    """Test a re-review resolves the hashed slug a multi-path round wrote to.
+
+    Given:
+        A glob-and-multi-path target whose hashed slug directory holds
+        review-1.md.
+    When:
+        sdlc_review is called over the same paths with verify=1.
+    Then:
+        It should name that same hashed directory's document as the write
+        target.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    paths = ["src/**/*.py", "tests/*.py"]
+    slug = "src-py-tests-py-b174fbb7"
+    _write_review_doc(tmp_path, f".sdlc/reviews/{slug}", 1)
+
+    # Act
+    result = await sdlc_review(paths=paths, verify=1)
+
+    # Assert
+    directive = _review_directive(result)
+    assert f"Review document: .sdlc/reviews/{slug}/review-1.md" in directive
+    assert f"Seeded from: .sdlc/reviews/{slug}/review-1.md" in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_omit_the_issue_line_when_rereviewing_paths(
+    tmp_path, monkeypatch
+):
+    """Test a paths-mode seeded block is not keyed to an issue.
+
+    Given:
+        A slug directory holding review-1.md, reviewed in paths mode where no
+        issue applies.
+    When:
+        sdlc_review(paths=[...], verify=1) is called.
+    Then:
+        The seeded block should carry no issue line, rather than the sentinel
+        issue zero the endpoint passes internally.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    _write_review_doc(tmp_path, ".sdlc/reviews/server", 1)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Issue: #0" not in directive
+    assert "Resolved issue:" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_pair_the_snapshot_directory_with_the_document(
+    tmp_path, monkeypatch
+):
+    """Test the snapshot directory carries the same round number as the document.
+
+    Given:
+        A slug directory holding review-1.md and review-2.md.
+    When:
+        sdlc_review is called with verify=1.
+    Then:
+        It should name snapshot-1 beside review-1.md, never the round the
+        document is not being rewritten at.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc" / ".git").mkdir(parents=True)
+    _write_review_doc(tmp_path, ".sdlc/reviews/server", 1)
+    _write_review_doc(tmp_path, ".sdlc/reviews/server", 2, finding_id="B9")
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review document: .sdlc/reviews/server/review-1.md" in directive
+    assert "Review snapshot directory: .sdlc/reviews/server/snapshot-1/" in directive
+    assert "snapshot-2" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_rebase_the_snapshot_onto_the_review_repository(
+    tmp_path, monkeypatch
+):
+    """Test the snapshot's staging path is relative to the review repository.
+
+    Given:
+        .sdlc is the review repository, so the snapshot lies below it.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        It should emit the snapshot directory relative to .sdlc for staging,
+        alongside the working-directory path it is written to.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc" / ".git").mkdir(parents=True)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review snapshot directory: .sdlc/reviews/server/snapshot-1/" in directive
+    assert "Review snapshot in repository: reviews/server/snapshot-1/" in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_refuse_a_repo_containing_the_reviewed_tree(
+    tmp_path, monkeypatch
+):
+    """Test a review repository above the reviewed tree is refused, not rebased.
+
+    Given:
+        A repository two levels above the working directory, named by
+        review-repo, so it contains the tree under review.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        It should report the repository unresolved and say why, rather than
+        rebasing the review paths onto it — no top-anchored relative pathspec
+        can exclude a directory that contains the reviewed tree, so the
+        capture would embed the review repository in the snapshot of the code
+        it reviews and the tree SHA would churn every pass unnoticed.
+    """
+    # Arrange
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    (tmp_path / ".git").mkdir()
+    _write_config(work, repo="../..")
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review repository: unresolved" in directive
+    assert "contains the tree under review" in directive
+    assert "is not a git repository" not in directive
+    assert "Review snapshot in repository:" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_omit_the_snapshot_staging_path_when_unresolved(
+    tmp_path, monkeypatch
+):
+    """Test no staging path is offered when there is no repository to stage into.
+
+    Given:
+        No review-repo and a .sdlc that is not a repository.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        It should still name where the snapshot is written, but offer no
+        repository-relative path, since no repository is resolved.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review snapshot directory: .sdlc/reviews/server/snapshot-1/" in directive
+    assert "Review snapshot in repository:" not in directive
+    assert "Review document in repository:" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_lead_with_the_target_directive_when_rereviewing_a_pr(
+    tmp_path, monkeypatch
+):
+    """Test the mode-selecting directive precedes the seeded findings block.
+
+    Given:
+        Issue 7 has review-1.md and PR 10 closes it.
+    When:
+        sdlc_review(pr_number=10, verify=1) is called.
+    Then:
+        Target PR should appear before the seeded-findings header, so the
+        directive deciding whether gh runs is not buried behind a rendered
+        dump of an entire prior review document.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pr_state, "closing_issue", lambda pr_number: 7)
+    _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 1)
+
+    # Act
+    directive = _review_directive(await sdlc_review(pr_number=10, verify=1))
+
+    # Assert
+    assert directive.index("Target PR: #10") < directive.index("Seeded findings —")
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_lead_with_the_target_directive_when_rereviewing_paths(
+    tmp_path, monkeypatch
+):
+    """Test paths mode also puts its target directive ahead of the seeding.
+
+    Given:
+        A slug directory holding review-1.md for the requested paths.
+    When:
+        sdlc_review(paths=[...], verify=1) is called.
+    Then:
+        Target paths and its paths-mode note should both precede the
+        seeded-findings header, since a missed note means running gh in the
+        one mode that forbids it.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    slug = "server"
+    _write_review_doc(tmp_path, f".sdlc/reviews/{slug}", 1)
+
+    # Act
+    directive = _review_directive(
+        await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+    )
+
+    # Assert
+    seeded = directive.index("Seeded findings —")
+    assert directive.index("Target paths:") < seeded
+    assert directive.index("Paths mode: no PR") < seeded
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_pick_up_a_review_repo_recorded_mid_session(
+    tmp_path, monkeypatch
+):
+    """Test a review-repo written after an unresolved round is honored next call.
+
+    Given:
+        A working directory with no review repository, reviewed once, after
+        which .sdlc/reviews is recorded as review-repo. That path is
+        deliberately NOT the one the bare .sdlc fallback would produce, so
+        only a genuine config re-read can name it.
+    When:
+        sdlc_review is called a second time.
+    Then:
+        The first round should report unresolved and the second should name
+        the recorded repository, without the server being restarted.
+    """
+    # Arrange
+    store = tmp_path / ".sdlc" / "reviews"
+    (store / ".git").mkdir(parents=True)
+
+    # Act
+    first = _review_directive(await sdlc_review(paths=["src/sdlc/server.py"]))
+    _write_config(tmp_path, repo="reviews")
+    second = _review_directive(await sdlc_review(paths=["src/sdlc/server.py"]))
+
+    # Assert
+    assert "Review repository: unresolved" in first
+    assert f"Review repository: {store.resolve().as_posix()}" in second
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_inherit_the_seeded_roles_when_rereviewing(
+    tmp_path, monkeypatch
+):
+    """Test a re-review runs the roles the seeded document was produced under.
+
+    Given:
+        A review document whose Composition line names a non-default role.
+    When:
+        sdlc_review is re-run with --verify and no explicit roles.
+    Then:
+        It should dispatch that role rather than falling back to
+        general-purpose, which would carry every seeded finding unexamined.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = ".sdlc/reviews/server"
+    path = _write_review_doc(tmp_path, directory, 1)
+    path.write_text(
+        path.read_text().replace(
+            "Header prose.",
+            "Composition: 5 reviewer(s) per role across role(s) `aie` "
+            "(5 × 1 = 5 reviewer subagents total).",
+        )
+    )
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Roles: aie" in directive
+    assert "Roles: general-purpose" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_inherit_roles_from_the_elided_composition(
+    tmp_path, monkeypatch
+):
+    """Test the template's own elided Composition shape still yields its roles.
+
+    Given:
+        A seeded document whose Composition line lists its roles followed by
+        an ellipsis before the parenthetical, which is the shape the bundled
+        template models and the skill tells the writing agent to follow.
+    When:
+        sdlc_review is re-run with --verify and no explicit roles.
+    Then:
+        Both roles should be inherited, and no coverage warning emitted.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = ".sdlc/reviews/server"
+    path = _write_review_doc(tmp_path, directory, 1)
+    path.write_text(
+        path.read_text().replace(
+            "Header prose.",
+            "Composition: 3 reviewer(s) per role across role(s) `aie`, "
+            "`general-purpose`, … (`3 × 2` reviewer subagents total).",
+        )
+    )
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Roles: aie, general-purpose" in directive
+    assert "Seeded-role coverage warning" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_warn_when_the_seeded_roles_cannot_be_read(
+    tmp_path, monkeypatch
+):
+    """Test a failed role inheritance is announced rather than silent.
+
+    Given:
+        A seeded document whose Composition line names its roles in prose,
+        with no backticked stems to collect.
+    When:
+        sdlc_review is re-run with --verify and no explicit roles.
+    Then:
+        It should fall back to general-purpose AND say so. Narrowing chosen by
+        the user is already warned about, so the strictly worse case — nobody
+        chose it and every seeded finding from another role carries unexamined
+        — must not be the quiet one.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = ".sdlc/reviews/server"
+    path = _write_review_doc(tmp_path, directory, 1)
+    path.write_text(
+        path.read_text().replace(
+            "Header prose.",
+            "Composition: three reviewers per role across role(s) aie and "
+            "general-purpose, six reviewer subagents total.",
+        )
+    )
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Roles: general-purpose" in directive
+    assert "Seeded-role coverage warning" in directive
+    assert "Composition line could not be read" in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_treat_an_empty_role_list_as_omitted(
+    tmp_path, monkeypatch
+):
+    """Test roles=[] falls back rather than rendering a bare Roles line.
+
+    Given:
+        An explicit empty role list on a fresh round and on a re-review whose
+        seeded document names a role.
+    When:
+        sdlc_review is called.
+    Then:
+        The fresh round should default to general-purpose and the re-review
+        should still inherit, instead of emitting `Roles: ` and — on the
+        re-review — warning against every seeded role at once.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = ".sdlc/reviews/server"
+    path = _write_review_doc(tmp_path, directory, 1)
+    path.write_text(
+        path.read_text().replace(
+            "Header prose.",
+            "Composition: 5 reviewer(s) per role across role(s) `aie` "
+            "(5 × 1 = 5 reviewer subagents total).",
+        )
+    )
+
+    # Act
+    fresh = _review_directive(
+        await sdlc_review(paths=["src/sdlc/server.py"], roles=[])
+    )
+    rereview = _review_directive(
+        await sdlc_review(paths=["src/sdlc/server.py"], roles=[], verify=1)
+    )
+
+    # Assert
+    assert "Roles: general-purpose" in fresh
+    assert "Roles: aie" in rereview
+    assert "Seeded-role coverage warning" not in rereview
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_report_the_document_unresolved_when_outside(
+    tmp_path, monkeypatch
+):
+    """Test a document symlinked out of the repository reports unresolved.
+
+    Given:
+        A resolvable review repository at .sdlc, with the review directory
+        inside it symlinked to a location outside it — the one arrangement
+        that still puts a document outside a repository resolution accepted,
+        since resolve_review_repo now refuses any configured repository that
+        cannot contain .sdlc/reviews.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        Both repository-relative directives should read unresolved with the
+        explanation, while the repository itself is still named — the two are
+        deliberately independent, and step 10 of the review skill builds a
+        STOP gate on exactly this string.
+    """
+    # Arrange
+    sdlc = tmp_path / ".sdlc"
+    (sdlc / ".git").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    (outside / "server").mkdir(parents=True)
+    (sdlc / "reviews").mkdir()
+    (sdlc / "reviews" / "server").symlink_to(outside / "server")
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    expected = sdlc.resolve().as_posix()
+    assert f"Review repository: {expected}" in directive
+    assert "Review document in repository: unresolved" in directive
+    assert "Review snapshot in repository: unresolved" in directive
+    assert f"does not lie inside {expected}" in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_refuse_a_repository_that_cannot_hold_the_document(
+    tmp_path, monkeypatch
+):
+    """Test a sibling review repository is refused at resolution.
+
+    Given:
+        review-repo names a sibling repository outside the reviewed tree,
+        which can never contain the hardcoded .sdlc/reviews document path.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        The repository directive should read unresolved and carry the reason,
+        so the user is told at the point the configuration is read rather
+        than being handed a named repository the document directives then
+        contradict.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "docs" / ".git").mkdir(parents=True)
+    _write_config(tmp_path, repo="../docs")
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Review repository: unresolved" in directive
+    assert "does not contain" in directive
+    assert (tmp_path / "docs").resolve().as_posix() in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_resolve_a_symlinked_sdlc(tmp_path, monkeypatch):
+    """Test a symlinked .sdlc yields a real repository-relative document path.
+
+    Given:
+        No configured review-repo and a .sdlc that is a symlink to a sibling
+        repository.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        The document should be addressed from the link's target as a real
+        path, rather than reported outside a repository that contains it —
+        which would STOP step 10(a) on every pass and never commit a round.
+    """
+    # Arrange
+    store = tmp_path / "review-store"
+    (store / ".git").mkdir(parents=True)
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / ".sdlc").symlink_to(store)
+    monkeypatch.chdir(work)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    assert f"Review repository: {store.resolve().as_posix()}" in directive
+    assert "Review document in repository: reviews/server/review-1.md" in directive
+    assert "Review document in repository: unresolved" not in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_warn_when_roles_miss_the_seeded_set(
+    tmp_path, monkeypatch
+):
+    """Test an explicit role list that cannot cover the seeded set is flagged.
+
+    Given:
+        A seeded document raised by `aie`, re-reviewed with a different role.
+    When:
+        sdlc_review is called with that explicit role list.
+    Then:
+        It should warn that the uncovered role's findings will carry without
+        re-examination, and the roles it names to re-run with should be the
+        UNION of the seeded and requested roles — naming the seeded roles
+        alone would cure the gap by discarding the lens the caller chose.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = ".sdlc/reviews/server"
+    path = _write_review_doc(tmp_path, directory, 1)
+    path.write_text(
+        path.read_text().replace(
+            "Header prose.",
+            "Composition: 1 reviewer(s) per role across role(s) `aie` "
+            "(1 × 1 = 1 reviewer subagents total).",
+        )
+    )
+
+    # Act
+    result = await sdlc_review(
+        paths=["src/sdlc/server.py"], verify=1, roles=["general-purpose"]
+    )
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Seeded-role coverage warning" in directive
+    assert "--roles aie general-purpose" in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_rereview_should_emit_the_target_repo_directive(
+    tmp_path, monkeypatch
+):
+    """Test a PR-mode re-review injects the target-repo directive too.
+
+    Given:
+        A seeded review document and a fork whose upstream is upstream/sdlc.
+    When:
+        sdlc_review is re-run with --verify in PR mode.
+    Then:
+        It should emit the directive, and emit it BEFORE the repository
+        directive. Step 1 of the skill STOPs when the directive is absent, so
+        a re-review that silently dropped it would halt every PR-mode pass —
+        and the ordering is what keeps it in the leading span ahead of the
+        seeded dump, which the surrounding comment block argues for and
+        nothing asserted.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = ".sdlc/reviews/issue-#7"
+    _write_review_doc(tmp_path, directory, 1)
+    _patch_resolve_repo(monkeypatch, _fork_repo())
+    monkeypatch.setattr(
+        pr_state, "_find_closing_issue", lambda repo, number: 7
+    )
+
+    # Act
+    result = await sdlc_review(pr_number=42, verify=1)
+
+    # Assert — isolate the appended block; the skill prose documents both names
+    directive = _review_directive(result)
+    assert "Target repo: upstream/sdlc" in directive
+    assert directive.index("Target repo: upstream/sdlc") < directive.index(
+        "Review repository:"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_warn_when_the_composition_line_is_unreadable_and_roles_are_explicit(
+    tmp_path, monkeypatch
+):
+    """Test an explicit role list against an unreadable Composition line warns.
+
+    Given:
+        A seeded document whose Composition line names no backticked stems,
+        re-reviewed with an explicit role list.
+    When:
+        sdlc_review is called with that list.
+    Then:
+        It should still emit a coverage warning. This is the case where
+        coverage is least knowable — nothing is known about what raised the
+        seeded findings — so reporting nothing is the worst available answer,
+        and the tool docstring promises a warning here.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    directory = ".sdlc/reviews/server"
+    path = _write_review_doc(tmp_path, directory, 1)
+    path.write_text(
+        path.read_text().replace(
+            "Header prose.",
+            "Composition: 1 reviewer(s) per role across role(s) aie, "
+            "unbackticked and therefore unreadable.",
+        )
+    )
+
+    # Act
+    result = await sdlc_review(
+        paths=["src/sdlc/server.py"], verify=1, roles=["general-purpose"]
+    )
+
+    # Assert
+    directive = _review_directive(result)
+    assert "Seeded-role coverage warning" in directive
+    assert "could not be read" in directive
+    assert "general-purpose" in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_name_the_resolved_path_when_the_repo_is_missing(
+    tmp_path, monkeypatch
+):
+    """Test the unresolved directive names where the configured value landed.
+
+    Given:
+        A real .sdlc repository and `review-repo` set to ".sdlc" — the
+        intuitive spelling, which resolves against the config file's parent to
+        .sdlc/.sdlc and finds nothing.
+    When:
+        sdlc_review(paths=[...]) is called.
+    Then:
+        It should name the resolved path and suggest "." rather than claiming
+        .sdlc is not a git repository, which is false and would send the user
+        to initialize a repository that already exists on every call.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc" / ".git").mkdir(parents=True)
+    _write_config(tmp_path, repo=".sdlc")
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"])
+
+    # Assert
+    directive = _review_directive(result)
+    nested = (tmp_path / ".sdlc" / ".sdlc").resolve().as_posix()
+    assert "Review repository: unresolved" in directive
+    assert nested in directive
+    assert 'Did you mean "."' in directive
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_should_place_the_seeded_block_after_the_template(
+    tmp_path, monkeypatch
+):
+    """Test the largest distractor trails every directive it could bury.
+
+    Given:
+        A re-review, whose seeded block is a dump of a whole prior document.
+    When:
+        The prompt is rendered.
+    Then:
+        Every commit-destination directive should precede the template, and
+        the seeded block should follow it.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    _write_review_doc(tmp_path, ".sdlc/reviews/server", 1)
+
+    # Act
+    result = await sdlc_review(paths=["src/sdlc/server.py"], verify=1)
+
+    # Assert
+    template = result.index("\n\nReview document template:")
+    assert result.index("Review snapshot directory:") < template
+    assert result.index("Review document:") < template
+    assert template < result.index("\n\nSeeded findings —")
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_findings_should_return_the_requested_body(
+    tmp_path, monkeypatch
+):
+    """Test the fetch serves a finding the outline elided.
+
+    Given:
+        A review document whose outline carries B1's heading but not its
+        issue text.
+    When:
+        sdlc_review_findings is called for B1.
+    Then:
+        It should return the issue text and remediation, which is what a
+        disposition or a remediation is judged against.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    path = _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 1)
+
+    # Act
+    result = await sdlc_review_findings(str(path), ["B1"])
+
+    # Assert
+    assert "The symbol `foo` should be `bar`." in result
+    assert "Rename `foo` to `bar`." in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_findings_should_report_a_path_outside_the_reviews_dir(
+    tmp_path, monkeypatch
+):
+    """Test a misdirected fetch is refused as a message, not an exception.
+
+    Given:
+        A document path outside `.sdlc/reviews/`.
+    When:
+        sdlc_review_findings is called with it.
+    Then:
+        It should return an error string naming the refusal. A tool that
+        raises here would surface as a transport failure rather than as
+        something the agent can read and correct.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    outside = tmp_path / "elsewhere.md"
+    outside.write_text("# not a review document\n")
+
+    # Act
+    result = await sdlc_review_findings(str(outside), ["B1"])
+
+    # Assert
+    assert result.startswith("Error:")
+    assert "elsewhere.md" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_review_findings_should_name_an_id_the_document_lacks(
+    tmp_path, monkeypatch
+):
+    """Test a missing id comes back named rather than as a short answer.
+
+    Given:
+        A request for a finding the document does not hold.
+    When:
+        sdlc_review_findings is called.
+    Then:
+        It should name the id and say the document does not hold it, so the
+        caller cannot mistake absence for a finding it already understood.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    path = _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 1)
+
+    # Act
+    result = await sdlc_review_findings(str(path), ["B4"])
+
+    # Assert
+    assert "B4" in result
+    assert "NOT FOUND" in result
+
+
+@pytest.mark.asyncio
+async def test_sdlc_implement_should_say_so_when_the_document_cannot_be_reread(
+    tmp_path, monkeypatch
+):
+    """Test a document that vanished degrades loudly, not silently.
+
+    Given:
+        A parsed review document whose file is gone by the time the block is
+        rendered.
+    When:
+        sdlc_implement renders it.
+    Then:
+        It should fall back to the full rendering and SAY the outline was
+        unavailable, naming what the fallback does not carry. A consumer that
+        believes it holds the ledgers when it does not will rewrite the
+        document over them.
+    """
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    path = _write_review_doc(tmp_path, ".sdlc/reviews/issue-#7", 1)
+    review_findings = pr_state.parse_review_document(path, issue_number=7, iteration=1)
+    path.unlink()
+    monkeypatch.setattr(
+        pr_state, "dispatch", lambda number, repo=None, review=None: review_findings
+    )
+
+    # Act
+    result = await sdlc_implement(number=42)
+
+    # Assert
+    assert "could not be re-read" in result
+    assert "ledgers" in result
+    # The full rendering is what arrived, so the body IS present.
+    assert "The symbol `foo` should be `bar`." in result
