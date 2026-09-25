@@ -346,7 +346,7 @@ dirty=false
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
     vcs=none                                 # not a repository — meta only, null base, no patch
 else
-    [ -n "$(git status --porcelain)" ] && dirty=true
+    [ -n "$(git status --porcelain -- ":(exclude,top)$excl")" ] && dirty=true
     head=$(git rev-parse --verify -q HEAD) || head=
 
     # `origin` is the FORK when working from a fork, which is the case step 1 exists
