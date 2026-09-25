@@ -50,7 +50,7 @@ A third, orthogonal axis layers on top of whichever base mode is active:
 
 <!-- rereview:end -->
 Where a step below is marked **(PR mode)** or **(paths mode)** it applies only to that base mode; unmarked steps apply to all.
-A step or clause marked **(re-review)** applies only when the `Re-review` directive is present, layered on whichever base mode is active. A fresh round is not given those steps at all, so a marker reaching one is a fence placed around a label rather than around the material it governs.
+A step or clause marked **(re-review)** applies only when the `Re-review` directive is present, layered on whichever base mode is active. A fresh round is not given those steps at all, so a marker that OPENS a step, bullet or command block should never reach one; an inline clause inside a rule both modes need is left unfenced deliberately, and several do survive here.
 
 Every round — fresh or re-review — is tracked in git. The document is committed to the repository the `Review repository:` directive names, and in a re-review **each finding-set mutation is its own commit** whose message justifies that state change, so the history records why every finding opened, closed, or was thrown out. Step 10 covers the protocol.
 
