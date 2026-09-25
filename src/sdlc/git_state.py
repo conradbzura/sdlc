@@ -228,8 +228,6 @@ def resolve_review_repo(
                 ),
                 candidate=candidate,
             )
-        if not _is_repo(candidate):
-            return ReviewRepo(root=None, configured=True, candidate=candidate)
         documents = (cwd / _DOCUMENTS).resolve()
         if not documents.is_relative_to(candidate):
             # Resolves fine, and can never commit. The document path is
@@ -246,14 +244,22 @@ def resolve_review_repo(
                 reason=(
                     f"The configured review-repo resolves to {candidate.as_posix()!r}, "
                     f"which does not contain {documents.as_posix()}. Review "
-                    "documents are written under .sdlc/reviews/, so this "
-                    "repository could never hold them and every call would "
-                    "report the document unresolved. Ask the user to name a "
-                    "repository that contains .sdlc/reviews — .sdlc itself is "
-                    "the convention."
+                    "documents are written under .sdlc/reviews/, so this path "
+                    "could never hold them and every call would report the "
+                    "document unresolved. Ask the user to name a repository "
+                    "that contains .sdlc/reviews — .sdlc itself is the "
+                    "convention."
                 ),
                 candidate=candidate,
             )
+        # Checked AFTER containment, and that order is the point: a path that
+        # can never hold a document is refused for that reason whether or not
+        # it is a repository. Reporting "not a git repository" first sends the
+        # user to `git init` a path the very next call refuses, after they
+        # have created a repository they must then delete. The ancestor branch
+        # above already argues this ordering for its own case.
+        if not _is_repo(candidate):
+            return ReviewRepo(root=None, configured=True, candidate=candidate)
         return ReviewRepo(root=candidate, configured=True, candidate=candidate)
     # Resolved, exactly as the configured branch resolves its candidate. Left
     # unresolved, a symlinked `.sdlc` — a sibling reviews repository linked into

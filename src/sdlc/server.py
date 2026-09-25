@@ -124,11 +124,28 @@ def _review_repo_directive(repo: git_state.ReviewRepo, configured: str | None) -
     """
     if repo.root is not None:
         return f"Review repository: {repo.root.as_posix()}"
+    # Computed before the branches below, because it is a property of the
+    # PATH rather than of which check refused it. `{"review-repo": ".sdlc"}`
+    # in `.sdlc/config.json` resolves to `.sdlc/.sdlc`, and which refusal that
+    # trips depends on the order the checks happen to run in — the containment
+    # check now answers first — while the user's actual mistake, and the
+    # advice for it, are the same either way.
+    hint = ""
+    if (
+        repo.candidate is not None
+        and repo.candidate.name == repo.candidate.parent.name
+    ):
+        # The value repeats the directory it is resolved against — the same
+        # shape `guides._validate_schema` hints at for camel case.
+        hint = (
+            f' Did you mean "." — the value that names '
+            f"{repo.candidate.parent.as_posix()} itself?"
+        )
     if repo.reason is not None:
-        # A refusal, not a miss. The path IS a repository, so reporting it as
-        # "not a git repository" would send the user to initialize something
-        # that already exists.
-        return f"Review repository: unresolved\n{repo.reason}"
+        # A refusal, not a miss. The path may well BE a repository, so
+        # reporting it as "not a git repository" would send the user to
+        # initialize something that already exists.
+        return f"Review repository: unresolved\n{repo.reason}{hint}"
     if configured is not None:
         # NAME the resolved path. `review-repo` resolves against the config
         # file's parent, not the working directory, so the raw value alone
@@ -144,17 +161,6 @@ def _review_repo_directive(repo: git_state.ReviewRepo, configured: str | None) -
             if repo.candidate is not None
             else ""
         )
-        hint = ""
-        if (
-            repo.candidate is not None
-            and repo.candidate.name == repo.candidate.parent.name
-        ):
-            # The value repeats the directory it is resolved against — the
-            # same shape `guides._validate_schema` hints at for camel case.
-            hint = (
-                f' Did you mean "." — the value that names '
-                f"{repo.candidate.parent.as_posix()} itself?"
-            )
         return (
             "Review repository: unresolved\n"
             f"The configured review-repo ({configured!r}){resolved} is not a "

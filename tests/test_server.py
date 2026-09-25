@@ -2518,7 +2518,11 @@ async def test_sdlc_review_should_report_unresolved_when_the_configured_repo_is_
     directive = _review_directive(result)
     assert "Review repository: unresolved" in directive
     assert "elsewhere" in directive
-    assert (tmp_path / ".sdlc").resolve().as_posix() not in directive
+    # The fallback is what must not happen. The refusal legitimately NAMES
+    # .sdlc/reviews as the path the configured value has to contain, so the
+    # check is that .sdlc was not resolved TO, not that it goes unmentioned.
+    sdlc = (tmp_path / ".sdlc").resolve().as_posix()
+    assert f"Review repository: {sdlc}" not in directive
 
 
 @pytest.mark.asyncio

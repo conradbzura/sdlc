@@ -352,26 +352,28 @@ def test_resolve_review_repo_should_return_no_root_when_configured_path_is_not_a
     """Test a configured path that is not a repository is reported, not replaced.
 
     Given:
-        review-repo naming a directory that exists but holds no .git, beside a
-        .sdlc directory that IS a repository.
+        review-repo naming .sdlc, which exists, can hold the hardcoded
+        document path, and holds no .git.
     When:
         resolve_review_repo is called.
     Then:
-        It should return a null root flagged as configured, rather than falling
-        back to the .sdlc repository the user did not name.
+        It should return a null root flagged as configured, with no refusal
+        reason, so the skill offers `git init .sdlc`. The candidate has to be
+        one that CAN contain .sdlc/reviews: containment is checked first, so a
+        path that cannot is refused for that reason instead — which is the
+        whole point of that ordering, and leaves this the narrow branch.
     """
     # Arrange
-    (tmp_path / "elsewhere").mkdir()
-    _make_repo(tmp_path / ".sdlc")
+    (tmp_path / ".sdlc").mkdir()
 
     # Act
-    result = resolve_review_repo("elsewhere", tmp_path, tmp_path)
+    result = resolve_review_repo(".sdlc", tmp_path, tmp_path)
 
     # Assert
     assert result == ReviewRepo(
         root=None,
         configured=True,
-        candidate=(tmp_path / "elsewhere").resolve(),
+        candidate=(tmp_path / ".sdlc").resolve(),
     )
 
 
@@ -381,21 +383,52 @@ def test_resolve_review_repo_should_return_no_root_when_configured_path_is_missi
     """Test a configured path that does not exist resolves to nothing.
 
     Given:
-        review-repo naming a directory that does not exist.
+        review-repo naming a directory that does not exist and could not hold
+        .sdlc/reviews if it did.
     When:
         resolve_review_repo is called.
     Then:
-        It should return a null root flagged as configured.
+        It should return a null root flagged as configured, refused for
+        containment rather than for not being a repository. Reporting "not a
+        git repository" would send the user to `git init` a path the next
+        call refuses anyway, after they have created one they must delete.
     """
     # Act
     result = resolve_review_repo("no-such-dir", tmp_path, tmp_path)
 
     # Assert
-    assert result == ReviewRepo(
-        root=None,
-        configured=True,
-        candidate=(tmp_path / "no-such-dir").resolve(),
-    )
+    assert result.root is None
+    assert result.configured is True
+    assert result.candidate == (tmp_path / "no-such-dir").resolve()
+    assert "does not contain" in result.reason
+    assert "not a git repository" not in result.reason
+
+
+def test_resolve_review_repo_should_refuse_an_uncontainable_path_before_git_init(
+    tmp_path,
+):
+    """Test a path that can never hold a document is refused for that reason.
+
+    Given:
+        review-repo naming a directory that exists and is a real repository,
+        but which does not contain the hardcoded .sdlc/reviews path.
+    When:
+        resolve_review_repo is called.
+    Then:
+        It should refuse it for containment. Being a repository cannot rescue
+        a path that could never hold the document, so the diagnosis must not
+        depend on whether the user has run `git init` there yet — that is what
+        made the advice self-contradicting across two calls.
+    """
+    # Arrange
+    _make_repo(tmp_path / "elsewhere")
+
+    # Act
+    result = resolve_review_repo("elsewhere", tmp_path, tmp_path)
+
+    # Assert
+    assert result.root is None
+    assert "does not contain" in result.reason
 
 
 def test_resolve_review_repo_should_accept_a_git_file(tmp_path):
@@ -429,26 +462,29 @@ def test_resolve_review_repo_should_return_no_root_when_the_path_is_unreadable(
     """Test an unreadable configured path is reported rather than raising.
 
     Given:
-        review-repo naming a directory inside an unreadable parent.
+        review-repo naming .sdlc, made unreadable. The candidate must be one
+        that passes the containment check, or the refusal above it answers
+        first and `_is_repo` — whose OSError guard exists because Python 3.13
+        propagates EACCES from Path.exists() — is never reached at all.
     When:
         resolve_review_repo is called.
     Then:
         It should return a null root instead of propagating PermissionError.
     """
     # Arrange
-    locked = tmp_path / "locked"
-    (locked / "repo").mkdir(parents=True)
-    os.chmod(locked, 0o000)
+    sdlc = tmp_path / ".sdlc"
+    sdlc.mkdir()
+    os.chmod(sdlc, 0o000)
 
     # Act
     try:
-        result = resolve_review_repo("locked/repo", tmp_path, tmp_path)
+        result = resolve_review_repo(".sdlc", tmp_path, tmp_path)
     finally:
-        os.chmod(locked, 0o755)
+        os.chmod(sdlc, 0o755)
 
     # Assert
     assert result == ReviewRepo(
-        root=None, configured=True, candidate=(locked / "repo").resolve()
+        root=None, configured=True, candidate=sdlc.resolve()
     )
 
 
