@@ -1219,15 +1219,18 @@ async def test_sdlc_review_should_raise_when_rereviewing_a_pr_that_closes_no_iss
 async def test_sdlc_review_should_raise_when_rereviewing_a_pr_and_gh_is_unavailable(
     monkeypatch,
 ):
-    """Test a re-review propagates GhUnavailable when gh is down.
+    """Test a re-review fails as ValueError, not GhUnavailable, when gh is down.
 
     Given:
         closing_issue raises GhUnavailable for PR 10.
     When:
         sdlc_review(pr_number=10, verify=1) is called.
     Then:
-        It should raise GhUnavailable — a re-review cannot resolve the issue
-        directory and does not degrade like the fresh-review path.
+        It should raise ValueError naming gh and the document it could not
+        locate. Stopping is correct — a re-review cannot resolve the issue
+        directory and does not degrade like the fresh-review path — but the
+        failure has to match the contract `sdlc_review`'s docstring and
+        AGENTS.md both state, which enumerates ValueError only.
     """
 
     # Arrange
@@ -1237,8 +1240,10 @@ async def test_sdlc_review_should_raise_when_rereviewing_a_pr_and_gh_is_unavaila
     monkeypatch.setattr(pr_state, "closing_issue", raise_unavailable)
 
     # Act / Assert
-    with pytest.raises(GhUnavailable):
+    with pytest.raises(ValueError, match="gh executable not found") as raised:
         await sdlc_review(pr_number=10, verify=1)
+    assert "review-1.md" in str(raised.value)
+    assert not isinstance(raised.value, GhUnavailable)
 
 
 @pytest.mark.asyncio

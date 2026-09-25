@@ -542,7 +542,23 @@ def _render_rereview(
         )
         repo_directive = None
     else:
-        issue_number = pr_state.closing_issue(pr_number)
+        try:
+            issue_number = pr_state.closing_issue(pr_number)
+        except pr_state.GhUnavailable as exc:
+            # The fresh PR path guards this same call and carries on with an
+            # `unresolved` directive. A re-review cannot: without the issue
+            # number there is no `issue-#<N>/` directory to read
+            # `review-<verify>.md` from. Stopping is right; stopping with a
+            # bare GhUnavailable is not, because this function's contract —
+            # `sdlc_review`'s docstring and AGENTS.md alike — enumerates its
+            # failures as ValueError, and the two raised just below are.
+            raise ValueError(
+                f"--verify {verify} was requested for PR #{pr_number}, but the "
+                f"closing issue could not be resolved: {exc}. Without it there "
+                "is no .sdlc/reviews/issue-#<N>/ directory to read "
+                f"review-{verify}.md from. Install or authenticate gh, or run "
+                "the review in paths mode."
+            ) from exc
         if issue_number is None:
             raise ValueError(
                 f"--verify {verify} was requested for PR #{pr_number}, but the "
