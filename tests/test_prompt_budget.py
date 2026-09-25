@@ -359,22 +359,29 @@ def test_the_fresh_assembly_should_orphan_no_rationale_pointer():
             cursor -= 1
         return lines[cursor] if cursor >= 0 else ""
 
+    # Stripped, not raw. A pointer under a list item is indented so it renders
+    # as a block inside that item, and an unstripped `startswith` silently
+    # drops every one of those from this check rather than failing — which
+    # loses the coverage without anything going red.
     subjects = {}
     for index, line in enumerate(rereview):
-        if line.startswith("*Why:"):
-            subjects.setdefault(line, []).append(preceding(rereview, index))
+        if line.strip().startswith("*Why:"):
+            subjects.setdefault(line.strip(), []).append(
+                preceding(rereview, index).strip()
+            )
 
     # Act & assert
-    for index, line in enumerate(fresh):
+    for index, raw in enumerate(fresh):
+        line = raw.strip()
         if not line.startswith("*Why:"):
             continue
         assert line in subjects, (
             f"a pointer is in the fresh assembly but not the re-review one, "
             f"which cannot happen unless the fences are unbalanced: {line[:90]!r}"
         )
-        assert preceding(fresh, index) in subjects[line], (
+        assert preceding(fresh, index).strip() in subjects[line], (
             f"orphaned rationale pointer in the fresh assembly: {line[:90]!r}\n"
-            f"  it follows: {preceding(fresh, index)[:90]!r}\n"
+            f"  it follows: {preceding(fresh, index).strip()[:90]!r}\n"
             f"  but in the re-review assembly it follows: "
             f"{subjects[line][0][:90]!r}\n"
             "The fence encloses the subject block but not the pointer."
