@@ -3268,9 +3268,23 @@ def _review_documents(draw):
                     ]
                 )
             )
+            # The evidence fields a gate is judged on. They are single-line
+            # labels like `**Reference:**`, and they were reachable through
+            # neither the outline nor the fetch until `_OUTLINE_KEEP` grew.
+            evidence = draw(
+                st.sampled_from(
+                    [
+                        "",
+                        "**Corroboration:** two reviewers closed independently.\n\n",
+                        "**Severity dissent:** general-purpose rated this advisory.\n\n",
+                        "**Relevance dissent:** aie read this as off-issue.\n\n",
+                    ]
+                )
+            )
             rendered.append(
                 f"### {finding_id} — Title {index}{marker} — aie (1/3)\n"
                 f"**Reference:** `src/mod.py:{index}`\n\n"
+                f"{evidence}"
                 f"**Issue:** {issue}\n\n"
                 f"**Remediation:**\n- [x] Fix it.\n"
                 f"{note}"

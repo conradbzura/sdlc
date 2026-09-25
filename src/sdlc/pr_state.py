@@ -896,7 +896,22 @@ def parse_review_document(
 # Single-line labelled fields kept in an outline. Each is one line — this
 # project's markdown style forbids hard-wrapping prose — and each is something
 # a consumer routes, orders or attributes on without reading the finding.
-_OUTLINE_KEEP = ("**Reference:**", "**Touched commit:**", "**Tests to add:**")
+#
+# The corroboration and dissent records are here by that same test and by a
+# stronger one: they are the EVIDENCE a gate is judged on. Step 8 requires a
+# dissent to be noted whenever a blocking finding stays open uncorroborated,
+# and `implement-feedback.md` forbids reading the document whole, so a record
+# the outline drops is one the user is never shown. Note this closes the
+# outline half only — `_render_finding` has no field for them either, so the
+# fetch still cannot return them; `ReviewFinding` would have to grow first.
+_OUTLINE_KEEP = (
+    "**Reference:**",
+    "**Touched commit:**",
+    "**Tests to add:**",
+    "**Corroboration:**",
+    "**Relevance dissent:**",
+    "**Severity dissent:**",
+)
 
 # What replaces an elided body. Deliberately visible and deliberately one per
 # finding: a silent gap is what would let a consumer work from the outline and
