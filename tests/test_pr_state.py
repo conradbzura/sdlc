@@ -3100,6 +3100,31 @@ def test_parse_review_document_should_raise_on_an_unparsed_heading(tmp_path):
         pr_state.parse_review_document(document, 1, 1)
 
 
+def test_parse_review_document_should_refuse_a_duplicate_finding_id(tmp_path):
+    """Test two findings sharing an id are refused rather than both returned.
+
+    Given:
+        Two findings under Tier 1 whose headings carry the same id.
+    When:
+        The document is parsed.
+    Then:
+        It should raise, naming the id and both line numbers. Ids are cited in
+        the commit history and by `sdlc_implement --review <#>`, and a repeat
+        lets one reviewer disposition remove whichever entry a `{f.id: f}`
+        collapse happened to keep.
+    """
+    # Arrange
+    second = _BLOCKING_FINDING.replace("Rename foo to bar", "Tighten the guard")
+    document = tmp_path / "review-1.md"
+    document.write_text(
+        _review_document(blocking=f"{_BLOCKING_FINDING}\n---\n\n{second}")
+    )
+
+    # Act & assert
+    with pytest.raises(ValueError, match="duplicate finding id 'B1'"):
+        pr_state.parse_review_document(document, 1, 1)
+
+
 # --- Property-based coverage for the outline ------------------------------
 #
 # `render_outline` is all three cases the test guide names a MUST for property
@@ -3311,3 +3336,35 @@ def test_parse_review_document_should_keep_every_remediation_option(
         assert finding.remediation.count("- [") == 3, finding.remediation
         assert "Other:" in finding.remediation
         assert "**Touched commit:**" not in finding.remediation
+
+
+@settings(max_examples=50, deadline=None)
+@given(document=_review_documents())
+def test_parse_review_document_should_refuse_any_repeated_id(
+    document, tmp_path_factory
+):
+    """Test a repeated id is refused wherever in a tier the repeat falls.
+
+    Given:
+        Any review document, with its first finding heading duplicated
+        immediately below itself — inside the tier, where the parser reads it
+        as a finding rather than skipping it.
+    When:
+        It is parsed.
+    Then:
+        It should raise. Appending the repeat at the end of the document would
+        land it after `## Cross-cutting decisions`, where no finding parses at
+        all and the assertion would hold vacuously.
+    """
+    # Arrange
+    assume(document.count("### ") >= 1)
+    lines = document.splitlines()
+    index = next(i for i, line in enumerate(lines) if line.startswith("### "))
+    lines.insert(index + 1, lines[index])
+    directory = tmp_path_factory.mktemp("dupid")
+    source = directory / "review-1.md"
+    source.write_text("\n".join(lines))
+
+    # Act & assert
+    with pytest.raises(ValueError, match="duplicate finding id"):
+        parse_review_document(source, issue_number=1, iteration=1)

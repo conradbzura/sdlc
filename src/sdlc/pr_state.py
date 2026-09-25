@@ -749,6 +749,14 @@ def parse_review_document(
     # check that goes through this function — which is every check there is —
     # so it is caught here or not at all.
     seen_tiers: set[_Severity] = set()
+    # Id uniqueness is what the retired-id ledger protects and nothing else
+    # enforces. `max(retired ∪ open) + 1` is computed by hand by the
+    # consolidating agent, one mutation at a time, which is the same
+    # reachability class as the three guards below — and a repeat is worse
+    # than a stray heading: a reviewer returns one `B1 | close` line, the
+    # consolidator removes AN entry, and a real finding leaves with no
+    # disposition while the commit history cites an ambiguous id.
+    seen_ids: dict[str, int] = {}
 
     def enter_tier(severity: _Severity, line: str) -> None:
         nonlocal current_severity
@@ -776,7 +784,7 @@ def parse_review_document(
 
     # Structure is recognized only OUTSIDE fenced code blocks; a fenced line is
     # sample text and is appended to the body verbatim.
-    for line, in_fence in zip(lines, fence_mask):
+    for number, (line, in_fence) in enumerate(zip(lines, fence_mask), 1):
         if not in_fence:
             if _TIER_BLOCKING.match(line):
                 flush()
@@ -797,7 +805,25 @@ def parse_review_document(
                 severity: _Severity = current_severity
                 if _BLOCKING_MARKER in rest:
                     severity = "blocking"
-                pending = (heading.group("id"), rest, severity)
+                finding_id = heading.group("id")
+                if finding_id in seen_ids:
+                    # Both line numbers, because raising here makes the whole
+                    # document unreadable — `render_outline`, `disclose` and
+                    # `render_findings` all go through this function, and
+                    # `implement-feedback.md` forbids reading the file whole.
+                    # This message is the only view of the defect the agent
+                    # that has to repair it will get.
+                    raise ValueError(
+                        f"{path}: duplicate finding id {finding_id!r} at line "
+                        f"{number}, already used at line {seen_ids[finding_id]}. "
+                        "Ids are cited in the commit history and by "
+                        "sdlc_implement --review <#>, and new ids are computed "
+                        "as max(retired ∪ open) + 1 over them, so a repeat "
+                        "makes one finding unaddressable and lets a single "
+                        "disposition remove the wrong one. Renumber the second."
+                    )
+                seen_ids[finding_id] = number
+                pending = (finding_id, rest, severity)
                 continue
             if line.startswith("### ") and current_severity is not None:
                 # A finding heading the regex could not parse — an en dash or a
