@@ -57,7 +57,7 @@ Despite the "(all modes)" heading, `Review snapshot directory:` is emitted only 
 
 ## R5. Step 3 — resolving the issue, the write target, and the commit destinations
 
-The MCP endpoint performs the relationship check via GitHub's `closingIssuesReferences` connection (issues that close when the PR merges, whether linked via a `Closes #N` keyword or the GitHub UI), with a `Closes` / `Fixes` / `Resolves #N` PR-body fallback. When several issues are linked, the endpoint resolves the **first** of them (the connection has no ordering guarantee), so `<N>` is one closing issue, not necessarily the only one. Their answer cannot be used: directives are injected at tool-call time and cannot appear mid-run, and `Resolved issue:` is derived from GitHub rather than from the reply, so re-deriving the path here is guessing under another name. The endpoint resolved `<iteration>` as the next unused iteration deterministically (never overwriting an earlier round), so you do NOT glob the directory or compute `iteration = max + 1` yourself — take the injected path as-is. This holds in both base modes: in **PR mode** the injected path is `.sdlc/reviews/issue-#<N>/review-<iteration>.md`, and in **PATHS mode** it is `<Review document directory>/review-<iteration>.md` under the endpoint-computed slug directory (successive paths-mode reviews of the same target accumulate their rounds there).
+The MCP endpoint performs the relationship check via GitHub's `closingIssuesReferences` connection (issues that close when the PR merges, whether linked via a `Closes #N` keyword or the GitHub UI), with a `Closes` / `Fixes` / `Resolves #N` PR-body fallback. When several issues are linked, the endpoint resolves the **first** of them (the connection has no ordering guarantee), so `<N>` is one closing issue, not necessarily the only one. When no issue resolves, the skill asks the user which one the PR closes — and their answer cannot be used to rebuild the write target: directives are injected at tool-call time and cannot appear mid-run, and `Resolved issue:` is derived from GitHub rather than from the reply, so re-deriving the path here is guessing under another name. The endpoint resolved `<iteration>` as the next unused iteration deterministically (never overwriting an earlier round), so you do NOT glob the directory or compute `iteration = max + 1` yourself — take the injected path as-is. This holds in both base modes: in **PR mode** the injected path is `.sdlc/reviews/issue-#<N>/review-<iteration>.md`, and in **PATHS mode** it is `<Review document directory>/review-<iteration>.md` under the endpoint-computed slug directory (successive paths-mode reviews of the same target accumulate their rounds there).
 
 ## R6. Steps 5–6 — role validation and the stale-graph rule
 
@@ -71,7 +71,7 @@ The derivations for this step are held per-topic in the subsections below; cite 
 
 
 
-Between this read and its use sits the seeded block, N phase-1 dispatches with the diff interpolated, N phase-2 dispatches and the whole consolidation — the longest span in this skill, and the middle of your context. This skill already refuses to carry a value across that kind of distance twice (step 3 writes the commit destinations to a scratch file; step 9 writes its target to disk "precisely so this check reads ground truth from the filesystem rather than comparing the file against the orchestrator's recollection"), and this is the one value whose loss the Invariants call irreversible. There is also no detection: the count reconciliation below checks the *enumeration* only, and 10(d)'s terminal `diff` compares the document against a target built by the same context that may already have dropped the fields.
+The read in question is step 7(0)'s: the seeded block's header fields, copied out of the injected block before any reviewer is dispatched. Between that read and its use sits the seeded block, N phase-1 dispatches with the diff interpolated, N phase-2 dispatches and the whole consolidation — the longest span in this skill, and the middle of your context. This skill already refuses to carry a value across that kind of distance twice (step 3 writes the commit destinations to a scratch file; step 9 writes its target to disk "precisely so this check reads ground truth from the filesystem rather than comparing the file against the orchestrator's recollection"), and this is the one value whose loss the Invariants call irreversible. There is also no detection: the count reconciliation below checks the *enumeration* only, and 10(d)'s terminal `diff` compares the document against a target built by the same context that may already have dropped the fields.
 
 ### R7.2 Why the count reconciliation calls the parser rather than scanning the file
 
@@ -123,7 +123,7 @@ Sub-sections here use `###`, and top sections use `##`, deliberately: the test h
 
 ### R10.2 Why `check-ignore` is run without `-q`
 
-This check exists to give the user an actionable message instead of that failure.
+The check is step 10(a)'s `git check-ignore` on the review document's path, and the failure it pre-empts is `git add` refusing an ignored path — which reports only that nothing matched, so a round can reach its final commit and stage nothing. Running `check-ignore` without `-q` prints the matching pattern and the file it came from, which is what makes the message actionable: the user has a line to delete rather than a refusal to interpret. An ignored review path is a configuration the user resolves, not something to force-add.
 
 ### R10.3 Why the worktree path is derived rather than carried
 
@@ -179,7 +179,29 @@ The recomputed tree SHA is content-addressed, so equality with `meta.tree` prove
 
 Each edge case in the skill states its branch rule. The reasoning that justifies the branch, and the states that make it reachable, are here.
 
-The PR-only edge cases below (`PR is already merged or closed`, `No linked issue`, and `Very large diffs`) do not apply in paths mode. **(re-review)** A pass that ends with no blocking findings is the pass that TERMINATES the chain, so any blocking `close` or `reject` that got it there still clears step 9's gate first; an empty document is the strongest reason to check, not a reason to skip. Do not post anything. Tell the user which heading, and that the fix is in the file rather than in the tool; the same error from `sdlc_implement --review <#>` has the same cause. A heading that has drifted OUTSIDE the tier regions does not raise — it is silently skipped — which is what step 7(0)'s count reconciliation exists to catch. The snapshot-and-header commit of 10(d) is the whole round — it carries the pass-counter bump, so the document does change and `git add` has something to stage — and the finding set is byte-identical to the pass before. Do NOT manufacture an empty commit, and give the zero-delta variant of step 11's prompt. *(This is PR-mode only — paths mode reviews exactly the files the user named.)*
+Each edge case in the skill states its branch rule; the reasoning that justifies it, and the states that make it reachable, are below — one subsection per case, because five separate pointers used to land on one undifferentiated paragraph and an agent arriving on any of them had to read the other four.
+
+### R12.1 Why paths mode runs no `gh` at all
+
+Three of the skill's edge cases — `PR is already merged or closed`, `No linked issue` and `Very large diffs` — are properties of a pull request, and paths mode has none. There is no PR to query, no linked issue to resolve and no diff to bound, so the branches do not merely go unused: the `gh` calls that would evaluate them have nothing to address. Posting is out for the same reason, and it is the stronger half of the rule — a paths-mode round is a local artifact from end to end, so there is no thread for a comment to attach to and nothing about the run that GitHub is entitled to learn.
+
+### R12.2 Why a clean round still writes the document
+
+A pass that ends with no blocking findings is the pass that TERMINATES the chain, which makes it the one whose bookkeeping matters most rather than the one that can be skipped. Any blocking `close` or `reject` that got it to zero cleared step 9's gate on the way, so the gate has already run; what remains is the record of it. An empty tier section is the strongest reason to check the document, not a reason to leave it unwritten — a chain that terminated without a final state on disk cannot be audited afterwards, and the next `--verify` has nothing to seed from.
+
+### R12.3 Why a heading the parser refused is repaired in the file
+
+`parse_review_document` raises on a `### <id> — ` heading it cannot read INSIDE a tier — an en dash or a hyphen where the em dash belongs, most likely — and the error propagates out of the endpoint before the skill is dispatched, so the round never starts. The fix is in the document rather than in the tool, and the same error out of `sdlc_implement --review <#>` has the same cause and the same repair. Telling the user which heading is what makes that actionable, since the document is the one thing they can edit.
+
+A heading that has drifted OUTSIDE the tier regions is the opposite case and the more dangerous one: it does not raise, because the parser's severity is `None` there and the heading is passed over. That is what step 7(0)'s reconciliation exists to catch, and why the enumeration reports those ids on its own `Outside any tier:` line — while they were merely skipped, both sides of that comparison came from this same parser and the gate could not fire on them by construction.
+
+### R12.4 Why a pass where nothing changed still commits
+
+The snapshot-and-header commit of 10(d) IS the whole round when every seeded finding carries. It carries the pass-counter bump, so the document does change and `git add` has something to stage, while the finding set is byte-identical to the pass before. An empty commit is therefore never the right shape — there is real content to record — and step 11's zero-delta variant is what reports it, so the user can tell a pass that examined everything and changed nothing from a pass that examined nothing.
+
+### R12.5 Why a very large diff is bounded rather than truncated
+
+A diff too large to interpolate is a PR-mode problem only: paths mode reviews exactly the files the user named, so its size is the user's own choice and bounding it would override a decision already made deliberately. In PR mode the diff is machine-selected and can be arbitrarily large, and the failure mode is not a refused tool call but a reviewer that read a prefix and reported on it as though it were the whole. Deciding how much goes in each brief is therefore a question about what the reviewer can be held to, which is why the skill asks rather than truncating silently.
 
 ## R13. The incidental tier — why relevance is a tier rather than a filter
 

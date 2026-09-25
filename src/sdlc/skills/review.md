@@ -1019,18 +1019,18 @@ DO NOT proceed on your own.
 ## Edge Cases
 
 **Paths mode runs no `gh` and posts nothing:** In paths mode the skill performs no repo resolution, no PR fetch, and no commit-map enumeration — there is no GitHub interaction at all. The document lands under the endpoint-computed `.sdlc/reviews/<slug>/` directory.
-*Why: `sdlc://review-rationale` §R12 — read it before running any `gh` command in paths mode.*
+*Why: `sdlc://review-rationale` §R12.1 — read it before running any `gh` command in paths mode.*
 
 **No files matched the paths/globs (paths mode):** If expanding the `Target paths:` entries against the working tree yields no files (every literal path is missing and every glob matches nothing), inform the user that nothing matched, list the entries you tried, and stop — there is nothing to review and no document is written. If only some entries are empty, note the misses and proceed with the files that did match.
 
 **PR is already merged or closed (PR mode):** Inform the user that the PR is not open and stop.
 
 **No findings:** If every reviewer returns clean, present the empty-findings document (header plus empty severity tiers) as informational (step 9) and write and commit it autonomously (step 10) so the round is recorded; inform the user that no issues were found and the target looks clean. On a fresh round there is no approval gate on the review (produce) document — the empty-findings document is written the same way a document with findings is.
-*Why: `sdlc://review-rationale` §R12 — read it before treating a clean round as a reason to skip the document.*
+*Why: `sdlc://review-rationale` §R12.2 — read it before treating a clean round as a reason to skip the document.*
 
 <!-- rereview:begin -->
 **A finding heading the parser cannot read (re-review):** `sdlc_review --verify` fails before this skill is dispatched, with `ValueError: … unparsed finding heading in a severity tier: '### B2 - …'`. The document has been hand-edited into a heading that is not `### <id> — <title>` with a spaced em dash — an en dash or a hyphen is the usual cause.
-*Why: `sdlc://review-rationale` §R12 — read it before trying to repair a seeded document the parser refused.*
+*Why: `sdlc://review-rationale` §R12.3 — read it before trying to repair a seeded document the parser refused.*
 <!-- rereview:end -->
 
 <!-- rereview:begin -->
@@ -1043,7 +1043,7 @@ DO NOT proceed on your own.
 
 <!-- rereview:begin -->
 **Every seeded finding carries (re-review):** The opposite extreme, and the common one early in a fix loop. When nothing closes, is rejected, or is added, there is no finding-set mutation and therefore no per-mutation commit.
-*Why: `sdlc://review-rationale` §R12 — read it before manufacturing a commit for a pass where nothing changed.*
+*Why: `sdlc://review-rationale` §R12.4 — read it before manufacturing a commit for a pass where nothing changed.*
 <!-- rereview:end -->
 
 **No originating issue in paths mode (the incidental tier is unavailable):** Paths mode reviews files as they stand, with no PR and no linked issue, so there is nothing for a finding's relevance to be tested against. Tier 3 is omitted from the document, the reviewer brief drops both the issue slot and the third classification, and an observation that would have been incidental in PR mode is **Advisory** there — it is still real, it still does not gate, and it is still recorded. Do not invent a stand-in for the issue: the paths a run was given say which files to read, not what work was asked for.
@@ -1060,6 +1060,6 @@ DO NOT proceed on your own.
 **Binary files:** Binary files MUST be skipped during analysis — in both the PR diff and a paths-mode match. Note their presence to the user but do not attempt to review them.
 
 **Very large diffs (PR mode):** For PRs with more than 20 changed files or more than 1000 lines changed, the agent SHOULD summarize the scope to the user and ask whether to review the full diff, focus on specific files, or decline the review entirely. On a decline the run ends: no document and no snapshot are written, and whatever step 2 staged is left in `$staging` for the next run's `rm -rf` — this is the **declined-large-diff branch** the earlier steps refer to.
-*Why: `sdlc://review-rationale` §R12 — read it before deciding how much of a large diff to put in each brief.*
+*Why: `sdlc://review-rationale` §R12.5 — read it before deciding how much of a large diff to put in each brief.*
 
 **Files outside the repository's guide coverage:** If reviewed files are in a language or domain not covered by any project guide, review them for general correctness and code quality only. Do not fabricate guide requirements that do not exist.
