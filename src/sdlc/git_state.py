@@ -32,23 +32,36 @@ _INVALID_CHARS = set(" ~^:?*[\\")
 # and the enumeration is what keeps being incomplete.
 _ALLOWED_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
+# The characters that are still live inside DOUBLE quotes, which is how the
+# review skill interpolates this value — `git -C "<repo>" add …`. Everything
+# else `validate_branch_name` rejects (`;`, `|`, `&`, `<`, `>`, `(`, `)`) is
+# inert there and names real directories: `~/Google Drive (work)/reviews` is
+# an ordinary path, and refusing it would buy nothing.
+_SHELL_ACTIVE_IN_QUOTES = ('"', "`", "$", "\\")
+
 
 def validate_repo_path(value: str) -> str:
     """Return ``value`` unchanged, or raise if it cannot be a directive line.
 
     `review-repo` reaches the prompt the same way `review-branch` reaches the
     shell: it is interpolated into the `Review repository:` directive block
-    that the reviewing agent reads and step 10(a) commits against. A newline
-    in it would let the value forge a SECOND directive line below the genuine
-    one, which is the threat `validate_branch_name` exists to close for its
-    sibling key — and the unresolved branch, where the raw path is echoed back,
-    is reached by nothing more exotic than a path that does not exist yet.
+    that the reviewing agent reads and step 10(a) commits against, and into
+    double-quoted `git -C "<repo>"` invocations. A newline in it would let the
+    value forge a SECOND directive line below the genuine one; a `"` ends the
+    quoting outright, and `$` and a backtick are substituted inside it. Both
+    surfaces arrive from input the agent does not author — the `review-repo`
+    config key and the value the endpoint passes — which is the same argument
+    `validate_branch_name` makes for its sibling key.
 
-    Deliberately narrower than `validate_branch_name`: a repository path is a
-    filesystem path and may legitimately contain spaces, `~` or `..`, none of
-    which a branch name may. What it may NOT contain is a control character or
-    surrounding whitespace, neither of which names a real directory and both
-    of which change how many lines the directive block has.
+    Compared with `validate_branch_name` this is WIDER in exactly three ways,
+    and narrower in none: a repository path is a filesystem path and may
+    legitimately contain spaces, `~` and `..`, none of which a branch name
+    may. The shell metacharacters that are inert inside double quotes — `;`,
+    `|`, `&`, `<`, `>`, `(`, `)` — are deliberately permitted for the same
+    reason, because they name real directories and rejecting them would buy
+    no safety. What it may NOT contain is a control character, surrounding
+    whitespace, or one of the four characters that are still live inside the
+    quoting it is placed in.
     """
     if not isinstance(value, str):
         raise ValueError("must be a string")
@@ -65,6 +78,15 @@ def validate_repo_path(value: str) -> str:
                 f"position {index}): the value is interpolated into the "
                 f"Review repository directive, so a newline forges a second "
                 f"directive line. {value!r}"
+            )
+    for char in _SHELL_ACTIVE_IN_QUOTES:
+        if char in value:
+            raise ValueError(
+                f"must not contain {char!r}: the value is interpolated into "
+                "double-quoted shell by the review skill, where a quote ends "
+                "the quoting and `$` and a backtick are substituted. The "
+                "metacharacters that are inert inside double quotes are "
+                f"permitted, because they name real directories. {value!r}"
             )
     return value
 
