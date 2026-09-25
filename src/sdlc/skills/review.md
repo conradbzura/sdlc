@@ -998,7 +998,7 @@ When `<u>` is non-zero, say which of its two causes applied, so an unexamined bl
 
 > `<n>` finding(s) were carried WITHOUT re-examination — their originating role(s) `<roles>` were not in this pass. Re-run with `--roles <those roles>` to have them looked at.
 
-> `<n>` finding(s) were carried WITHOUT re-examination — `<ids>` were dispatched to a reviewer of role `<r>`, which returned no disposition for them and did not supply one when re-asked. Re-running the same composition may cover them; a higher `--reviewers-per-role` is the more reliable fix.
+> `<n>` finding(s) were carried WITHOUT re-examination — `<ids>` were dispatched to a reviewer of role `<r>`, which returned no disposition for them and did not supply one when re-asked. Re-running the same composition may cover them; a higher `subagents` (`Reviewers per role`) is the more reliable fix.
 
 The second variant exists because the first one's remedy is actively wrong for it: the role DID run, so telling the user to re-run with that role names a list that already ran and diagnoses a cause that was not the cause.
 
