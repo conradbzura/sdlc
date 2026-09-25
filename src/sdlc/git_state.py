@@ -32,6 +32,7 @@ _INVALID_CHARS = set(" ~^:?*[\\")
 # and the enumeration is what keeps being incomplete.
 _ALLOWED_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
+
 def validate_repo_path(value: str) -> str:
     """Return ``value`` unchanged, or raise if it cannot be a directive line.
 
