@@ -3125,6 +3125,40 @@ def test_parse_review_document_should_refuse_a_duplicate_finding_id(tmp_path):
         pr_state.parse_review_document(document, 1, 1)
 
 
+def test_parse_review_document_should_report_a_heading_outside_every_tier(
+    tmp_path,
+):
+    """Test a finding heading below the tiers is reported rather than dropped.
+
+    Given:
+        A document carrying a well-formed finding heading under a non-tier
+        section, where the parser's severity is None.
+    When:
+        The document is parsed.
+    Then:
+        It should keep it out of `findings`, since it has no severity and so
+        nothing to disposition, and name it on `orphaned_ids`. Silently
+        skipping it is what made step 7(0) compare this parser against itself:
+        the heading was absent from both sides, so the gate could never fire
+        on the one failure it exists for, and an in-place re-review then
+        rewrites the document without it.
+    """
+    # Arrange
+    document = tmp_path / "review-1.md"
+    document.write_text(
+        _review_document(blocking=_BLOCKING_FINDING)
+        + "\n### B9 — Drifted below the tiers — aie (1/3)\n"
+        "**Reference:** `src/mod.py:9`\n\n**Issue:** Nobody will see this.\n"
+    )
+
+    # Act
+    result = pr_state.parse_review_document(document, 1, 1)
+
+    # Assert
+    assert [f.id for f in result.findings] == ["B1"]
+    assert result.orphaned_ids == ["B9"]
+
+
 # --- Property-based coverage for the outline ------------------------------
 #
 # `render_outline` is all three cases the test guide names a MUST for property

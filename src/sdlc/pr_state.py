@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -123,7 +123,9 @@ def _render_finding(index: int, finding: ReviewFinding) -> list[str]:
     return lines
 
 
-def _render_enumeration(findings: list[ReviewFinding]) -> list[str]:
+def _render_enumeration(
+    findings: list[ReviewFinding], orphaned_ids: list[str] | None = None
+) -> list[str]:
     """Render every finding as one line: id, severity, reference, title.
 
     The enumeration half of the fetch tool. A consumer that needs to know
@@ -134,13 +136,28 @@ def _render_enumeration(findings: list[ReviewFinding]) -> list[str]:
     The trailing ``Ids:`` line is the reconciliation surface: a caller
     comparing id sets compares that one line rather than parsing the table,
     which is what the hand-written scanners this replaced kept getting wrong.
+    It stays LAST so a caller may keep reading it by suffix.
+
+    ``Outside any tier:`` sits immediately above it and is what gives step
+    7(0) a second source to compare against. Without it the gate compared the
+    parser's enumeration against the parser's enumeration — a heading that
+    drifted outside the tiers is absent from both sides, so the one failure
+    the gate exists for could never fire. It is emitted UNCONDITIONALLY, as
+    ``none`` when there are none: an omitted line cannot be told from a server
+    that predates the field, and the gate would silently degrade back to the
+    no-op it was.
     """
+    ordered = _by_severity(findings)
     lines = [""]
     lines.extend(
-        f"  {f.id}\t{f.severity}\t{f.reference}\t{f.title}"
-        for f in _by_severity(findings)
+        f"  {f.id}\t{f.severity}\t{f.reference}\t{f.title}" for f in ordered
     )
-    lines += ["", f"Ids: {' '.join(f.id for f in _by_severity(findings))}"]
+    outside = " ".join(orphaned_ids) if orphaned_ids else "none"
+    lines += [
+        "",
+        f"Outside any tier: {outside}",
+        f"Ids: {' '.join(f.id for f in ordered)}",
+    ]
     return lines
 
 
@@ -152,6 +169,13 @@ class ReviewFindings:
     iteration: int
     path: str
     findings: list[ReviewFinding]
+    # Well-formed `### <id> — <title>` headings that parsed outside every tier
+    # section. They are NOT findings — they have no severity, so there is
+    # nothing to disposition — but they are the one failure step 7(0) exists
+    # to catch, and until they were surfaced the gate compared this parser's
+    # output against this parser's output and could never fire. Defaulted so
+    # every existing constructor keeps working.
+    orphaned_ids: list[str] = field(default_factory=list)
 
     def format(self, label: str = "Review document") -> str:
         """Render the review document as a human-readable feedback block.
@@ -757,6 +781,7 @@ def parse_review_document(
     # consolidator removes AN entry, and a real finding leaves with no
     # disposition while the commit history cites an ambiguous id.
     seen_ids: dict[str, int] = {}
+    orphaned_ids: list[str] = []
 
     def enter_tier(severity: _Severity, line: str) -> None:
         nonlocal current_severity
@@ -825,6 +850,18 @@ def parse_review_document(
                 seen_ids[finding_id] = number
                 pending = (finding_id, rest, severity)
                 continue
+            if (
+                current_severity is None
+                and (orphan := _FINDING_HEADING.match(line)) is not None
+            ):
+                # A well-formed heading below `## Rejected in earlier passes`
+                # or `## Pass <k> — cross-cutting decisions`, or above Tier 1.
+                # Raising here would refuse a document that legitimately
+                # quotes a finding heading in unfenced prose — reviews OF
+                # review documents do that routinely — so it is reported
+                # rather than refused, and step 7(0) decides.
+                orphaned_ids.append(orphan.group("id"))
+                continue
             if line.startswith("### ") and current_severity is not None:
                 # A finding heading the regex could not parse — an en dash or a
                 # hyphen where the em dash belongs, most likely. Silently
@@ -852,6 +889,7 @@ def parse_review_document(
         iteration=iteration,
         path=str(path),
         findings=findings,
+        orphaned_ids=orphaned_ids,
     )
 
 
@@ -1057,7 +1095,9 @@ def render_findings(path: str | Path, ids: list[str]) -> str:
             f"Findings from {parsed.path} ({len(parsed.findings)} total — "
             "enumeration only, no bodies):"
         )
-        return "\n".join([header] + _render_enumeration(parsed.findings))
+        return "\n".join(
+            [header] + _render_enumeration(parsed.findings, parsed.orphaned_ids)
+        )
     wanted = list(dict.fromkeys(ids))
     found = {f.id: f for f in parsed.findings}
     ordered = [f for f in _by_severity(parsed.findings) if f.id in wanted]

@@ -916,10 +916,17 @@ async def sdlc_review_findings(document: str, ids: list[str]) -> str:
             role's subset in one call rather than fetching one at a time. An
             id the document does not hold is named in the result. Pass an
             EMPTY list to get the enumeration instead — every finding as one
-            `id / severity / reference / title` line with no bodies, plus a
-            trailing `Ids:` line for comparing id sets. Use that to reconcile
-            a seeded block against the file, or to order a remediation walk,
-            without paying for a body you are not going to read.
+            `id / severity / reference / title` line with no bodies, then an
+            `Outside any tier:` line, then a trailing `Ids:` line for
+            comparing id sets. Use that to reconcile a seeded block against
+            the file, or to order a remediation walk, without paying for a
+            body you are not going to read. `Outside any tier:` names every
+            well-formed finding heading that parsed OUTSIDE every severity
+            tier — those are not findings, carry no severity and get no
+            disposition, and they are the only thing in a review document
+            that goes missing without raising. It reads `none` when there are
+            none, so an absent line means an older server rather than a clean
+            document.
     """
     try:
         return pr_state.render_findings(document, ids)

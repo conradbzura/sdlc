@@ -1025,7 +1025,7 @@ def test_step7_should_reconcile_returned_dispositions_against_the_dispatch():
 def test_count_reconciliation_should_agree_with_the_parser_on_a_fenced_heading(
     tmp_path, monkeypatch
 ):
-    """Test the id-set gate does not fire on a document that parsed cleanly.
+    """Test the id-set gate agrees with the parser and reports the drifted id.
 
     Given:
         A review document whose finding quotes a finding heading inside a
@@ -1033,13 +1033,19 @@ def test_count_reconciliation_should_agree_with_the_parser_on_a_fenced_heading(
     When:
         Step 7(0)'s reconciliation route is run against it.
     Then:
-        It should yield exactly the ids `parse_review_document` yields — the
-        incidental tier included, the fenced sample and the heading quoted
-        inside a NESTED fence both skipped, and the out-of-tier heading
-        ignored. The scanner this replaced failed all three: it matched only
-        Tiers 1 and 2, and its fence toggle desynced on a nested opener and
-        invented an id. A MUST-STOP gate that fires on healthy input is one
-        an agent learns to skip.
+        Its `Ids:` line should hold exactly the ids `parse_review_document`
+        yields — the incidental tier included, the fenced sample and the
+        heading quoted inside a NESTED fence both skipped. The scanner this
+        replaced failed all three: it matched only Tiers 1 and 2, and its
+        fence toggle desynced on a nested opener and invented an id. A
+        MUST-STOP gate that fires on healthy input is one an agent learns to
+        skip.
+
+        The out-of-tier heading is not a finding and stays out of `Ids:`, but
+        it MUST be named on the `Outside any tier:` line. It is the one
+        failure this gate exists for, and while it was merely ignored both
+        sides of the comparison came from this same parser, so the gate could
+        not fire on it by construction.
     """
     # Arrange
     monkeypatch.chdir(tmp_path)
@@ -1075,9 +1081,13 @@ def test_count_reconciliation_should_agree_with_the_parser_on_a_fenced_heading(
     from sdlc.pr_state import parse_review_document
 
     ids = enumeration.rpartition("\nIds: ")[2].split()
-    parsed = [f.id for f in parse_review_document(document, 1, 1).findings]
+    result = parse_review_document(document, 1, 1)
+    parsed = [f.id for f in result.findings]
     assert ids == ["B1", "B2", "A1", "I1"], enumeration
     assert ids == parsed
+    outside = enumeration.rpartition("\nOutside any tier: ")[2].splitlines()[0]
+    assert outside.split() == ["B99"], enumeration
+    assert result.orphaned_ids == ["B99"]
 
 
 
