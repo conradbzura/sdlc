@@ -11,6 +11,19 @@ could silently select a repository the user never intended — a home directory
 managed as a dotfiles repo, for instance. Resolution now consults the
 `review-repo` config key, falls back to `.sdlc` only when it is already a
 repository, and otherwise reports that it is unresolved so the skill can ask.
+
+Three declared values are REFUSED rather than resolved, and the refusal is a
+different answer from a miss: the reviewed tree's own root, any ancestor of
+it, and any repository that cannot contain `.sdlc/reviews`. The first two
+cannot be excluded from the snapshot — the capture excludes the review
+repository by a top-anchored RELATIVE pathspec, and a directory that CONTAINS
+the tree has no such pathspec, so it would be captured into the snapshot of
+the code it reviews and the tree SHA would churn every pass regardless of the
+code. The third resolves perfectly well and can never commit, because the
+document path is hardcoded under `.sdlc/reviews/` in `pr_state._reviews_dir`.
+All three are diagnosed here rather than several steps downstream, where the
+skill would have to reconcile a resolved repository against an unresolved
+document one step before committing.
 """
 
 import re
