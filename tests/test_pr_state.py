@@ -1426,6 +1426,58 @@ def test_parse_review_document_should_separate_adjacent_findings(tmp_path):
         assert "---" not in finding.remediation
 
 
+_CONTINUED_REMEDIATION = textwrap.dedent(
+    """\
+    ### B1 — Replace the blocklist **(BLOCKING)** — aie (1/1 aie)
+    **Reference:** `src/sdlc/git_state.py:35`
+
+    **Issue:** The guard enumerates what it rejects.
+
+    **Remediation:**
+    - [x] Replace the blocklist with an allowlist. *(Recommended.)*
+
+    **Note that** this rejects names git itself would accept, which is the
+    intended trade.
+
+    - [ ] Extend the blocklist by the characters named above.
+    - [ ] Other: ________________________________________________
+
+    **Touched commit:** `abc1234`
+    """
+)
+
+
+def test_parse_review_document_should_keep_options_after_a_bold_continuation(
+    tmp_path,
+):
+    """Test a bolded continuation does not truncate the remediation checklist.
+
+    Given:
+        A finding whose remediation carries a paragraph opening with a bold
+        span between its first option and the two below it.
+    When:
+        parse_review_document is called.
+    Then:
+        It should return all three options and the Other: slot. Terminating on
+        any line opening `**` cannot tell a label from a bolded continuation,
+        which is the defect `_FIELD_LABELS` was introduced to close for the
+        issue text and had not been applied to the checklist.
+    """
+    # Arrange
+    path = tmp_path / "review-1.md"
+    path.write_text(_review_document(blocking=_CONTINUED_REMEDIATION))
+
+    # Act
+    result = parse_review_document(path, issue_number=42, iteration=1)
+
+    # Assert
+    remediation = result.findings[0].remediation
+    assert remediation.count("- [") == 3, remediation
+    assert "Other:" in remediation
+    assert "Extend the blocklist" in remediation
+    assert "**Touched commit:**" not in remediation
+
+
 _FENCED_FINDING = textwrap.dedent(
     """\
     ### B1 — Quote the guide **(BLOCKING)** — aie (1/1 aie)
@@ -3091,11 +3143,27 @@ def _review_documents(draw):
                 )
             )
             commit = draw(st.sampled_from(["`abc1234`", "(no commit — omission)"]))
+            # A checklist is not a contiguous run of checkboxes in practice: a
+            # consolidator routinely writes a note between two options, and a
+            # note routinely opens with a bold span. That shape is what a
+            # `**`-prefix terminator could not tell from a field label.
+            note = draw(
+                st.sampled_from(
+                    [
+                        "",
+                        "\n**Note that** this changes behaviour for callers.\n",
+                        "\n*Weaker, and it is a second rule.*\n",
+                        "\n**Measured:** 6 of 36 findings on a real document.\n",
+                    ]
+                )
+            )
             rendered.append(
                 f"### {finding_id} — Title {index}{marker} — aie (1/3)\n"
                 f"**Reference:** `src/mod.py:{index}`\n\n"
                 f"**Issue:** {issue}\n\n"
                 f"**Remediation:**\n- [x] Fix it.\n"
+                f"{note}"
+                f"- [ ] Do it the other way.\n"
                 f"- [ ] Other: ____\n\n"
                 f"**Touched commit:** {commit}\n"
             )
@@ -3209,3 +3277,37 @@ def test_parse_review_document_should_refuse_a_duplicate_tier_heading(
     # Act & assert
     with pytest.raises(ValueError, match="duplicate tier heading"):
         parse_review_document(source, issue_number=1, iteration=1)
+
+
+@settings(max_examples=75, deadline=None)
+@given(document=_review_documents())
+def test_parse_review_document_should_keep_every_remediation_option(
+    document, tmp_path_factory
+):
+    """Test no remediation loses an option, whatever precedes or follows it.
+
+    Given:
+        Any review document, whose findings carry a three-option checklist
+        that may be interrupted by a note opening with a bold span.
+    When:
+        It is parsed.
+    Then:
+        Every finding should return all three options and its Other: slot, and
+        none should absorb the `**Touched commit:**` label below it. The
+        checklist is what a remediation is judged against and the fetch that
+        serves it is mandatory, so a truncated one is evidence the consumer
+        never learns is missing.
+    """
+    # Arrange
+    directory = tmp_path_factory.mktemp("options")
+    source = directory / "review-1.md"
+    source.write_text(document)
+
+    # Act
+    result = parse_review_document(source, issue_number=1, iteration=1)
+
+    # Assert
+    for finding in result.findings:
+        assert finding.remediation.count("- [") == 3, finding.remediation
+        assert "Other:" in finding.remediation
+        assert "**Touched commit:**" not in finding.remediation

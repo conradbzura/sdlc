@@ -609,6 +609,16 @@ def _extract_remediation(body: str) -> str:
     Captures the contiguous run of ``- [ ]`` / ``- [x]`` checkbox lines
     (and their continuations), preserving the pre-selected option, any
     alternatives, and the ``Other:`` slot.
+
+    Terminates on ``_FIELD_LABELS``, exactly as :func:`_extract_issue` does,
+    and for the reason recorded above that tuple. An earlier form here broke
+    on ANY line opening ``**``, which cannot tell a label from a bolded
+    continuation between two options — a consolidator writing
+    ``**Note that this changes behaviour.**`` between them silently dropped
+    every option below it, the ``Other:`` slot included. That slot is required
+    on every finding, the fetch that serves this block is mandatory, and
+    ``render_outline`` elides the body, so the alternatives existed only on a
+    path no consumer is permitted to take.
     """
     lines = body.splitlines()
     captured: list[str] = []
@@ -629,7 +639,7 @@ def _extract_remediation(body: str) -> str:
             if not stripped:
                 continue
             if (
-                stripped.startswith("**")
+                stripped.startswith(_FIELD_LABELS)
                 or stripped.startswith("###")
                 or stripped.startswith("---")
             ):
