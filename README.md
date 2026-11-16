@@ -53,7 +53,7 @@ cd sdlc
 pip install -e .
 ```
 
-You now have eleven tools available: the pipeline stages `sdlc_issue`, `sdlc_implement`, `sdlc_test`, `sdlc_commit`, `sdlc_pr`, and `sdlc_review`, plus the supporting tools `sdlc_understand_chat`, `sdlc_guides_for`, `sdlc_roles`, `sdlc_role_scope`, and `sdlc_role`.
+You now have twelve tools available: the pipeline stages `sdlc_issue`, `sdlc_implement`, `sdlc_test`, `sdlc_commit`, `sdlc_pr`, and `sdlc_review`, plus the supporting tools `sdlc_review_findings`, `sdlc_understand_chat`, `sdlc_guides_for`, `sdlc_roles`, `sdlc_role_scope`, and `sdlc_role`.
 
 ### End-to-End Example
 
@@ -97,7 +97,11 @@ The agent calls `sdlc_review` with either the PR number or a set of local file p
 
 If review feedback requires changes, re-enter the implementation loop with `sdlc_implement`. By default it parses the latest review document for the closing issue, renders its findings, and walks you through each one's pre-selected remediation behind a per-finding approval gate; `--review <iteration>` selects an earlier round, and `--review <pr-url>` first converts that PR's GitHub review comments into a fresh local review document. Address the feedback, then re-run test, commit, and pr tools as needed.
 
-To confirm a round was actually addressed, run `sdlc_review --verify <review #>` against the same target. It re-reads that `review-<#>.md`, fans the same per-role reviewers out as verifiers, and judges each finding **Resolved** or **Unresolved** against your current files — writing a `verify-<#>.md` report with an unresolved count rather than a new review. If any findings remain unresolved, it points you back to `sdlc_implement <target> --review <#>`; when zero remain, the round is verified complete. When you're satisfied, mark the PR ready for review and merge via GitHub.
+To carry a round forward, run `sdlc_review --verify <review #>` against the same target. Everything is a review — this one is just seeded with the findings of the review's latest round, and it writes the next round as a new file beside it: `review-<#>.md` is round 1, then `review-<#>.2.md`, `review-<#>.3.md`, and so on. Nothing is overwritten. Each pass may **close** a finding whose remediation is now present, **reject** one that doesn't hold up (a guide rule that isn't actually in your guides, a wrong reference, a severity that was off), and **add** ones the current state newly exposes, including defects the last round of fixes introduced. Iteration ends on one condition: no blocking findings remain. Advisories carry forward and never gate.
+
+Each round also records the code it reviewed, in a small `review-<#>[.<k>].meta.json` beside its document. Findings cite `file:line` in a repo whose history gets rewritten before merge, so the commits a review ran against don't survive — the record anchors on the merge-base with the upstream default branch, which does, and carries a content-addressed tree SHA for the working tree as reviewed. Hash what eventually merged the same way and the SHA tells you whether it is what was reviewed.
+
+Nothing is committed: the round files are the history. Each round says what it did to the finding set in its pass line and records why every closed finding closed in a **Closed this round** ledger, quoting the fix. Whether you track `.sdlc/reviews/` in git, and where, is up to you. While blocking findings remain, address them with `sdlc_implement <target> --review <#>` and run another pass. When you're satisfied, mark the PR ready for review and merge via GitHub.
 
 ## Project Structure
 
@@ -126,6 +130,7 @@ sdlc/
         │   └── understand-chat.md
         ├── role-template.md        # Bundled role-document template
         ├── review-template.md      # Bundled consolidated-review-document template
+        ├── review-rationale.md     # Design rationale for the review skill (served as an MCP resource)
         ├── test-guides/            # Testing conventions (served as MCP resources)
         │   └── python.md
         ├── style-guides/           # Style conventions (served as MCP resources)
@@ -144,10 +149,11 @@ sdlc/
 | `sdlc_test` | Analyze coverage and write comprehensive tests |
 | `sdlc_commit` | Stage and commit changes with atomic commits |
 | `sdlc_pr` | Review changes and create a draft pull request |
-| `sdlc_review` | Review an open PR (diff) or a set of local file paths/globs, writing a consolidated local review document under `.sdlc/reviews/`; `--verify <review #>` instead verifies an existing review, judging each finding resolved/unresolved against the current files |
+| `sdlc_review` | Review an open PR (diff) or a set of local file paths/globs, writing a consolidated local review document under `.sdlc/reviews/`; `--verify <review #>` instead runs a further round of an existing review, seeded from its latest round and written beside it as a new file |
+| `sdlc_review_findings` | Return the full text of named findings from a review document — the endpoints inject the document as an outline with every finding body elided, and this fetches the ones you act on |
 | `sdlc_understand_chat` | Query the codebase knowledge graph |
 | `sdlc_roles` | List the available review roles |
-| `sdlc_role_scope` | Reverse-lookup the changed files a role's findings are confined to |
+| `sdlc_role_scope` | Reverse-lookup the changed files that SEED a role's review scope (over the merged `guide-map.role`) |
 | `sdlc_role` | Author a review role document |
 
 ### MCP Resources
@@ -160,6 +166,7 @@ sdlc/
 | `sdlc://guides/role/aie` | AI-engineering review role (agent-facing prompt and skill content) |
 | `sdlc://role-template` | Role-document template |
 | `sdlc://review-template` | Consolidated-review-document template |
+| `sdlc://review-rationale` | Why the `review` skill's blocks are shaped as they are; read on demand, carries no rules |
 | `sdlc://agents-md` | Project-level agent instructions |
 | `sdlc://knowledge-graph` | Codebase knowledge graph (if generated) |
 
